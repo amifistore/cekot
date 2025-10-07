@@ -12,6 +12,7 @@ DB_PATH = "bot_topup.db"
 def is_admin(user):
     return str(user.id) in config.ADMIN_TELEGRAM_IDS
 
+# Handler untuk update produk dari API ke database
 async def updateproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.message.from_user):
         await update.message.reply_text("Hanya admin yang bisa update produk.")
@@ -37,43 +38,42 @@ async def updateproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 name TEXT,
                 price REAL,
                 status TEXT,
-                updated_at TEXT,
-                deskripsi TEXT
+                updated_at TEXT
             )
         """)
         count = 0
         for prod in produk_list:
+            # GUNAKAN FIELD SESUAI DATA JSON PROVIDER
             code = str(prod.get("kode_produk", "")).strip()
             name = str(prod.get("nama_produk", "")).strip()
             price = float(prod.get("harga_final", 0))
-            deskripsi = str(prod.get("deskripsi", "-"))
             if not code or not name or price <= 0:
                 continue
             now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             await conn.execute("""
-                INSERT INTO products (code, name, price, status, updated_at, deskripsi)
-                VALUES (?, ?, ?, 'active', ?, ?)
+                INSERT INTO products (code, name, price, status, updated_at)
+                VALUES (?, ?, ?, 'active', ?)
                 ON CONFLICT(code) DO UPDATE SET
                     name=excluded.name,
                     price=excluded.price,
                     status='active',
-                    updated_at=excluded.updated_at,
-                    deskripsi=excluded.deskripsi
-            """, (code, name, price, now, deskripsi))
+                    updated_at=excluded.updated_at
+            """, (code, name, price, now))
             count += 1
         await conn.commit()
-        async with conn.execute("SELECT code, name, price, deskripsi FROM products WHERE status='active' ORDER BY name ASC LIMIT 5") as cursor:
+        async with conn.execute("SELECT code, name, price FROM products WHERE status='active' ORDER BY name ASC LIMIT 5") as cursor:
             data_preview = await cursor.fetchall()
     if count == 0:
         await update.message.reply_text("Tidak ada produk aktif yang berhasil diupdate.")
     else:
         msg = f"Produk berhasil diupdate: {count} produk aktif.\nContoh produk:\n"
-        for code, name, price, deskripsi in data_preview:
-            msg += f"- {name} ({code}): Rp {price:,.0f} - {deskripsi}\n"
+        for code, name, price in data_preview:
+            msg += f"- {name} ({code}): Rp {price:,.0f}\n"
         await update.message.reply_text(msg)
 
 updateproduk_handler = CommandHandler("updateproduk", updateproduk)
 
+# Handler untuk list produk dari database
 async def listproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.message.from_user):
         await update.message.reply_text("Hanya admin yang bisa melihat list produk.")
@@ -86,24 +86,24 @@ async def listproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 name TEXT,
                 price REAL,
                 status TEXT,
-                updated_at TEXT,
-                deskripsi TEXT
+                updated_at TEXT
             )
         """)
-        async with conn.execute("SELECT code, name, price, deskripsi FROM products WHERE status='active' ORDER BY name ASC LIMIT 30") as cursor:
+        async with conn.execute("SELECT code, name, price FROM products WHERE status='active' ORDER BY name ASC LIMIT 30") as cursor:
             rows = await cursor.fetchall()
 
     if not rows:
         await update.message.reply_text("Produk belum tersedia atau belum diupdate.")
         return
 
-    msg = "*List Produk Aktif:*\n"
-    for code, name, price, deskripsi in rows:
-        msg += f"- *{name}* ({code}): Rp {price:,.0f}\n  └ _{deskripsi}_\n"
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    msg = "List Produk Aktif:\n"
+    for code, name, price in rows:
+        msg += f"- {name} ({code}): Rp {price:,.0f}\n"
+    await update.message.reply_text(msg)
 
 listproduk_handler = CommandHandler("listproduk", listproduk)
 
+# Handler untuk konfirmasi topup
 async def topup_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.message.from_user):
         await update.message.reply_text("Hanya admin yang bisa konfirmasi.")
@@ -118,6 +118,7 @@ async def topup_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 topup_confirm_handler = CommandHandler("topup_confirm", topup_confirm)
 
+# Handler cek user
 async def cek_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.message.from_user):
         await update.message.reply_text("Hanya admin yang bisa cek user.")
@@ -143,6 +144,7 @@ async def cek_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 cek_user_handler = CommandHandler("cek_user", cek_user)
 
+# Handler jadikan admin
 async def jadikan_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.message.from_user):
         await update.message.reply_text("Hanya admin yang bisa menjadikan admin.")
@@ -157,42 +159,7 @@ async def jadikan_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 jadikan_admin_handler = CommandHandler("jadikan_admin", jadikan_admin)
 
-# Fitur edit deskripsi produk
-async def edit_deskripsi(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.message.from_user):
-        await update.message.reply_text("Hanya admin yang bisa edit deskripsi produk.")
-        return
-    args = context.args
-    if len(args) < 2:
-        await update.message.reply_text("Format: /edit_deskripsi <kode_produk> <deskripsi baru>")
-        return
-    kode_produk = args[0]
-    deskripsi_baru = " ".join(args[1:])
-    async with aiosqlite.connect(DB_PATH) as conn:
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS products (
-                code TEXT PRIMARY KEY,
-                name TEXT,
-                price REAL,
-                status TEXT,
-                updated_at TEXT,
-                deskripsi TEXT
-            )
-        """)
-        async with conn.execute("SELECT name FROM products WHERE code=?", (kode_produk,)) as cursor:
-            produk = await cursor.fetchone()
-        if not produk:
-            await update.message.reply_text("Kode produk tidak ditemukan.")
-            return
-        await conn.execute(
-            "UPDATE products SET deskripsi=? WHERE code=?",
-            (deskripsi_baru, kode_produk)
-        )
-        await conn.commit()
-    await update.message.reply_text(f"Deskripsi produk `{kode_produk}` berhasil diupdate:\n\n_{deskripsi_baru}_", parse_mode="Markdown")
-
-edit_deskripsi_handler = CommandHandler("edit_deskripsi", edit_deskripsi)
-
+# Handler menu admin utama
 async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.message.from_user):
         await update.message.reply_text("Menu admin hanya untuk admin.")
@@ -203,7 +170,6 @@ async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/topup_confirm <topup_id> - Konfirmasi topup user\n"
         "/cek_user <username> - Cek info user\n"
         "/jadikan_admin <telegram_id> - Jadikan user sebagai admin\n"
-        "/edit_deskripsi <kode_produk> <deskripsi baru> - Edit deskripsi produk\n"
         "/broadcast pesan - Broadcast ke semua user\n"
     )
 
