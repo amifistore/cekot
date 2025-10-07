@@ -1,3 +1,4 @@
+import config
 from telegram.ext import Application, CommandHandler
 from topup_handler import topup_conv_handler
 from order_handler import order_conv_handler
@@ -36,7 +37,7 @@ def saldo(update, context):
 def main():
     database.init_db()
     scheduler.start()
-    application = Application.builder().token("ISI_DENGAN_TOKEN_BOT_KAMU").build()
+    application = Application.builder().token(config.BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("menu", menu))
