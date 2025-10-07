@@ -1,3 +1,4 @@
+import config
 from telegram import Update
 from telegram.ext import ConversationHandler, CommandHandler, MessageHandler, CallbackContext, filters
 import requests
@@ -6,7 +7,6 @@ from io import BytesIO
 import database
 
 ASK_TOPUP_NOMINAL = 1
-QRIS_STATIS = "ISI_DENGAN_KODE_QRIS_STATIS_KAMU"
 
 def topup_start(update: Update, context: CallbackContext):
     update.message.reply_text("Masukkan nominal top up (angka saja, contoh: 10000):")
@@ -22,7 +22,7 @@ def topup_nominal(update: Update, context: CallbackContext):
 
     payload = {
         "amount": nominal,
-        "qris_statis": QRIS_STATIS
+        "qris_statis": config.QRIS_STATIS
     }
     try:
         resp = requests.post("https://qrisku.my.id/api", json=payload, timeout=15)
