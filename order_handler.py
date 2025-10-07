@@ -1,5 +1,5 @@
 from telegram import Update
-from telegram.ext import ConversationHandler, CommandHandler, MessageHandler, Filters, CallbackContext
+from telegram.ext import ConversationHandler, CommandHandler, MessageHandler, CallbackContext, filters
 import database
 
 ASK_ORDER_DETAIL = 1
@@ -24,15 +24,12 @@ def order_confirm(update: Update, context: CallbackContext):
     user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
     confirm = update.message.text.strip().lower()
     if confirm == "ya":
-        # Contoh potong saldo otomatis Rp 5000 per order
         order_cost = 5000
         saldo = database.get_user_saldo(user_id)
         if saldo < order_cost:
             update.message.reply_text("Saldo tidak cukup! Silakan top up dahulu.")
         else:
             database.increment_user_saldo(user_id, -order_cost)
-            # Simpan riwayat order di transaksi
-            # (tambahkan di database.py jika belum ada)
             update.message.reply_text(f"Order diterima! Saldo kamu sudah dipotong Rp {order_cost}.")
     else:
         update.message.reply_text("Order dibatalkan.")
@@ -45,8 +42,8 @@ def order_cancel(update: Update, context: CallbackContext):
 order_conv_handler = ConversationHandler(
     entry_points=[CommandHandler('order', order_start)],
     states={
-        ASK_ORDER_DETAIL: [MessageHandler(Filters.text & ~Filters.command, order_detail)],
-        ASK_ORDER_CONFIRM: [MessageHandler(Filters.text & ~Filters.command, order_confirm)]
+        ASK_ORDER_DETAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, order_detail)],
+        ASK_ORDER_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, order_confirm)]
     },
     fallbacks=[CommandHandler('cancel', order_cancel)]
 )
