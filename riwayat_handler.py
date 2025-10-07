@@ -1,7 +1,9 @@
 import database
 import sqlite3
+from telegram import Update
+from telegram.ext import ContextTypes
 
-def riwayat_trx(update, context):
+async def riwayat_trx(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
     conn = sqlite3.connect(database.DB_PATH)
@@ -10,14 +12,14 @@ def riwayat_trx(update, context):
     row = c.fetchone()
     username = row[0] if row else None
     if not username:
-        update.message.reply_text("User tidak ditemukan.")
+        await update.message.reply_text("User tidak ditemukan.")
         return
 
     c.execute("SELECT id, waktu, kode_produk, tujuan, harga, saldo_awal, status_api, keterangan FROM riwayat_pembelian WHERE username=? ORDER BY waktu DESC LIMIT 20", (username,))
     rows = c.fetchall()
     conn.close()
     if not rows:
-        update.message.reply_text("Belum ada transaksi.")
+        await update.message.reply_text("Belum ada transaksi.")
         return
     
     msg = "Riwayat Transaksi Terbaru:\n"
@@ -41,4 +43,4 @@ def riwayat_trx(update, context):
             f"Keterangan: {ket}\n"
             "--------------------"
         )
-    update.message.reply_text(msg)
+    await update.message.reply_text(msg)
