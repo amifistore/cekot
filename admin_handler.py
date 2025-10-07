@@ -1,12 +1,14 @@
+import config
 from telegram import Update
 from telegram.ext import CommandHandler, CallbackContext
 import database
 import sqlite3
 
+def is_admin(user):
+    return str(user.id) in config.ADMIN_TELEGRAM_IDS
+
 def admin_menu(update: Update, context: CallbackContext):
-    user = update.message.from_user
-    user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
-    if not database.is_admin(user_id):
+    if not is_admin(update.message.from_user):
         update.message.reply_text("Menu admin hanya untuk admin.")
         return
     update.message.reply_text(
@@ -17,8 +19,7 @@ def admin_menu(update: Update, context: CallbackContext):
     )
 
 def topup_confirm(update: Update, context: CallbackContext):
-    user_id = database.get_or_create_user(str(update.message.from_user.id), update.message.from_user.username, update.message.from_user.full_name)
-    if not database.is_admin(user_id):
+    if not is_admin(update.message.from_user):
         update.message.reply_text("Hanya admin yang bisa konfirmasi.")
         return
     args = context.args
@@ -30,8 +31,7 @@ def topup_confirm(update: Update, context: CallbackContext):
     update.message.reply_text(f"Top up ID {topup_id} berhasil dikonfirmasi.")
 
 def cek_user(update: Update, context: CallbackContext):
-    user_id = database.get_or_create_user(str(update.message.from_user.id), update.message.from_user.username, update.message.from_user.full_name)
-    if not database.is_admin(user_id):
+    if not is_admin(update.message.from_user):
         update.message.reply_text("Hanya admin yang bisa cek user.")
         return
     args = context.args
@@ -41,20 +41,20 @@ def cek_user(update: Update, context: CallbackContext):
         return
     conn = sqlite3.connect(database.DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT saldo, is_admin, telegram_id FROM users WHERE username=?", (username,))
+    c.execute("SELECT saldo, telegram_id FROM users WHERE username=?", (username,))
     row = c.fetchone()
     conn.close()
     if not row:
         update.message.reply_text("User tidak ditemukan.")
         return
-    saldo, is_admin, telegram_id = row
+    saldo, telegram_id = row
+    admin_status = "Ya" if telegram_id in config.ADMIN_TELEGRAM_IDS else "Tidak"
     update.message.reply_text(
-        f"Username: {username}\nSaldo: Rp {saldo}\nAdmin: {'Ya' if is_admin else 'Tidak'}\nTelegram ID: {telegram_id}"
+        f"Username: {username}\nSaldo: Rp {saldo}\nAdmin: {admin_status}\nTelegram ID: {telegram_id}"
     )
 
 def jadikan_admin(update: Update, context: CallbackContext):
-    user_id = database.get_or_create_user(str(update.message.from_user.id), update.message.from_user.username, update.message.from_user.full_name)
-    if not database.is_admin(user_id):
+    if not is_admin(update.message.from_user):
         update.message.reply_text("Hanya admin yang bisa menjadikan admin.")
         return
     args = context.args
