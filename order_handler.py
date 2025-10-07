@@ -1,3 +1,4 @@
+import config
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ConversationHandler, CommandHandler, MessageHandler, CallbackContext, filters
 import database
@@ -65,9 +66,7 @@ def order_confirm(update: Update, context: CallbackContext):
     if saldo < produk["harga_final"]:
         update.message.reply_text("Saldo tidak cukup.")
         return ConversationHandler.END
-    # Potong saldo
     database.increment_user_saldo(user_id, -produk["harga_final"])
-    # Simpan riwayat order
     reff_id = f"akrab_{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
     waktu = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     conn = sqlite3.connect(database.DB_PATH)
