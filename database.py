@@ -143,14 +143,6 @@ def add_user_admin(telegram_id):
     conn.commit()
     conn.close()
 
-def is_admin(user_id):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT is_admin FROM users WHERE id=?", (user_id,))
-    row = c.fetchone()
-    conn.close()
-    return bool(row and row[0])
-
 def get_telegram_id_by_username(username):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
