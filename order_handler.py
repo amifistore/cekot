@@ -23,10 +23,12 @@ async def order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             name TEXT,
             price REAL,
             status TEXT,
-            updated_at TEXT
+            updated_at TEXT,
+            deskripsi TEXT
         )
     """)
-    c.execute("SELECT code, name, price FROM products WHERE status='active' ORDER BY name ASC LIMIT 30")
+    # Ambil deskripsi juga!
+    c.execute("SELECT code, name, price, deskripsi FROM products WHERE status='active' ORDER BY name ASC LIMIT 30")
     produk_list = c.fetchall()
     conn.close()
     context.user_data["produk_list"] = produk_list
@@ -35,14 +37,21 @@ async def order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Produk belum tersedia. Silakan minta admin untuk update produk terlebih dahulu dengan /updateproduk")
         return ConversationHandler.END
 
-    msg = f"Saldo Anda: Rp {saldo}\n\nPilih produk:\n"
+    # List produk modern dan jelas
+    msg = f"💰 *Saldo Anda:* Rp {saldo:,}\n\n*Pilih produk kuota:*\n"
     produk_keyboard = []
-    for code, name, price in produk_list:
-        msg += f"- {name} (Kode: {code}) - Rp {price:,.0f}\n"
+    for code, name, price, deskripsi in produk_list:
+        msg += (
+            f"• *{name}*\n"
+            f"  └ Kode: `{code}`\n"
+            f"  └ Harga: Rp {price:,.0f}\n"
+            f"  └ _{deskripsi}_\n\n"
+        )
         produk_keyboard.append([code])
     await update.message.reply_text(
         msg,
-        reply_markup=ReplyKeyboardMarkup(produk_keyboard, one_time_keyboard=True, resize_keyboard=True)
+        reply_markup=ReplyKeyboardMarkup(produk_keyboard, one_time_keyboard=True, resize_keyboard=True),
+        parse_mode="Markdown"
     )
     return ASK_ORDER_PRODUK
 
@@ -54,9 +63,15 @@ async def order_produk(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Produk tidak ditemukan. Pilih ulang.")
         return ASK_ORDER_PRODUK
     context.user_data["order_produk"] = produk
-    await update.message.reply_text(
-        f"{produk[1]} dipilih.\nHarga: Rp {produk[2]:,.0f}\n\nMasukkan nomor tujuan (08xxxxxxxxxx):"
+    # Tampilkan detail deskripsi produk
+    msg = (
+        f"✅ *{produk[1]}*\n"
+        f"Kode: `{produk[0]}`\n"
+        f"Harga: Rp {produk[2]:,.0f}\n"
+        f"Deskripsi: _{produk[3]}_\n\n"
+        f"Masukkan nomor tujuan (08xxxxxxxxxx):"
     )
+    await update.message.reply_text(msg, parse_mode="Markdown")
     return ASK_ORDER_TUJUAN
 
 async def order_tujuan(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -68,7 +83,7 @@ async def order_tujuan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     produk = context.user_data["order_produk"]
     await update.message.reply_text(
-        f"Konfirmasi pesanan:\nProduk: {produk[1]}\nHarga: Rp {produk[2]:,.0f}\nTujuan: {tujuan}\n\nKetik 'ya' untuk konfirmasi, atau 'batal' untuk membatalkan."
+        f"Konfirmasi pesanan:\nProduk: {produk[1]}\nHarga: Rp {produk[2]:,.0f}\nDeskripsi: {produk[3]}\nTujuan: {tujuan}\n\nKetik 'ya' untuk konfirmasi, atau 'batal' untuk membatalkan."
     )
     return ASK_ORDER_CONFIRM
 
@@ -101,7 +116,7 @@ async def order_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.commit()
     conn.close()
     await update.message.reply_text(
-        f"Order berhasil!\nProduk: {produk[1]}\nHarga: Rp {produk[2]:,.0f}\nTujuan: {tujuan}\nSaldo sekarang: Rp {saldo - produk[2]:,.0f}"
+        f"Order berhasil!\nProduk: {produk[1]}\nHarga: Rp {produk[2]:,.0f}\nDeskripsi: {produk[3]}\nTujuan: {tujuan}\nSaldo sekarang: Rp {saldo - produk[2]:,.0f}"
     )
     return ConversationHandler.END
 
