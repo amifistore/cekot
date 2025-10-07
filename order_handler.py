@@ -17,7 +17,6 @@ async def order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    # Pastikan tabel products ada
     c.execute("""
         CREATE TABLE IF NOT EXISTS products (
             code TEXT PRIMARY KEY,
