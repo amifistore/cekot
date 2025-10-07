@@ -82,6 +82,15 @@ async def listproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS products (
+            code TEXT PRIMARY KEY,
+            name TEXT,
+            price REAL,
+            status TEXT,
+            updated_at TEXT
+        )
+    """)
     c.execute("SELECT code, name, price FROM products WHERE status='active' ORDER BY name ASC LIMIT 30")
     rows = c.fetchall()
     conn.close()
