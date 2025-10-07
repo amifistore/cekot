@@ -1,0 +1,12 @@
+python-telegram-bot==20.0
+requests
+python-dotenv
+schedule
+apscheduler
+pillow
+loguru
+validators
+cryptography
+sqlalchemy
+# Jika pakai MongoDB:
+# pymongo
