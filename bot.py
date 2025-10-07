@@ -8,17 +8,17 @@ from admin_handler import (
 from broadcast_handler import broadcast_handler
 from riwayat_handler import riwayat_trx
 import database
-from auto_update import scheduler
+from auto_update import schedule_auto_update
 
-def start(update, context):
+async def start(update, context):
     user = update.message.from_user
     database.get_or_create_user(str(user.id), user.username, user.full_name)
-    update.message.reply_text(
+    await update.message.reply_text(
         "Selamat datang di Bot Top Up & Order!\n/menu untuk lihat menu utama."
     )
 
-def menu(update, context):
-    update.message.reply_text(
+async def menu(update, context):
+    await update.message.reply_text(
         "/topup - Isi saldo via QRIS\n"
         "/order - Order produk digital\n"
         "/riwayat_trx - Lihat riwayat transaksi\n"
@@ -28,15 +28,15 @@ def menu(update, context):
         "/cancel - Batalkan proses"
     )
 
-def saldo(update, context):
+async def saldo(update, context):
     user = update.message.from_user
     user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
     saldo = database.get_user_saldo(user_id)
-    update.message.reply_text(f"Saldo kamu: Rp {saldo}")
+    await update.message.reply_text(f"Saldo kamu: Rp {saldo}")
 
 def main():
     database.init_db()
-    scheduler.start()
+    schedule_auto_update()
     application = Application.builder().token(config.BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
