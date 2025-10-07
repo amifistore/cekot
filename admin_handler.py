@@ -1,8 +1,4 @@
-Saya memahami masalahnya. Menu admin saat ini hanya menampilkan daftar perintah tanpa fitur yang interaktif, dan sistem konfirmasi topup tidak terintegrasi dengan baik. Mari kita perbaiki dengan membuat sistem yang lebih lengkap.
-
-Berikut kode lengkap yang diperbarui:
-
-```python
+python
 import config
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import CommandHandler, ContextTypes, CallbackQueryHandler
