@@ -5,7 +5,7 @@ import database
 
 def main():
     database.init_db()
-    application = Application.builder().token("TOKEN_BOT_KAMU").build()
+    application = Application.builder().token("7976276575:AAE8-jSX-T5KlYDTbsYKGn1K3xd25WtY39Y").build()
 
     application.add_handler(topup_conv_handler)
     application.add_handler(order_conv_handler)
