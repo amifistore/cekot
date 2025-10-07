@@ -1,59 +1,93 @@
 import config
-from telegram.ext import Application, CommandHandler
-from topup_handler import topup_conv_handler
-from order_handler import order_conv_handler
-from admin_handler import (
-    admin_menu_handler, topup_confirm_handler, cek_user_handler, jadikan_admin_handler
-)
-from broadcast_handler import broadcast_handler
-from riwayat_handler import riwayat_trx
+from flask import Flask, request, jsonify
+import sqlite3
+import re
+from datetime import datetime
 import database
-from auto_update import schedule_auto_update
 
-async def start(update, context):
-    user = update.message.from_user
-    database.get_or_create_user(str(user.id), user.username, user.full_name)
-    await update.message.reply_text(
-        "Selamat datang di Bot Top Up & Order!\n/menu untuk lihat menu utama."
-    )
+DB_PATH = "bot_topup.db"
 
-async def menu(update, context):
-    await update.message.reply_text(
-        "/topup - Isi saldo via QRIS\n"
-        "/order - Order produk digital\n"
-        "/riwayat_trx - Lihat riwayat transaksi\n"
-        "/saldo - Cek saldo\n"
-        "/admin - Menu admin\n"
-        "/broadcast - Broadcast pesan admin\n"
-        "/cancel - Batalkan proses"
-    )
+app = Flask(__name__)
 
-async def saldo(update, context):
-    user = update.message.from_user
-    user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
-    saldo = database.get_user_saldo(user_id)
-    await update.message.reply_text(f"Saldo kamu: Rp {saldo}")
+def log_error(msg):
+    with open("webhook_raw.log", "a") as f:
+        f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} {msg}\n")
 
-def main():
-    database.init_db()
-    schedule_auto_update()
-    application = Application.builder().token(config.BOT_TOKEN).build()
+@app.route("/webhook", methods=["POST", "GET"])
+def webhook():
+    raw_input = request.get_data(as_text=True)
+    log_error(raw_input)
+    message = None
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("menu", menu))
-    application.add_handler(CommandHandler("saldo", saldo))
-    application.add_handler(CommandHandler("riwayat_trx", riwayat_trx))
+    if raw_input:
+        try:
+            json_data = request.get_json(force=True, silent=True)
+            if json_data and "message" in json_data and isinstance(json_data["message"], str):
+                message = json_data["message"]
+        except Exception:
+            pass
+    if not message:
+        message = request.args.get("message") or request.form.get("message")
+    if not message or message.strip() == "":
+        log_error("[WEBHOOK] message kosong")
+        return jsonify({"ok": False, "error": "message kosong"}), 400
 
-    application.add_handler(topup_conv_handler)
-    application.add_handler(order_conv_handler)
+    pattern = r'RC=(?P<reffid>[a-z0-9_.-]+)\s+TrxID=(?P<trxid>\d+)\s+(?P<produk>[A-Z0-9]+)\.(?P<tujuan>\d+)\s+(?P<status_text>[A-Za-z]+)[, ]*(?P<keterangan>.+?)Saldo[\s\S]*?result=(?P<status_code>\d+)'
+    m = re.search(pattern, message, re.I)
+    if not m:
+        log_error(f'[WEBHOOK] format tidak dikenali -> {message}')
+        return jsonify({"ok": False, "error": "format tidak dikenali"}), 400
 
-    application.add_handler(admin_menu_handler)
-    application.add_handler(topup_confirm_handler)
-    application.add_handler(cek_user_handler)
-    application.add_handler(jadikan_admin_handler)
-    application.add_handler(broadcast_handler)
+    trxid       = m.group('trxid')
+    reffid      = m.group('reffid')
+    produk      = m.group('produk')
+    tujuan      = m.group('tujuan')
+    status_text = m.group('status_text')
+    keterangan  = m.group('keterangan').strip() if m.group('keterangan') else ''
+    status_code = int(m.group('status_code'))
 
-    application.run_polling()
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT id, username, harga, status_api, refund FROM riwayat_pembelian WHERE reff_id=? LIMIT 1", (reffid,))
+    row = c.fetchone()
+    if not row:
+        log_error(f"[WEBHOOK] reff_id {reffid} tidak ditemukan di database!")
+        conn.close()
+        return jsonify({"ok": False, "error": "reffid tidak ditemukan"}), 400
+
+    _id, username, harga, status_api, refund = row
+
+    if status_code == 0:  # SUKSES
+        c.execute("UPDATE riwayat_pembelian SET status_api='SUKSES', keterangan=?, waktu=? WHERE reff_id=?", (keterangan, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), reffid))
+        log_error(f"[WEBHOOK] Status transaksi SUKSES - {reffid}")
+    elif status_code == 1:  # GAGAL/FAILED
+        if not refund:
+            c.execute("UPDATE users SET saldo = saldo + ? WHERE username = ?", (harga, username))
+            refund_val = 1
+        else:
+            refund_val = refund
+        c.execute("UPDATE riwayat_pembelian SET status_api='GAGAL', keterangan=?, waktu=?, refund=? WHERE reff_id=?", (keterangan, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), refund_val, reffid))
+        log_error(f"[WEBHOOK] Status transaksi GAGAL/REFUND - {reffid}")
+    else:
+        api = status_text.upper()
+        c.execute("UPDATE riwayat_pembelian SET status_api=?, keterangan=?, waktu=? WHERE reff_id=?", (api, keterangan, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), reffid))
+        log_error(f"[WEBHOOK] Status transaksi {api} - {reffid}")
+
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        "ok": True,
+        "parsed": {
+            "trxid": trxid,
+            "reffid": reffid,
+            "produk": produk,
+            "tujuan": tujuan,
+            "status_text": status_text,
+            "status_code": status_code,
+            "keterangan": keterangan,
+        }
+    })
 
 if __name__ == "__main__":
-    main()
+    app.run(port=8080, debug=True)
