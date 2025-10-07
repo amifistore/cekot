@@ -132,3 +132,98 @@ def get_all_telegram_ids():
     rows = c.fetchall()
     conn.close()
     return [row[0] for row in rows]
+
+def get_user_by_telegram_id(telegram_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT id, username, full_name, saldo, is_admin FROM users WHERE telegram_id=?", (telegram_id,))
+    row = c.fetchone()
+    conn.close()
+    if row:
+        return {
+            "id": row[0],
+            "username": row[1],
+            "full_name": row[2],
+            "saldo": row[3],
+            "is_admin": bool(row[4])
+        }
+    return None
+
+def get_product_by_code(code):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT code, name, price, status, updated_at, deskripsi FROM products WHERE code=?", (code,))
+    row = c.fetchone()
+    conn.close()
+    if row:
+        return {
+            "code": row[0],
+            "name": row[1],
+            "price": row[2],
+            "status": row[3],
+            "updated_at": row[4],
+            "deskripsi": row[5]
+        }
+    return None
+
+def update_product_deskripsi(code, deskripsi_baru):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("UPDATE products SET deskripsi=? WHERE code=?", (deskripsi_baru, code))
+    conn.commit()
+    conn.close()
+
+def get_all_products():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT code, name, price, status, updated_at, deskripsi FROM products")
+    rows = c.fetchall()
+    conn.close()
+    result = []
+    for row in rows:
+        result.append({
+            "code": row[0],
+            "name": row[1],
+            "price": row[2],
+            "status": row[3],
+            "updated_at": row[4],
+            "deskripsi": row[5]
+        })
+    return result
+
+def get_last_topup_requests(user_id, n=10):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT id, amount, payment_status, created_at, paid_at FROM topup_requests WHERE user_id=? ORDER BY created_at DESC LIMIT ?", (user_id, n))
+    rows = c.fetchall()
+    conn.close()
+    result = []
+    for row in rows:
+        result.append({
+            "id": row[0],
+            "amount": row[1],
+            "payment_status": row[2],
+            "created_at": row[3],
+            "paid_at": row[4]
+        })
+    return result
+
+def get_riwayat_pembelian(username, n=20):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT id, waktu, kode_produk, tujuan, harga, saldo_awal, status_api, keterangan FROM riwayat_pembelian WHERE username=? ORDER BY waktu DESC LIMIT ?", (username, n))
+    rows = c.fetchall()
+    conn.close()
+    result = []
+    for row in rows:
+        result.append({
+            "id": row[0],
+            "waktu": row[1],
+            "kode_produk": row[2],
+            "tujuan": row[3],
+            "harga": row[4],
+            "saldo_awal": row[5],
+            "status_api": row[6],
+            "keterangan": row[7]
+        })
+    return result
