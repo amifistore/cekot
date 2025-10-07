@@ -572,4 +572,3 @@ async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 admin_menu_handler = CommandHandler("admin", admin_menu)
-```
