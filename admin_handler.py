@@ -12,6 +12,7 @@ DB_PATH = "bot_topup.db"
 def is_admin(user):
     return str(user.id) in config.ADMIN_TELEGRAM_IDS
 
+# Handler untuk update produk dari API ke database
 async def updateproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.message.from_user):
         await update.message.reply_text("Hanya admin yang bisa update produk.")
@@ -29,10 +30,7 @@ async def updateproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Gagal mengambil data produk dari API: {e}")
         return
 
-    if not data or "data" not in data or not isinstance(data["data"], list):
-        await update.message.reply_text("Format data produk tidak valid.")
-        return
-
+    produk_list = data.get("data", [])
     async with aiosqlite.connect(DB_PATH) as conn:
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS products (
@@ -44,10 +42,11 @@ async def updateproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         """)
         count = 0
-        for prod in data["data"]:
-            code = str(prod.get("kode", "")).strip()
-            name = str(prod.get("nama", "")).strip()
-            price = float(prod.get("harga", 0))
+        for prod in produk_list:
+            # GUNAKAN FIELD SESUAI DATA JSON PROVIDER
+            code = str(prod.get("kode_produk", "")).strip()
+            name = str(prod.get("nama_produk", "")).strip()
+            price = float(prod.get("harga_final", 0))
             if not code or not name or price <= 0:
                 continue
             now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -74,6 +73,7 @@ async def updateproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 updateproduk_handler = CommandHandler("updateproduk", updateproduk)
 
+# Handler untuk list produk dari database
 async def listproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.message.from_user):
         await update.message.reply_text("Hanya admin yang bisa melihat list produk.")
@@ -103,6 +103,7 @@ async def listproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 listproduk_handler = CommandHandler("listproduk", listproduk)
 
+# Handler untuk konfirmasi topup
 async def topup_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.message.from_user):
         await update.message.reply_text("Hanya admin yang bisa konfirmasi.")
@@ -117,6 +118,7 @@ async def topup_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 topup_confirm_handler = CommandHandler("topup_confirm", topup_confirm)
 
+# Handler cek user
 async def cek_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.message.from_user):
         await update.message.reply_text("Hanya admin yang bisa cek user.")
@@ -142,6 +144,7 @@ async def cek_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 cek_user_handler = CommandHandler("cek_user", cek_user)
 
+# Handler jadikan admin
 async def jadikan_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.message.from_user):
         await update.message.reply_text("Hanya admin yang bisa menjadikan admin.")
@@ -156,6 +159,7 @@ async def jadikan_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 jadikan_admin_handler = CommandHandler("jadikan_admin", jadikan_admin)
 
+# Handler menu admin utama
 async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.message.from_user):
         await update.message.reply_text("Menu admin hanya untuk admin.")
