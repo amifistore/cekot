@@ -1,18 +1,17 @@
 import config
 from telegram import Update
 from telegram.ext import CommandHandler, ContextTypes
-import sqlite3
-from datetime import datetime
-import database
 import aiohttp
 import aiosqlite
+import database
+import sqlite3
+from datetime import datetime
 
 DB_PATH = "bot_topup.db"
 
 def is_admin(user):
     return str(user.id) in config.ADMIN_TELEGRAM_IDS
 
-# Async update produk handler
 async def updateproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.message.from_user):
         await update.message.reply_text("Hanya admin yang bisa update produk.")
@@ -44,8 +43,7 @@ async def updateproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 updated_at TEXT
             )
         """)
-        new_count = 0
-        update_count = 0
+        count = 0
         for prod in data["data"]:
             code = str(prod.get("kode", "")).strip()
             name = str(prod.get("nama", "")).strip()
@@ -53,12 +51,6 @@ async def updateproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not code or not name or price <= 0:
                 continue
             now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            async with conn.execute("SELECT code FROM products WHERE code=?", (code,)) as cursor:
-                exists = await cursor.fetchone()
-            if exists:
-                update_count += 1
-            else:
-                new_count += 1
             await conn.execute("""
                 INSERT INTO products (code, name, price, status, updated_at)
                 VALUES (?, ?, ?, 'active', ?)
@@ -68,23 +60,20 @@ async def updateproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     status='active',
                     updated_at=excluded.updated_at
             """, (code, name, price, now))
+            count += 1
         await conn.commit()
-        async with conn.execute("SELECT COUNT(*) FROM products WHERE status='active'") as cursor:
-            total_active = (await cursor.fetchone())[0]
-
-    if (new_count + update_count) == 0:
-        await update.message.reply_text("Tidak ada produk aktif yang berhasil diupdate. Silakan cek API provider atau data produk.")
+        async with conn.execute("SELECT code, name, price FROM products WHERE status='active' ORDER BY name ASC LIMIT 5") as cursor:
+            data_preview = await cursor.fetchall()
+    if count == 0:
+        await update.message.reply_text("Tidak ada produk aktif yang berhasil diupdate.")
     else:
-        await update.message.reply_text(
-            f"Produk berhasil diupdate!\n"
-            f"- Produk baru: {new_count}\n"
-            f"- Produk diupdate: {update_count}\n"
-            f"- Total produk aktif sekarang: {total_active}"
-        )
+        msg = f"Produk berhasil diupdate: {count} produk aktif.\nContoh produk:\n"
+        for code, name, price in data_preview:
+            msg += f"- {name} ({code}): Rp {price:,.0f}\n"
+        await update.message.reply_text(msg)
 
 updateproduk_handler = CommandHandler("updateproduk", updateproduk)
 
-# Async list produk handler
 async def listproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.message.from_user):
         await update.message.reply_text("Hanya admin yang bisa melihat list produk.")
@@ -114,7 +103,6 @@ async def listproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 listproduk_handler = CommandHandler("listproduk", listproduk)
 
-# Konfirmasi topup handler
 async def topup_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.message.from_user):
         await update.message.reply_text("Hanya admin yang bisa konfirmasi.")
@@ -129,7 +117,6 @@ async def topup_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 topup_confirm_handler = CommandHandler("topup_confirm", topup_confirm)
 
-# Cek user handler
 async def cek_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.message.from_user):
         await update.message.reply_text("Hanya admin yang bisa cek user.")
@@ -155,7 +142,6 @@ async def cek_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 cek_user_handler = CommandHandler("cek_user", cek_user)
 
-# Jadikan admin handler
 async def jadikan_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.message.from_user):
         await update.message.reply_text("Hanya admin yang bisa menjadikan admin.")
@@ -170,7 +156,6 @@ async def jadikan_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 jadikan_admin_handler = CommandHandler("jadikan_admin", jadikan_admin)
 
-# Menu admin utama handler
 async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.message.from_user):
         await update.message.reply_text("Menu admin hanya untuk admin.")
