@@ -1,0 +1,36 @@
+from apscheduler.schedulers.background import BackgroundScheduler
+import sqlite3, requests
+from telegram import Bot
+import os
+import database
+
+DB_PATH = "bot_topup.db"
+BOT_TOKEN = os.environ.get("TOKEN_BOT_KAMU")
+API_KEY = os.environ.get("API_KEY")
+bot = Bot(BOT_TOKEN)
+
+def check_pending_orders():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT id, username, reff_id FROM riwayat_pembelian WHERE status_api='PROSES'")
+    rows = c.fetchall()
+    for order_id, username, reff_id in rows:
+        api_url = f"https://panel.khfy-store.com/api_v2/status?reff_id={reffid}&api_key={API_KEY}"
+        try:
+            resp = requests.get(api_url, timeout=15)
+            if resp.ok:
+                result = resp.json()
+                status = str(result.get('status', 'PROSES')).upper()
+                msg = result.get('msg', '')
+                if status in ['SUKSES', 'SUCCESS', 'GAGAL', 'FAILED']:
+                    c.execute("UPDATE riwayat_pembelian SET status_api=?, keterangan=? WHERE id=?", (status, msg, order_id))
+                    telegram_id = database.get_telegram_id_by_username(username)
+                    if telegram_id:
+                        bot.send_message(chat_id=telegram_id, text=f"Order kamu dengan reff_id {reff_id} status: {status}\n{msg}")
+        except Exception:
+            pass
+    conn.commit()
+    conn.close()
+
+scheduler = BackgroundScheduler()
+scheduler.add_job(check_pending_orders, 'interval', minutes=5)
