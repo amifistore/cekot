@@ -50,7 +50,7 @@ async def updateproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
         code = str(prod.get("kode", "")).strip()
         name = str(prod.get("nama", "")).strip()
         price = float(prod.get("harga", 0))
-        if not code or not name:
+        if not code or not name or price <= 0:
             continue
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         # Upsert produk
@@ -66,7 +66,11 @@ async def updateproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
         count += 1
     conn.commit()
     conn.close()
-    await update.message.reply_text(f"Produk berhasil diupdate: {count} produk aktif.")
+
+    if count == 0:
+        await update.message.reply_text("Tidak ada produk aktif yang berhasil diupdate. Silakan cek API provider atau data produk.")
+    else:
+        await update.message.reply_text(f"Produk berhasil diupdate: {count} produk aktif.")
 
 updateproduk_handler = CommandHandler("updateproduk", updateproduk)
 
