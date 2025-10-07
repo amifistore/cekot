@@ -3,12 +3,12 @@ from telegram.ext import Application, CommandHandler
 from topup_handler import topup_conv_handler
 from order_handler import order_conv_handler
 from admin_handler import (
-    admin_menu_handler, topup_confirm_handler, cek_user_handler, jadikan_admin_handler
+    admin_menu_handler, updateproduk_handler, listproduk_handler,
+    topup_confirm_handler, cek_user_handler, jadikan_admin_handler
 )
 from broadcast_handler import broadcast_handler
 from riwayat_handler import riwayat_trx
 import database
-from auto_update import schedule_auto_update
 
 async def start(update, context):
     user = update.message.from_user
@@ -36,7 +36,6 @@ async def saldo(update, context):
 
 def main():
     database.init_db()
-    schedule_auto_update()
     application = Application.builder().token(config.BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
@@ -48,6 +47,8 @@ def main():
     application.add_handler(order_conv_handler)
 
     application.add_handler(admin_menu_handler)
+    application.add_handler(updateproduk_handler)
+    application.add_handler(listproduk_handler)
     application.add_handler(topup_confirm_handler)
     application.add_handler(cek_user_handler)
     application.add_handler(jadikan_admin_handler)
