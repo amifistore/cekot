@@ -27,7 +27,6 @@ async def order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             deskripsi TEXT
         )
     """)
-    # Ambil deskripsi juga!
     c.execute("SELECT code, name, price, deskripsi FROM products WHERE status='active' ORDER BY name ASC LIMIT 30")
     produk_list = c.fetchall()
     conn.close()
@@ -63,7 +62,6 @@ async def order_produk(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Produk tidak ditemukan. Pilih ulang.")
         return ASK_ORDER_PRODUK
     context.user_data["order_produk"] = produk
-    # Tampilkan detail deskripsi produk
     msg = (
         f"✅ *{produk[1]}*\n"
         f"Kode: `{produk[0]}`\n"
