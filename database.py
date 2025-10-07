@@ -31,7 +31,8 @@ def init_db():
         name TEXT,
         price REAL,
         status TEXT,
-        updated_at TEXT
+        updated_at TEXT,
+        deskripsi TEXT
     );
     CREATE TABLE IF NOT EXISTS riwayat_pembelian (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
