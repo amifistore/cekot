@@ -1,12 +1,10 @@
 python-telegram-bot==20.0
 requests
 python-dotenv
-schedule
 apscheduler
+flask
 pillow
 loguru
 validators
 cryptography
 sqlalchemy
-# Jika pakai MongoDB:
-# pymongo
