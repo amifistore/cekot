@@ -1,43 +1,43 @@
 import config
 from telegram import Update
-from telegram.ext import CommandHandler, CallbackContext
+from telegram.ext import CommandHandler, ContextTypes
 import database
 import sqlite3
 
 def is_admin(user):
     return str(user.id) in config.ADMIN_TELEGRAM_IDS
 
-def admin_menu(update: Update, context: CallbackContext):
+async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.message.from_user):
-        update.message.reply_text("Menu admin hanya untuk admin.")
+        await update.message.reply_text("Menu admin hanya untuk admin.")
         return
-    update.message.reply_text(
+    await update.message.reply_text(
         "/topup_confirm <topup_id> - Konfirmasi topup user\n"
         "/cek_user <username> - Cek info user\n"
         "/jadikan_admin <telegram_id> - Jadikan user sebagai admin\n"
         "/broadcast pesan - Kirim pengumuman ke semua user\n"
     )
 
-def topup_confirm(update: Update, context: CallbackContext):
+async def topup_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.message.from_user):
-        update.message.reply_text("Hanya admin yang bisa konfirmasi.")
+        await update.message.reply_text("Hanya admin yang bisa konfirmasi.")
         return
     args = context.args
     if not args:
-        update.message.reply_text("Format: /topup_confirm <topup_id>")
+        await update.message.reply_text("Format: /topup_confirm <topup_id>")
         return
     topup_id = args[0]
     database.update_topup_status(topup_id, "paid")
-    update.message.reply_text(f"Top up ID {topup_id} berhasil dikonfirmasi.")
+    await update.message.reply_text(f"Top up ID {topup_id} berhasil dikonfirmasi.")
 
-def cek_user(update: Update, context: CallbackContext):
+async def cek_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.message.from_user):
-        update.message.reply_text("Hanya admin yang bisa cek user.")
+        await update.message.reply_text("Hanya admin yang bisa cek user.")
         return
     args = context.args
     username = args[0] if args else None
     if not username:
-        update.message.reply_text("Format: /cek_user <username>")
+        await update.message.reply_text("Format: /cek_user <username>")
         return
     conn = sqlite3.connect(database.DB_PATH)
     c = conn.cursor()
@@ -45,25 +45,25 @@ def cek_user(update: Update, context: CallbackContext):
     row = c.fetchone()
     conn.close()
     if not row:
-        update.message.reply_text("User tidak ditemukan.")
+        await update.message.reply_text("User tidak ditemukan.")
         return
     saldo, telegram_id = row
     admin_status = "Ya" if telegram_id in config.ADMIN_TELEGRAM_IDS else "Tidak"
-    update.message.reply_text(
+    await update.message.reply_text(
         f"Username: {username}\nSaldo: Rp {saldo}\nAdmin: {admin_status}\nTelegram ID: {telegram_id}"
     )
 
-def jadikan_admin(update: Update, context: CallbackContext):
+async def jadikan_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.message.from_user):
-        update.message.reply_text("Hanya admin yang bisa menjadikan admin.")
+        await update.message.reply_text("Hanya admin yang bisa menjadikan admin.")
         return
     args = context.args
     telegram_id = args[0] if args else None
     if not telegram_id:
-        update.message.reply_text("Format: /jadikan_admin <telegram_id>")
+        await update.message.reply_text("Format: /jadikan_admin <telegram_id>")
         return
     database.add_user_admin(telegram_id)
-    update.message.reply_text(f"User dengan telegram_id {telegram_id} sudah jadi admin.")
+    await update.message.reply_text(f"User dengan telegram_id {telegram_id} sudah jadi admin.")
 
 admin_menu_handler = CommandHandler("admin", admin_menu)
 topup_confirm_handler = CommandHandler("topup_confirm", topup_confirm)
