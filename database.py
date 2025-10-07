@@ -26,13 +26,12 @@ def init_db():
         paid_at DATETIME,
         FOREIGN KEY (user_id) REFERENCES users(id)
     );
-    CREATE TABLE IF NOT EXISTS akrabv3 (
-        kode_produk TEXT PRIMARY KEY,
-        nama_produk TEXT,
-        harga_final INTEGER,
-        deskripsi TEXT,
-        kosong INTEGER DEFAULT 0,
-        gangguan INTEGER DEFAULT 0
+    CREATE TABLE IF NOT EXISTS products (
+        code TEXT PRIMARY KEY,
+        name TEXT,
+        price REAL,
+        status TEXT,
+        updated_at TEXT
     );
     CREATE TABLE IF NOT EXISTS riwayat_pembelian (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,22 +88,6 @@ def increment_user_saldo(user_id, amount):
     conn.commit()
     conn.close()
 
-def get_produk_list():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT kode_produk, nama_produk, harga_final, deskripsi FROM akrabv3 WHERE kosong=0 AND gangguan=0 ORDER BY nama_produk ASC")
-    rows = c.fetchall()
-    conn.close()
-    produk_list = []
-    for row in rows:
-        produk_list.append({
-            "kode_produk": row[0],
-            "nama_produk": row[1],
-            "harga_final": row[2],
-            "deskripsi": row[3]
-        })
-    return produk_list
-
 def create_topup_request(user_id, amount, qris_base64):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -114,17 +97,6 @@ def create_topup_request(user_id, amount, qris_base64):
     )
     conn.commit()
     conn.close()
-
-def get_topup_requests(user_id):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute(
-        "SELECT id, amount, payment_status, created_at FROM topup_requests WHERE user_id=? ORDER BY id DESC",
-        (user_id,)
-    )
-    rows = c.fetchall()
-    conn.close()
-    return rows
 
 def update_topup_status(topup_id, status):
     conn = sqlite3.connect(DB_PATH)
