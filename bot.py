@@ -5,7 +5,7 @@ import database
 
 def main():
     database.init_db()
-    updater = Updater("TOKEN_BOT_KAMU", use_context=True)
+    updater = Updater("7976276575:AAE8-jSX-T5KlYDTbsYKGn1K3xd25WtY39Y", use_context=True)
     dp = updater.dispatcher
 
     dp.add_handler(topup_conv_handler)
