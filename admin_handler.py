@@ -10,7 +10,6 @@ DB_PATH = "bot_topup.db"
 def is_admin(user):
     return str(user.id) in config.ADMIN_TELEGRAM_IDS
 
-# Handler untuk update produk dari API ke database
 async def updateproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.message.from_user):
         await update.message.reply_text("Hanya admin yang bisa update produk.")
@@ -45,7 +44,8 @@ async def updateproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     """)
 
-    count = 0
+    new_count = 0
+    update_count = 0
     for prod in data["data"]:
         code = str(prod.get("kode", "")).strip()
         name = str(prod.get("nama", "")).strip()
@@ -53,7 +53,13 @@ async def updateproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not code or not name or price <= 0:
             continue
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        # Upsert produk
+        # Cek apakah sudah ada
+        c.execute("SELECT code FROM products WHERE code=?", (code,))
+        exists = c.fetchone()
+        if exists:
+            update_count += 1
+        else:
+            new_count += 1
         c.execute("""
             INSERT INTO products (code, name, price, status, updated_at)
             VALUES (?, ?, ?, 'active', ?)
@@ -63,14 +69,21 @@ async def updateproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 status='active',
                 updated_at=excluded.updated_at
         """, (code, name, price, now))
-        count += 1
     conn.commit()
+    # Hitung total produk aktif
+    c.execute("SELECT COUNT(*) FROM products WHERE status='active'")
+    total_active = c.fetchone()[0]
     conn.close()
 
-    if count == 0:
+    if (new_count + update_count) == 0:
         await update.message.reply_text("Tidak ada produk aktif yang berhasil diupdate. Silakan cek API provider atau data produk.")
     else:
-        await update.message.reply_text(f"Produk berhasil diupdate: {count} produk aktif.")
+        await update.message.reply_text(
+            f"Produk berhasil diupdate!\n"
+            f"- Produk baru: {new_count}\n"
+            f"- Produk diupdate: {update_count}\n"
+            f"- Total produk aktif sekarang: {total_active}"
+        )
 
 updateproduk_handler = CommandHandler("updateproduk", updateproduk)
 
