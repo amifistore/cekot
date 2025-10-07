@@ -12,9 +12,10 @@ DB_PATH = "bot_topup.db"
 def is_admin(user):
     return str(user.id) in config.ADMIN_TELEGRAM_IDS
 
-# Fungsi untuk memastikan tabel products dengan deskripsi
+# Fungsi untuk memastikan tabel products dengan deskripsi dan migrasi
 async def ensure_products_table():
     async with aiosqlite.connect(DB_PATH) as conn:
+        # Buat tabel jika belum ada
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS products (
                 code TEXT PRIMARY KEY,
@@ -26,6 +27,16 @@ async def ensure_products_table():
                 updated_at TEXT
             )
         """)
+        
+        # Cek apakah kolom category dan description sudah ada, jika belum tambahkan
+        try:
+            await conn.execute("SELECT category, description FROM products LIMIT 1")
+        except aiosqlite.OperationalError:
+            # Tambahkan kolom category jika belum ada
+            await conn.execute("ALTER TABLE products ADD COLUMN category TEXT DEFAULT 'Umum'")
+            # Tambahkan kolom description jika belum ada
+            await conn.execute("ALTER TABLE products ADD COLUMN description TEXT DEFAULT ''")
+        
         await conn.commit()
 
 # Handler untuk update produk dari API ke database
@@ -45,7 +56,7 @@ async def updateproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=30) as resp:  # Increased timeout
+            async with session.get(url, timeout=30) as resp:
                 resp.raise_for_status()
                 data = await resp.json()
     except Exception as e:
@@ -88,16 +99,21 @@ async def updateproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             # Tentukan kategori dari nama produk
             category = "Umum"
-            if "pulsa" in name.lower():
+            name_lower = name.lower()
+            if "pulsa" in name_lower:
                 category = "Pulsa"
-            elif "data" in name.lower() or "internet" in name.lower():
+            elif "data" in name_lower or "internet" in name_lower or "kuota" in name_lower:
                 category = "Internet"
-            elif "listrik" in name.lower():
+            elif "listrik" in name_lower or "pln" in name_lower:
                 category = "Listrik"
-            elif "voucher" in name.lower():
+            elif "voucher" in name_lower:
                 category = "Voucher"
-            elif "game" in name.lower():
+            elif "game" in name_lower or "ml" in name_lower or "pubg" in name_lower or "free fire" in name_lower:
                 category = "Game"
+            elif "e-money" in name_lower or "ewallet" in name_lower or "gopay" in name_lower or "dana" in name_lower:
+                category = "E-Money"
+            elif "tv" in name_lower or "kabel" in name_lower:
+                category = "TV Kabel"
             
             # Validasi data produk
             if not code or not name or price <= 0:
@@ -214,7 +230,7 @@ async def listproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += f"├ **{name}**\n"
             msg += f"│ ├ Kode: `{code}`\n"
             msg += f"│ ├ Harga: Rp {price:,.0f}\n"
-            if description and len(description) > 0:
+            if description and len(description) > 0 and description != f"Produk {name}":
                 short_desc = description[:50] + "..." if len(description) > 50 else description
                 msg += f"│ └ Deskripsi: {short_desc}\n"
             msg += "│\n"
@@ -308,7 +324,7 @@ async def detailproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔄 **Status:** {status_emoji} {status}\n\n"
         )
         
-        if description:
+        if description and description != f"Produk {name}":
             msg += f"📝 **Deskripsi:**\n{description}\n\n"
         
         msg += f"⏰ **Update Terakhir:** {updated_at}"
@@ -464,14 +480,22 @@ async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Hitung statistik
+    # Pastikan tabel sudah ada dan terupdate
     await ensure_products_table()
-    async with aiosqlite.connect(DB_PATH) as conn:
-        async with conn.execute("SELECT COUNT(*) FROM products WHERE status='active'") as cursor:
-            active_products = (await cursor.fetchone())[0]
-        
-        async with conn.execute("SELECT COUNT(DISTINCT category) FROM products WHERE status='active'") as cursor:
-            total_categories = (await cursor.fetchone())[0]
+    
+    # Hitung statistik dengan error handling
+    try:
+        async with aiosqlite.connect(DB_PATH) as conn:
+            async with conn.execute("SELECT COUNT(*) FROM products WHERE status='active'") as cursor:
+                active_products = (await cursor.fetchone())[0]
+            
+            async with conn.execute("SELECT COUNT(DISTINCT category) FROM products WHERE status='active'") as cursor:
+                total_categories = (await cursor.fetchone())[0]
+    except Exception as e:
+        # Jika ada error, set default values
+        active_products = 0
+        total_categories = 0
+        print(f"Error counting stats: {e}")
     
     await update.message.reply_text(
         f"👑 **MENU ADMIN**\n\n"
@@ -489,7 +513,7 @@ async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`/jadikan_admin <telegram_id>` - Jadikan user sebagai admin\n\n"
         "📢 **Broadcast:**\n"
         "`/broadcast pesan` - Broadcast ke semua user\n\n"
-        f"⏰ **Update Terakhir:** {datetime.now().strftime('%d-%m-%Y %H:%M')}",
+        f"⏰ **Waktu Server:** {datetime.now().strftime('%d-%m-%Y %H:%M')}",
         parse_mode='Markdown'
     )
 
