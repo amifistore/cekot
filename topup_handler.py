@@ -1,5 +1,5 @@
 from telegram import Update
-from telegram.ext import ConversationHandler, CommandHandler, MessageHandler, Filters, CallbackContext
+from telegram.ext import ConversationHandler, CommandHandler, MessageHandler, CallbackContext, filters
 import requests
 import base64
 from io import BytesIO
@@ -50,7 +50,7 @@ def topup_cancel(update: Update, context: CallbackContext):
 topup_conv_handler = ConversationHandler(
     entry_points=[CommandHandler('topup', topup_start)],
     states={
-        ASK_TOPUP_NOMINAL: [MessageHandler(Filters.text & ~Filters.command, topup_nominal)]
+        ASK_TOPUP_NOMINAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, topup_nominal)]
     },
     fallbacks=[CommandHandler('cancel', topup_cancel)]
 )
