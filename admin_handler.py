@@ -24,20 +24,52 @@ async def ensure_products_table():
                 status TEXT,
                 description TEXT,
                 category TEXT,
+                provider TEXT,
+                gangguan INTEGER DEFAULT 0,
+                kosong INTEGER DEFAULT 0,
                 updated_at TEXT
             )
         """)
         
-        # Cek apakah kolom category dan description sudah ada, jika belum tambahkan
-        try:
-            await conn.execute("SELECT category, description FROM products LIMIT 1")
-        except aiosqlite.OperationalError:
-            # Tambahkan kolom category jika belum ada
-            await conn.execute("ALTER TABLE products ADD COLUMN category TEXT DEFAULT 'Umum'")
-            # Tambahkan kolom description jika belum ada
-            await conn.execute("ALTER TABLE products ADD COLUMN description TEXT DEFAULT ''")
+        # Cek dan tambahkan kolom yang belum ada
+        columns_to_add = [
+            ("category", "TEXT DEFAULT 'Umum'"),
+            ("description", "TEXT DEFAULT ''"),
+            ("provider", "TEXT DEFAULT ''"),
+            ("gangguan", "INTEGER DEFAULT 0"),
+            ("kosong", "INTEGER DEFAULT 0")
+        ]
+        
+        for column_name, column_type in columns_to_add:
+            try:
+                await conn.execute(f"SELECT {column_name} FROM products LIMIT 1")
+            except aiosqlite.OperationalError:
+                await conn.execute(f"ALTER TABLE products ADD COLUMN {column_name} {column_type}")
         
         await conn.commit()
+
+# Fungsi untuk menentukan kategori berdasarkan nama produk
+def determine_category(name, code):
+    name_lower = name.lower()
+    code_lower = code.lower()
+    
+    # Deteksi berdasarkan nama produk
+    if any(keyword in name_lower for keyword in ['pulsa', 'telkomsel', 'tsel', 'simpati', 'as']):
+        return "Pulsa"
+    elif any(keyword in name_lower for keyword in ['data', 'kuota', 'internet', 'gb', 'mb', 'mini', 'jumbo', 'mega', 'super']):
+        return "Internet"
+    elif any(keyword in name_lower for keyword in ['listrik', 'pln', 'token']):
+        return "Listrik"
+    elif any(keyword in name_lower for keyword in ['game', 'voucher game', 'pubg', 'mobile legend', 'ml', 'ff', 'free fire']):
+        return "Game"
+    elif any(keyword in name_lower for keyword in ['emoney', 'gopay', 'dana', 'ovo', 'linkaja', 'shopeepay']):
+        return "E-Money"
+    elif any(keyword in name_lower for keyword in ['tv', 'kabel', 'streaming']):
+        return "TV Kabel"
+    elif any(keyword in name_lower for keyword in ['akrab', 'bonus']):
+        return "Paket Bonus"
+    else:
+        return "Umum"
 
 # Handler untuk update produk dari API ke database
 async def updateproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -68,6 +100,15 @@ async def updateproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # Periksa struktur response
+    if not data.get("ok", False):
+        await update.message.reply_text(
+            f"❌ **Response Error dari Provider**\n\n"
+            f"Pesan: {data.get('message', 'Unknown error')}",
+            parse_mode='Markdown'
+        )
+        return
+
     produk_list = data.get("data", [])
     
     if not produk_list:
@@ -86,60 +127,59 @@ async def updateproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         count = 0
         skipped = 0
+        skipped_gangguan = 0
         valid_products = []
         
         for prod in produk_list:
-            # Extract data dari provider
+            # Extract data dari provider sesuai format JSON
             code = str(prod.get("kode_produk", "")).strip()
             name = str(prod.get("nama_produk", "")).strip()
             price = float(prod.get("harga_final", 0))
+            gangguan = int(prod.get("gangguan", 0))
+            kosong = int(prod.get("kosong", 0))
+            provider_code = str(prod.get("kode_provider", "")).strip()
             
-            # Ambil deskripsi jika ada dari provider, atau buat default
-            description = prod.get("deskripsi", "") or prod.get("keterangan", "") or f"Produk {name}"
+            # Ambil deskripsi dari provider
+            description = str(prod.get("deskripsi", "")).strip()
+            if description == "a":  # Handle deskripsi default "a"
+                description = f"Produk {name}"
             
-            # Tentukan kategori dari nama produk
-            category = "Umum"
-            name_lower = name.lower()
-            if "pulsa" in name_lower:
-                category = "Pulsa"
-            elif "data" in name_lower or "internet" in name_lower or "kuota" in name_lower:
-                category = "Internet"
-            elif "listrik" in name_lower or "pln" in name_lower:
-                category = "Listrik"
-            elif "voucher" in name_lower:
-                category = "Voucher"
-            elif "game" in name_lower or "ml" in name_lower or "pubg" in name_lower or "free fire" in name_lower:
-                category = "Game"
-            elif "e-money" in name_lower or "ewallet" in name_lower or "gopay" in name_lower or "dana" in name_lower:
-                category = "E-Money"
-            elif "tv" in name_lower or "kabel" in name_lower:
-                category = "TV Kabel"
+            # Tentukan kategori
+            category = determine_category(name, code)
             
-            # Validasi data produk
+            # Validasi data produk - skip jika gangguan atau kosong
             if not code or not name or price <= 0:
                 skipped += 1
                 continue
                 
+            # Skip produk yang sedang gangguan atau kosong
+            if gangguan == 1 or kosong == 1:
+                skipped_gangguan += 1
+                continue
+                
             now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             await conn.execute("""
-                INSERT INTO products (code, name, price, status, description, category, updated_at)
-                VALUES (?, ?, ?, 'active', ?, ?, ?)
+                INSERT INTO products (code, name, price, status, description, category, provider, gangguan, kosong, updated_at)
+                VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(code) DO UPDATE SET
                     name=excluded.name,
                     price=excluded.price,
                     status='active',
                     description=excluded.description,
                     category=excluded.category,
+                    provider=excluded.provider,
+                    gangguan=excluded.gangguan,
+                    kosong=excluded.kosong,
                     updated_at=excluded.updated_at
-            """, (code, name, price, description, category, now))
+            """, (code, name, price, description, category, provider_code, gangguan, kosong, now))
             count += 1
-            valid_products.append((code, name, price, description, category))
+            valid_products.append((code, name, price, description, category, provider_code))
         
         await conn.commit()
 
     # Hitung kategori produk
     categories = {}
-    for code, name, price, description, category in valid_products:
+    for code, name, price, description, category, provider_code in valid_products:
         categories[category] = categories.get(category, 0) + 1
     
     # Ambil sample produk untuk preview
@@ -152,14 +192,15 @@ async def updateproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📊 **Statistik Update:**\n"
         f"├ Total dari Provider: {len(produk_list)} produk\n"
         f"├ Berhasil diupdate: {count} produk\n"
-        f"└ Dilewati (data invalid): {skipped} produk\n\n"
+        f"├ Dilewati (data invalid): {skipped} produk\n"
+        f"└ Dilewati (gangguan/kosong): {skipped_gangguan} produk\n\n"
     )
     
     if categories:
         msg += f"📦 **Kategori Produk:**\n{category_summary}\n\n"
     
     msg += "🆕 **Contoh Produk Terbaru:**\n"
-    for code, name, price, description, category in sample_products:
+    for code, name, price, description, category, provider_code in sample_products:
         msg += f"• **{name}**\n  💰 Rp {price:,.0f} | 📁 {category}\n"
     
     if len(valid_products) > 8:
@@ -195,7 +236,7 @@ async def listproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Ambil produk dengan pagination
         async with conn.execute("""
-            SELECT code, name, price, description, category 
+            SELECT code, name, price, description, category, provider, gangguan, kosong 
             FROM products 
             WHERE status='active' 
             ORDER BY category, name ASC 
@@ -219,17 +260,19 @@ async def listproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Kelompokkan produk berdasarkan kategori
     categories = {}
-    for code, name, price, description, category in rows:
+    for code, name, price, description, category, provider, gangguan, kosong in rows:
         if category not in categories:
             categories[category] = []
-        categories[category].append((code, name, price, description))
+        categories[category].append((code, name, price, description, provider, gangguan, kosong))
 
     for category, products in categories.items():
         msg += f"**{category.upper()}** ({len(products)} produk)\n"
-        for code, name, price, description in products:
-            msg += f"├ **{name}**\n"
+        for code, name, price, description, provider, gangguan, kosong in products:
+            status_emoji = "✅" if gangguan == 0 and kosong == 0 else "⚠️"
+            msg += f"├ {status_emoji} **{name}**\n"
             msg += f"│ ├ Kode: `{code}`\n"
             msg += f"│ ├ Harga: Rp {price:,.0f}\n"
+            msg += f"│ └ Provider: {provider}\n"
             if description and len(description) > 0 and description != f"Produk {name}":
                 short_desc = description[:50] + "..." if len(description) > 50 else description
                 msg += f"│ └ Deskripsi: {short_desc}\n"
@@ -270,7 +313,7 @@ async def detailproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "**Penggunaan:**\n"
             "`/detailproduk <kode_produk>`\n\n"
             "**Contoh:**\n"
-            "`/detailproduk PULSA5`",
+            "`/detailproduk BPAL1`",
             parse_mode='Markdown'
         )
         return
@@ -281,7 +324,7 @@ async def detailproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     async with aiosqlite.connect(DB_PATH) as conn:
         async with conn.execute("""
-            SELECT code, name, price, description, category, status, updated_at 
+            SELECT code, name, price, description, category, provider, gangguan, kosong, status, updated_at 
             FROM products 
             WHERE code = ? OR name LIKE ?
         """, (kode_produk, f"%{kode_produk}%")) as cursor:
@@ -299,11 +342,11 @@ async def detailproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(products) > 1:
         # Jika ada multiple results, tampilkan list singkat
         msg = f"🔍 **Multiple Results untuk '{kode_produk}'**\n\n"
-        for code, name, price, description, category, status, updated_at in products[:10]:
-            status_emoji = "✅" if status == 'active' else "❌"
+        for code, name, price, description, category, provider, gangguan, kosong, status, updated_at in products[:10]:
+            status_emoji = "✅" if status == 'active' and gangguan == 0 and kosong == 0 else "⚠️"
             msg += f"{status_emoji} **{name}**\n"
             msg += f"   Kode: `{code}` | Harga: Rp {price:,.0f}\n"
-            msg += f"   Kategori: {category}\n\n"
+            msg += f"   Kategori: {category} | Provider: {provider}\n\n"
         
         if len(products) > 10:
             msg += f"📝 ... dan {len(products) - 10} produk lainnya\n\n"
@@ -312,8 +355,11 @@ async def detailproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     else:
         # Tampilkan detail lengkap untuk satu produk
-        code, name, price, description, category, status, updated_at = products[0]
-        status_emoji = "✅" if status == 'active' else "❌"
+        code, name, price, description, category, provider, gangguan, kosong, status, updated_at = products[0]
+        status_emoji = "✅" if status == 'active' and gangguan == 0 and kosong == 0 else "⚠️"
+        
+        gangguan_status = "✅ Normal" if gangguan == 0 else "❌ Gangguan"
+        kosong_status = "✅ Tersedia" if kosong == 0 else "❌ Kosong"
         
         msg = (
             f"📄 **DETAIL PRODUK**\n\n"
@@ -321,7 +367,10 @@ async def detailproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📌 **Kode:** `{code}`\n"
             f"💰 **Harga:** Rp {price:,.0f}\n"
             f"📁 **Kategori:** {category}\n"
-            f"🔄 **Status:** {status_emoji} {status}\n\n"
+            f"🏢 **Provider:** {provider}\n"
+            f"🔄 **Status:** {status_emoji} {status}\n"
+            f"⚡ **Gangguan:** {gangguan_status}\n"
+            f"📦 **Stok:** {kosong_status}\n\n"
         )
         
         if description and description != f"Produk {name}":
@@ -491,16 +540,21 @@ async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             async with conn.execute("SELECT COUNT(DISTINCT category) FROM products WHERE status='active'") as cursor:
                 total_categories = (await cursor.fetchone())[0]
+            
+            async with conn.execute("SELECT COUNT(*) FROM products WHERE status='active' AND gangguan = 0 AND kosong = 0") as cursor:
+                available_products = (await cursor.fetchone())[0]
     except Exception as e:
         # Jika ada error, set default values
         active_products = 0
         total_categories = 0
+        available_products = 0
         print(f"Error counting stats: {e}")
     
     await update.message.reply_text(
         f"👑 **MENU ADMIN**\n\n"
         f"📊 **Statistik Sistem:**\n"
-        f"├ 📦 Produk Aktif: {active_products}\n"
+        f"├ 📦 Total Produk: {active_products}\n"
+        f"├ ✅ Produk Tersedia: {available_products}\n"
         f"└ 📁 Kategori: {total_categories}\n\n"
         "📦 **Manajemen Produk:**\n"
         "`/updateproduk` - Update semua produk dari API provider\n"
@@ -518,3 +572,4 @@ async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 admin_menu_handler = CommandHandler("admin", admin_menu)
+```
