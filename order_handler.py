@@ -1,10 +1,11 @@
 import config
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ConversationHandler, CommandHandler, MessageHandler, ContextTypes, filters
-import database
 import sqlite3
+import database
 from datetime import datetime
 
+DB_PATH = "bot_topup.db"
 ASK_ORDER_PRODUK = 1
 ASK_ORDER_TUJUAN = 2
 ASK_ORDER_CONFIRM = 3
@@ -13,14 +14,24 @@ async def order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
     saldo = database.get_user_saldo(user_id)
-    produk_list = database.get_produk_list()
+
+    # Ambil produk dari tabel products hasil update admin
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT code, name, price FROM products WHERE status='active' ORDER BY name ASC LIMIT 30")
+    produk_list = c.fetchall()
+    conn.close()
     context.user_data["produk_list"] = produk_list
+
+    if not produk_list:
+        await update.message.reply_text("Produk belum tersedia. Silakan minta admin untuk update produk terlebih dahulu dengan /updateproduk")
+        return ConversationHandler.END
 
     msg = f"Saldo Anda: Rp {saldo}\n\nPilih produk:\n"
     produk_keyboard = []
-    for prod in produk_list:
-        msg += f"- {prod['nama_produk']} (Kode: {prod['kode_produk']}) - Rp {prod['harga_final']}\n"
-        produk_keyboard.append([prod["kode_produk"]])
+    for code, name, price in produk_list:
+        msg += f"- {name} (Kode: {code}) - Rp {price:,.0f}\n"
+        produk_keyboard.append([code])
     await update.message.reply_text(
         msg,
         reply_markup=ReplyKeyboardMarkup(produk_keyboard, one_time_keyboard=True, resize_keyboard=True)
@@ -30,13 +41,13 @@ async def order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def order_produk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kode_produk = update.message.text.strip()
     produk_list = context.user_data.get("produk_list", [])
-    produk = next((p for p in produk_list if p["kode_produk"] == kode_produk), None)
+    produk = next((p for p in produk_list if p[0] == kode_produk), None)
     if not produk:
         await update.message.reply_text("Produk tidak ditemukan. Pilih ulang.")
         return ASK_ORDER_PRODUK
     context.user_data["order_produk"] = produk
     await update.message.reply_text(
-        f"{produk['nama_produk']} dipilih.\nDeskripsi: {produk['deskripsi']}\nHarga: Rp {produk['harga_final']}\n\nMasukkan nomor tujuan (08xxxxxxxxxx):"
+        f"{produk[1]} dipilih.\nHarga: Rp {produk[2]:,.0f}\n\nMasukkan nomor tujuan (08xxxxxxxxxx):"
     )
     return ASK_ORDER_TUJUAN
 
@@ -49,7 +60,7 @@ async def order_tujuan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     produk = context.user_data["order_produk"]
     await update.message.reply_text(
-        f"Konfirmasi pesanan:\nProduk: {produk['nama_produk']}\nHarga: Rp {produk['harga_final']}\nTujuan: {tujuan}\n\nKetik 'ya' untuk konfirmasi, atau 'batal' untuk membatalkan."
+        f"Konfirmasi pesanan:\nProduk: {produk[1]}\nHarga: Rp {produk[2]:,.0f}\nTujuan: {tujuan}\n\nKetik 'ya' untuk konfirmasi, atau 'batal' untuk membatalkan."
     )
     return ASK_ORDER_CONFIRM
 
@@ -63,26 +74,26 @@ async def order_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if confirm != "ya":
         await update.message.reply_text("Order dibatalkan.")
         return ConversationHandler.END
-    if saldo < produk["harga_final"]:
+    if saldo < produk[2]:
         await update.message.reply_text("Saldo tidak cukup.")
         return ConversationHandler.END
-    database.increment_user_saldo(user_id, -produk["harga_final"])
-    reff_id = f"akrab_{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+    database.increment_user_saldo(user_id, -produk[2])
+    reff_id = f"order_{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
     waktu = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    conn = sqlite3.connect(database.DB_PATH)
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""
         INSERT INTO riwayat_pembelian
         (username, kode_produk, nama_produk, tujuan, harga, saldo_awal, reff_id, status_api, keterangan, waktu)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
-        user.username, produk["kode_produk"], produk["nama_produk"], tujuan,
-        produk["harga_final"], saldo, reff_id, "PROSES", "Order dikirim", waktu
+        user.username, produk[0], produk[1], tujuan,
+        produk[2], saldo, reff_id, "PROSES", "Order dikirim", waktu
     ))
     conn.commit()
     conn.close()
     await update.message.reply_text(
-        f"Order berhasil!\nProduk: {produk['nama_produk']}\nHarga: Rp {produk['harga_final']}\nTujuan: {tujuan}\nSaldo sekarang: Rp {saldo - produk['harga_final']}"
+        f"Order berhasil!\nProduk: {produk[1]}\nHarga: Rp {produk[2]:,.0f}\nTujuan: {tujuan}\nSaldo sekarang: Rp {saldo - produk[2]:,.0f}"
     )
     return ConversationHandler.END
 
@@ -98,4 +109,4 @@ order_conv_handler = ConversationHandler(
         ASK_ORDER_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, order_confirm)],
     },
     fallbacks=[CommandHandler('cancel', order_cancel)]
-    )
+)
