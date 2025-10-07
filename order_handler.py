@@ -15,9 +15,18 @@ async def order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
     saldo = database.get_user_saldo(user_id)
 
-    # Ambil produk dari tabel products hasil update admin
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    # Pastikan tabel products ada
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS products (
+            code TEXT PRIMARY KEY,
+            name TEXT,
+            price REAL,
+            status TEXT,
+            updated_at TEXT
+        )
+    """)
     c.execute("SELECT code, name, price FROM products WHERE status='active' ORDER BY name ASC LIMIT 30")
     produk_list = c.fetchall()
     conn.close()
