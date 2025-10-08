@@ -120,12 +120,27 @@ async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🧹 Cleanup Data", callback_data="admin_cleanup")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(
-        "👑 **MENU ADMIN**\n\nSilakan pilih fitur:",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
+    # PATCH: support both update.message and update.callback_query!
+    if getattr(update, "message", None):
+        await update.message.reply_text(
+            "👑 **MENU ADMIN**\n\nSilakan pilih fitur:",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+    elif getattr(update, "callback_query", None):
+        await update.callback_query.edit_message_text(
+            "👑 **MENU ADMIN**\n\nSilakan pilih fitur:",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
 
+async def admin_menu_from_query(query, context):
+    # PATCH: panggil admin_menu dengan update "callback_query"
+    class FakeUpdate:
+        def __init__(self, callback_query):
+            self.callback_query = callback_query
+            self.message = None
+    await admin_menu(FakeUpdate(query), context)
 async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
