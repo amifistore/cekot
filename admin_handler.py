@@ -536,4 +536,23 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         logger.error(f"Error in admin_help: {e}")
-        await update.message.reply_text("❌ Terjadi kes
+        await update.message.reply_text(help_text, parse_mode='Markdown')
+        
+    except Exception as e:
+        logger.error(f"Error in admin_help: {e}")
+        await update.message.reply_text("❌ Terjadi kesalahan saat menampilkan help.")
+
+# Register handlers function
+def setup_admin_handlers(application):
+    """Setup all admin handlers"""
+    # Command handlers
+    application.add_handler(CommandHandler("topup_list", topup_list))
+    application.add_handler(CommandHandler("stats", admin_stats))
+    application.add_handler(CommandHandler("broadcast", broadcast_message))
+    application.add_handler(CommandHandler("admin_help", admin_help))
+    
+    # Callback query handler
+    application.add_handler(CallbackQueryHandler(handle_admin_callback, pattern="^(approve_topup:|reject_topup:|view_topup:|reset_topup:|topup_filter:|admin_stats_refresh)"))
+
+# Export the setup function
+__all__ = ['setup_admin_handlers']
