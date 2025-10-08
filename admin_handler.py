@@ -472,38 +472,61 @@ async def listproduk(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================
 
 async def topup_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def topup_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.message.from_user):
         await update.message.reply_text("❌ Hanya admin yang bisa menggunakan perintah ini.")
         return
 
-    await ensure_topup_requests_table()
-    
     status_filter = context.args[0].lower() if context.args else 'pending'
     valid_statuses = ['pending', 'approved', 'rejected', 'all']
     
     if status_filter not in valid_statuses:
         status_filter = 'pending'
 
-    async with aiosqlite.connect(DB_PATH) as conn:
-        if status_filter == 'all':
-            cursor = await conn.execute("""
-                SELECT id, user_id, username, full_name, amount, status, created_at 
-                FROM topup_requests 
-                ORDER BY created_at DESC LIMIT 20
-            """)
-        else:
-            cursor = await conn.execute("""
-                SELECT id, user_id, username, full_name, amount, status, created_at 
-                FROM topup_requests 
-                WHERE status = ? 
-                ORDER BY created_at DESC LIMIT 20
-            """, (status_filter,))
-        
-        requests = await cursor.fetchall()
+    requests = database.get_topup_requests(status_filter)
 
     if not requests:
         await update.message.reply_text(f"📭 Tidak ada permintaan topup dengan status: `{status_filter}`")
         return
+
+    keyboard = []
+    msg = f"💳 **DAFTAR PERMINTAAN TOPUP**\n\n"
+    msg += f"📊 **Status Filter:** `{status_filter}`\n"
+    msg += f"📈 **Total:** {len(requests)} permintaan\n\n"
+
+    for req in requests:
+        req_id, user_id, base_amount, unique_amount, unique_digits, proof_image, status, created_at, updated_at, username, full_name = req
+        
+        status_emoji = "⏳" if status == 'pending' else "✅" if status == 'approved' else "❌"
+        
+        msg += f"{status_emoji} **ID:** `{req_id}`\n"
+        msg += f"👤 **User:** {full_name or username or user_id}\n"
+        msg += f"💰 **Nominal:** Rp {base_amount:,}\n"
+        msg += f"🔢 **Kode Unik:** {unique_digits:03d}\n"
+        msg += f"💵 **Total Transfer:** Rp {unique_amount:,}\n"
+        msg += f"🕒 **Waktu:** {created_at}\n"
+        msg += f"📊 **Status:** {status}\n\n"
+
+        if status == 'pending':
+            keyboard.append([
+                InlineKeyboardButton(f"✅ Approve {req_id}", callback_data=f"approve_topup:{req_id}"),
+                InlineKeyboardButton(f"❌ Reject {req_id}", callback_data=f"reject_topup:{req_id}")
+            ])
+        else:
+            keyboard.append([
+                InlineKeyboardButton(f"📋 Lihat {req_id}", callback_data=f"view_topup:{req_id}")
+            ])
+
+    keyboard.append([
+        InlineKeyboardButton("⏳ Pending", callback_data="topup_filter:pending"),
+        InlineKeyboardButton("✅ Approved", callback_data="topup_filter:approved"),
+        InlineKeyboardButton("❌ Rejected", callback_data="topup_filter:rejected"),
+        InlineKeyboardButton("📋 All", callback_data="topup_filter:all")
+    ])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode='Markdown')
 
     keyboard = []
     msg = f"💳 **DAFTAR PERMINTAAN TOPUP**\n\n"
