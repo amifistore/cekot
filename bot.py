@@ -793,5 +793,18 @@ def main():
     
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
+from order_handler import order_handler
+
+def main():
+    application = Application.builder().token(config.TOKEN).build()
+    
+    # Add order handler
+    application.add_handler(order_handler.get_conversation_handler())
+    application.add_handler(order_handler.get_callback_handler())
+    
+    # ... other handlers
+    
+    application.run_polling()
+
 if __name__ == "__main__":
     main()
