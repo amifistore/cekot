@@ -21,7 +21,7 @@ from telegram.ext import (
 logger = logging.getLogger(__name__)
 
 # Database path
-DB_PATH = "bot_topup.db"
+DB_PATH = "bot_database.db"
 
 # Conversation states
 ASK_ORDER_PRODUK, ASK_ORDER_TUJUAN, ASK_ORDER_CONFIRM = range(3)
