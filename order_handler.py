@@ -17,7 +17,6 @@ from telegram.ext import (
     filters
 )
 
-# Setup logging
 logger = logging.getLogger(__name__)
 
 DB_PATH = "bot_database.db"
@@ -199,6 +198,9 @@ class OrderHandler:
 
     async def order_produk(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_input = update.message.text.strip()
+        logger.info(f"User memilih produk: {user_input}")
+        import re
+        match = re.match(r'(?:🛒 )?([A-Za-z0-9]+)', user_input)
         if user_input == "❌ Batalkan Order":
             await update.message.reply_text(
                 "❌ **Order Dibatalkan**\n\n"
@@ -206,10 +208,10 @@ class OrderHandler:
                 reply_markup=ReplyKeyboardRemove()
             )
             return ConversationHandler.END
-        if user_input.startswith("🛒 "):
-            kode_produk = user_input.split(" - ")[0].replace("🛒 ", "").strip()
+        if match:
+            kode_produk = match.group(1)
         else:
-            kode_produk = user_input
+            kode_produk = user_input.strip()
         product = self.get_product_by_code(kode_produk)
         if not product:
             products = context.user_data.get("produk_list", [])
@@ -321,7 +323,6 @@ class OrderHandler:
             )
             context.user_data.clear()
             return ConversationHandler.END
-        # Check product stock again (in case changed since selection)
         current_product = self.get_product_by_code(product[0])
         if not current_product:
             await update.message.reply_text(
