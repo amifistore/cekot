@@ -1,7 +1,7 @@
 import logging
 import os
 import sqlite3
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -25,7 +25,6 @@ try:
     BOT_TOKEN = config.BOT_TOKEN
 except (ImportError, AttributeError) as e:
     logger.error(f"Error loading config: {e}")
-    # Fallback to environment variable
     BOT_TOKEN = os.getenv('BOT_TOKEN')
     if not BOT_TOKEN:
         raise ValueError("❌ BOT_TOKEN tidak ditemukan. Pastikan file config.py ada dan berisi BOT_TOKEN, atau set environment variable BOT_TOKEN")
@@ -39,14 +38,16 @@ except ImportError as e:
     logger.error(f"❌ Failed to load order handler: {e}")
     ORDER_HANDLER_AVAILABLE = False
 
-# Import admin handler dengan error handling
+# Import admin handler
 try:
-    from admin_handler import admin_handler
+    from admin_handler import get_admin_handlers
+    admin_handlers = get_admin_handlers()
     ADMIN_HANDLER_AVAILABLE = True
     logger.info("✅ Admin handler loaded successfully")
 except ImportError as e:
     logger.warning(f"⚠️ Admin handler not available: {e}")
     ADMIN_HANDLER_AVAILABLE = False
+    admin_handlers = []
 
 # Import database
 try:
@@ -57,14 +58,8 @@ except ImportError as e:
     logger.error(f"❌ Failed to load database module: {e}")
     DATABASE_AVAILABLE = False
 
-# Start command handler
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send welcome message with inline keyboard"""
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-    
     user = update.message.from_user
-    
-    # Get user balance if database available
     saldo = 0
     if DATABASE_AVAILABLE:
         try:
@@ -73,23 +68,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Error getting user balance: {e}")
             saldo = 0
-    
+
     keyboard = [
-        [
-            InlineKeyboardButton("🛒 BELI PRODUK", callback_data="order"),
-            InlineKeyboardButton("💰 TOP UP SALDO", callback_data="topup")
-        ],
-        [
-            InlineKeyboardButton("💳 CEK SALDO", callback_data="saldo"),
-            InlineKeyboardButton("📞 BANTUAN", callback_data="help")
-        ]
+        [InlineKeyboardButton("🛒 BELI PRODUK", callback_data="order"),
+         InlineKeyboardButton("💰 TOP UP SALDO", callback_data="topup")],
+        [InlineKeyboardButton("💳 CEK SALDO", callback_data="saldo"),
+         InlineKeyboardButton("📞 BANTUAN", callback_data="help")]
     ]
-    
     if ADMIN_HANDLER_AVAILABLE:
         keyboard.append([InlineKeyboardButton("👑 ADMIN PANEL", callback_data="admin")])
-    
+
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
     await update.message.reply_text(
         f"🤖 **Selamat Datang di AmifiVPS Bot!**\n\n"
         f"Halo {user.full_name}! 👋\n"
@@ -99,17 +88,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown'
     )
 
-# Callback query handler
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle callback queries from inline keyboard"""
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-    
     query = update.callback_query
     await query.answer()
-    
     callback_data = query.data
     user = query.from_user
-    
+
+    saldo = 0
     if DATABASE_AVAILABLE:
         try:
             user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
@@ -117,9 +102,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Error getting user balance: {e}")
             saldo = 0
-    else:
-        saldo = 0
-    
+
     if callback_data == "order":
         if ORDER_HANDLER_AVAILABLE:
             await order_handler.start_order_from_callback(query, context)
@@ -130,7 +113,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Silakan coba lagi nanti atau hubungi admin.",
                 parse_mode='Markdown'
             )
-        
     elif callback_data == "saldo":
         await query.edit_message_text(
             f"💰 **SALDO ANDA**\n\n"
@@ -138,7 +120,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Gunakan menu di bawah untuk topup atau belanja:",
             parse_mode='Markdown'
         )
-        
     elif callback_data == "topup":
         instructions = (
             "💰 **TOP UP SALDO**\n\n"
@@ -150,7 +131,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Terima kasih! 😊"
         )
         await query.edit_message_text(instructions, parse_mode='Markdown')
-        
     elif callback_data == "help":
         help_text = (
             "📞 **BANTUAN & SUPPORT**\n\n"
@@ -168,20 +148,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Terima kasih! 😊"
         )
         await query.edit_message_text(help_text, parse_mode='Markdown')
-        
     elif callback_data == "admin" and ADMIN_HANDLER_AVAILABLE:
-        # Handle admin panel callback
-        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-        
+        # Direct all admin callbacks to admin_handler's own menu/conversation
+        for handler in admin_handlers:
+            if hasattr(handler, "handle_callback"):
+                await handler.handle_callback(update, context)
+                return
+        # Fallback: show default admin panel
         admin_keyboard = [
             [InlineKeyboardButton("📊 Statistik", callback_data="admin_stats")],
             [InlineKeyboardButton("📦 Kelola Produk", callback_data="admin_products")],
             [InlineKeyboardButton("👥 Kelola User", callback_data="admin_users")],
             [InlineKeyboardButton("🔙 Kembali", callback_data="back_to_main")]
         ]
-        
         reply_markup = InlineKeyboardMarkup(admin_keyboard)
-        
         await query.edit_message_text(
             "👑 **ADMIN PANEL**\n\n"
             "Silakan pilih menu admin:",
@@ -189,12 +169,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
 
-# Error handler
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle errors in the bot"""
     logger.error(f"Exception while handling an update: {context.error}")
-    
-    # Send error message to user
     if update and update.effective_message:
         try:
             await update.effective_message.reply_text(
@@ -203,64 +179,34 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Error sending error message: {e}")
 
-# Main function
 def main():
-    """Start the bot"""
     try:
-        # Check if token is available
         if not BOT_TOKEN:
             logger.error("❌ BOT_TOKEN tidak ditemukan!")
             return
-        
+
         logger.info("🚀 Starting bot...")
-        
-        # Create application
+
         application = Application.builder().token(BOT_TOKEN).build()
-        
-        # Add basic handlers
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("help", start))
-        
-        # Add order conversation handler jika available
         if ORDER_HANDLER_AVAILABLE:
             application.add_handler(order_handler.get_conversation_handler())
             logger.info("✅ Order handler registered")
         else:
             logger.warning("⚠️ Order handler not available")
-        
-        # Add callback query handler
         application.add_handler(CallbackQueryHandler(handle_callback))
-        
-        # Add admin handlers jika available
         if ADMIN_HANDLER_AVAILABLE:
-            try:
-                # Coba berbagai cara untuk mendapatkan admin handlers
-                if hasattr(admin_handler, 'get_admin_handlers'):
-                    admin_handlers = admin_handler.get_admin_handlers()
-                    for handler in admin_handlers:
-                        application.add_handler(handler)
-                    logger.info("✅ Admin handlers loaded via get_admin_handlers()")
-                elif hasattr(admin_handler, 'get_conversation_handler'):
-                    application.add_handler(admin_handler.get_conversation_handler())
-                    logger.info("✅ Admin conversation handler loaded")
-                elif isinstance(admin_handler, list):
-                    for handler in admin_handler:
-                        application.add_handler(handler)
-                    logger.info("✅ Admin handlers loaded as list")
-                else:
-                    logger.warning("⚠️ Unknown admin handler format")
-            except Exception as e:
-                logger.error(f"❌ Failed to load admin handlers: {e}")
+            for handler in admin_handlers:
+                application.add_handler(handler)
+            logger.info("✅ Admin handlers loaded")
         else:
             logger.warning("⚠️ Admin handler not available")
-        
-        # Add error handler
         application.add_error_handler(error_handler)
-        
-        # Start bot
+
         logger.info("🤖 Bot is running...")
         application.run_polling()
-        
+
     except Exception as e:
         logger.error(f"❌ Failed to start bot: {e}")
         raise
