@@ -215,6 +215,9 @@ def main():
     except Exception as e:
         logger.error(f"❌ Failed to start bot: {e}")
         raise
+elif callback_data == "admin" and ADMIN_HANDLER_AVAILABLE:
+    from admin_handler import admin_menu
+    await admin_menu(update, context)
 
 if __name__ == '__main__':
     main()
