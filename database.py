@@ -13,12 +13,12 @@ logger = logging.getLogger(__name__)
 DB_PATH = "bot_database.db"
 
 def init_db():
-    """Initialize database tables with proper column structure"""
+    """Initialize database tables with proper column structure and all needed columns (full fitur)."""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         
-        # Users table - dengan pengecekan dan alter table jika diperlukan
+        # Users table
         c.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
@@ -29,10 +29,8 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        
-        # Check if saldo column exists, if not add it
-        try:
-            c.execute("SELECT saldo FROM users LIMIT 1")
+        # Ensure saldo column
+        try: c.execute("SELECT saldo FROM users LIMIT 1")
         except sqlite3.OperationalError:
             logger.info("Adding saldo column to users table")
             c.execute("ALTER TABLE users ADD COLUMN saldo REAL DEFAULT 0")
@@ -67,7 +65,7 @@ def init_db():
             )
         ''')
 
-        # Products table (fix: ensure stock column exists!)
+        # Products table - FULL FITUR
         c.execute('''
             CREATE TABLE IF NOT EXISTS products (
                 code TEXT PRIMARY KEY,
@@ -76,16 +74,52 @@ def init_db():
                 status TEXT DEFAULT 'active',
                 description TEXT,
                 category TEXT,
+                provider TEXT,
+                gangguan INTEGER DEFAULT 0,
+                kosong INTEGER DEFAULT 0,
                 stock INTEGER DEFAULT 0,
                 updated_at TEXT
             )
         ''')
-        # Emergency fix: add stock column if missing
-        try:
-            c.execute("SELECT stock FROM products LIMIT 1")
-        except sqlite3.OperationalError:
-            logger.info("Adding stock column to products table")
-            c.execute("ALTER TABLE products ADD COLUMN stock INTEGER DEFAULT 0")
+        # Ensure ALL columns required by admin/order/topup handler
+        for col, dtype, dflt in [
+            ("provider", "TEXT", None),
+            ("gangguan", "INTEGER", "0"),
+            ("kosong", "INTEGER", "0"),
+            ("stock", "INTEGER", "0"),
+        ]:
+            try:
+                c.execute(f"SELECT {col} FROM products LIMIT 1")
+            except sqlite3.OperationalError:
+                logger.info(f"Adding {col} column to products table")
+                dflt_str = f" DEFAULT {dflt}" if dflt is not None else ""
+                c.execute(f"ALTER TABLE products ADD COLUMN {col} {dtype}{dflt_str}")
+
+        # Topup requests table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS topup_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                username TEXT,
+                full_name TEXT,
+                amount REAL NOT NULL,
+                status TEXT DEFAULT 'pending',
+                proof_image TEXT,
+                created_at TEXT,
+                updated_at TEXT
+            )
+        ''')
+
+        # Admin logs table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS admin_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                admin_id INTEGER,
+                action TEXT,
+                details TEXT,
+                created_at TEXT
+            )
+        ''')
 
         conn.commit()
         conn.close()
@@ -99,22 +133,17 @@ def get_or_create_user(telegram_id, username, full_name):
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        
-        # Cek apakah user sudah ada
         c.execute("SELECT user_id FROM users WHERE user_id = ?", (telegram_id,))
         result = c.fetchone()
-        
         if result:
             user_id = result[0]
         else:
-            # Buat user baru
             c.execute(
                 "INSERT INTO users (user_id, username, full_name, saldo) VALUES (?, ?, ?, ?)",
                 (telegram_id, username, full_name, 0)
             )
             user_id = telegram_id
             conn.commit()
-        
         conn.close()
         return user_id
     except Exception as e:
@@ -132,13 +161,11 @@ def get_user_saldo(user_id):
         if result:
             return result[0]
         else:
-            # Jika user tidak ditemukan, buat user baru
             return 0
     except sqlite3.OperationalError as e:
         if "no such column: saldo" in str(e):
-            # Jika kolom saldo tidak ada, perbaiki database
             logger.error("Kolom saldo tidak ditemukan, memperbaiki database...")
-            init_db()  # Re-initialize database
+            init_db()
             return 0
         else:
             logger.error(f"Error getting user saldo: {e}")
@@ -152,10 +179,7 @@ def increment_user_saldo(user_id, amount):
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        
-        # Pastikan user exists
         get_or_create_user(user_id, None, None)
-        
         c.execute("UPDATE users SET saldo = saldo + ? WHERE user_id = ?", (amount, user_id))
         conn.commit()
         conn.close()
@@ -186,14 +210,11 @@ def get_all_users():
         logger.error(f"Error getting all users: {e}")
         return []
 
-# Emergency fix function
 def emergency_fix_database():
-    """Emergency function to fix database structure"""
+    """Emergency function to fix database structure (drop and recreate)"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        
-        # Drop and recreate users table with correct structure
         c.execute("DROP TABLE IF EXISTS users")
         c.execute('''
             CREATE TABLE users (
@@ -205,8 +226,6 @@ def emergency_fix_database():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-
-        # Recreate other tables
         c.execute("DROP TABLE IF EXISTS transactions")
         c.execute('''
             CREATE TABLE transactions (
@@ -219,7 +238,6 @@ def emergency_fix_database():
                 FOREIGN KEY (user_id) REFERENCES users (user_id)
             )
         ''')
-
         c.execute("DROP TABLE IF EXISTS riwayat_pembelian")
         c.execute('''
             CREATE TABLE riwayat_pembelian (
@@ -236,8 +254,6 @@ def emergency_fix_database():
                 waktu TEXT
             )
         ''')
-
-        # Recreate products table with stock
         c.execute("DROP TABLE IF EXISTS products")
         c.execute('''
             CREATE TABLE products (
@@ -247,11 +263,37 @@ def emergency_fix_database():
                 status TEXT DEFAULT 'active',
                 description TEXT,
                 category TEXT,
+                provider TEXT,
+                gangguan INTEGER DEFAULT 0,
+                kosong INTEGER DEFAULT 0,
                 stock INTEGER DEFAULT 0,
                 updated_at TEXT
             )
         ''')
-
+        c.execute("DROP TABLE IF EXISTS topup_requests")
+        c.execute('''
+            CREATE TABLE topup_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                username TEXT,
+                full_name TEXT,
+                amount REAL NOT NULL,
+                status TEXT DEFAULT 'pending',
+                proof_image TEXT,
+                created_at TEXT,
+                updated_at TEXT
+            )
+        ''')
+        c.execute("DROP TABLE IF EXISTS admin_logs")
+        c.execute('''
+            CREATE TABLE admin_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                admin_id INTEGER,
+                action TEXT,
+                details TEXT,
+                created_at TEXT
+            )
+        ''')
         conn.commit()
         conn.close()
         logger.info("Emergency database fix completed successfully")
@@ -263,15 +305,16 @@ def emergency_fix_database():
 # Initialize database when module is imported
 init_db()
 
-# Jika masih ada error, jalankan emergency fix
+# Emergency fix checker (run fix if columns missing)
 try:
-    # Test database connection and structure
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT saldo FROM users LIMIT 1")
     c.execute("SELECT stock FROM products LIMIT 1")
+    c.execute("SELECT provider FROM products LIMIT 1")
+    c.execute("SELECT gangguan FROM products LIMIT 1")
+    c.execute("SELECT kosong FROM products LIMIT 1")
     conn.close()
 except sqlite3.OperationalError as e:
-    if "no such column: saldo" in str(e) or "no such column: stock" in str(e):
-        logger.warning("Database structure issue detected, running emergency fix...")
-        emergency_fix_database()
+    logger.warning("Database structure issue detected, running emergency fix...")
+    emergency_fix_database()
