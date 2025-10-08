@@ -1,10 +1,11 @@
 import config
-from telegram.ext import Application, CommandHandler
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler
 from topup_handler import topup_conv_handler
 from order_handler import order_conv_handler
 from admin_handler import (
     admin_menu_handler, updateproduk_handler, listproduk_handler,
-    topup_confirm_handler, cek_user_handler, jadikan_admin_handler
+    topup_confirm_handler, cek_user_handler, jadikan_admin_handler,
+    admin_callback_handler  # Tambahkan ini
 )
 from broadcast_handler import broadcast_handler
 from riwayat_handler import riwayat_trx
@@ -53,6 +54,9 @@ def main():
     application.add_handler(cek_user_handler)
     application.add_handler(jadikan_admin_handler)
     application.add_handler(broadcast_handler)
+    
+    # Tambahkan callback handler untuk menu admin
+    application.add_handler(admin_callback_handler)
 
     application.run_polling()
 
