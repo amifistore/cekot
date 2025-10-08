@@ -15,6 +15,7 @@ async def order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
     saldo = database.get_user_saldo(user_id)
 
+    # Ambil produk dari database
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""
@@ -29,6 +30,7 @@ async def order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     c.execute("SELECT code, name, price FROM products WHERE status='active' ORDER BY name ASC LIMIT 30")
     produk_list = c.fetchall()
     conn.close()
+    
     context.user_data["produk_list"] = produk_list
 
     if not produk_list:
@@ -84,11 +86,23 @@ async def order_produk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     produk = next((p for p in produk_list if p[0] == kode_produk), None)
     
     if not produk:
+        # Jika produk tidak ditemukan, tampilkan keyboard lagi TANPA kembali ke menu
+        produk_keyboard = []
+        for code, name, price in produk_list:
+            produk_keyboard.append([f"🛒 {code}"])
+        produk_keyboard.append(["❌ Batalkan Order"])
+        
         await update.message.reply_text(
             "❌ **Produk Tidak Ditemukan**\n\nSilakan pilih produk dari keyboard atau ketik kode yang valid.",
-            reply_markup=ReplyKeyboardRemove()
+            reply_markup=ReplyKeyboardMarkup(
+                produk_keyboard, 
+                one_time_keyboard=True, 
+                resize_keyboard=True,
+                input_field_placeholder="Pilih produk dari daftar..."
+            ),
+            parse_mode='Markdown'
         )
-        return ASK_ORDER_PRODUK
+        return ASK_ORDER_PRODUK  # Tetap di state yang sama
     
     context.user_data["order_produk"] = produk
     
@@ -111,10 +125,10 @@ async def order_tujuan(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "❌ **Format Nomor Tidak Valid**\n\n"
             "Format yang benar: `08xxxxxxxxxx`\n"
             "Panjang: 10-14 digit\n\n"
-            "Silakan masukkan ulang:",
+            "Silakan masukkan ulang nomor tujuan:",
             parse_mode='Markdown'
         )
-        return ASK_ORDER_TUJUAN
+        return ASK_ORDER_TUJUAN  # Tetap di state yang sama
     
     context.user_data["order_tujuan"] = tujuan
     produk = context.user_data["order_produk"]
@@ -134,7 +148,8 @@ async def order_tujuan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=ReplyKeyboardMarkup(
             confirm_keyboard,
             one_time_keyboard=True,
-            resize_keyboard=True
+            resize_keyboard=True,
+            input_field_placeholder="Pilih konfirmasi..."
         ),
         parse_mode='Markdown'
     )
@@ -142,10 +157,10 @@ async def order_tujuan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def order_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
-    user_input = update.message.text.strip().lower()
+    user_input = update.message.text.strip()
     
     # Handle pembatalan
-    if user_input in ["❌ batalkan order", "batal", "cancel"]:
+    if user_input in ["❌ Batalkan Order", "batal", "cancel"]:
         await update.message.reply_text(
             "❌ **Order Dibatalkan**\n\nKetik /order untuk memulai lagi.",
             reply_markup=ReplyKeyboardRemove(),
@@ -154,7 +169,7 @@ async def order_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     
     # Jika tidak konfirmasi "ya"
-    if user_input not in ["✅ ya, lanjutkan order", "ya", "y"]:
+    if user_input not in ["✅ Ya, Lanjutkan Order", "ya", "y", "yes"]:
         await update.message.reply_text(
             "❌ **Order Dibatalkan**\n\nKetik /order untuk memulai lagi.",
             reply_markup=ReplyKeyboardRemove(),
@@ -179,13 +194,31 @@ async def order_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
     
-    # Proses order
+    # Proses order - simpan ke database
     database.increment_user_saldo(user_id, -produk[2])
     reff_id = f"order_{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
     waktu = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    
+    # Pastikan tabel riwayat_pembelian ada
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS riwayat_pembelian (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT,
+            kode_produk TEXT,
+            nama_produk TEXT,
+            tujuan TEXT,
+            harga REAL,
+            saldo_awal REAL,
+            reff_id TEXT,
+            status_api TEXT,
+            keterangan TEXT,
+            waktu TEXT
+        )
+    """)
+    
     c.execute("""
         INSERT INTO riwayat_pembelian
         (username, kode_produk, nama_produk, tujuan, harga, saldo_awal, reff_id, status_api, keterangan, waktu)
@@ -203,10 +236,14 @@ async def order_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💵 **Harga:** Rp {produk[2]:,.0f}\n"
         f"📱 **Tujuan:** {tujuan}\n"
         f"💰 **Saldo Sekarang:** Rp {saldo - produk[2]:,.0f}\n\n"
-        f"📋 **ID Transaksi:** `{reff_id}`",
+        f"📋 **ID Transaksi:** `{reff_id}`\n\n"
+        "Terima kasih telah berbelanja! 😊",
         reply_markup=ReplyKeyboardRemove(),
         parse_mode='Markdown'
     )
+    
+    # Clear user data
+    context.user_data.clear()
     return ConversationHandler.END
 
 async def order_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -215,6 +252,7 @@ async def order_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=ReplyKeyboardRemove(),
         parse_mode='Markdown'
     )
+    context.user_data.clear()
     return ConversationHandler.END
 
 order_conv_handler = ConversationHandler(
