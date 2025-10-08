@@ -1,13 +1,12 @@
-# order_handler.py
 import logging
 import sqlite3
+import requests
+import uuid
 from datetime import datetime
 from telegram import (
     Update, 
     ReplyKeyboardMarkup, 
-    ReplyKeyboardRemove,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup
+    ReplyKeyboardRemove
 )
 from telegram.ext import (
     CallbackQueryHandler,
@@ -27,6 +26,11 @@ DB_PATH = "bot_topup.db"
 # Conversation states
 ASK_ORDER_PRODUK, ASK_ORDER_TUJUAN, ASK_ORDER_CONFIRM = range(3)
 
+# KHFSY API config
+API_URL = "https://panel.khfy-store.com/api_v2"
+from config import API_KEY_PROVIDER
+...
+API_KEY = API_KEY_PROVIDER
 class OrderHandler:
     def __init__(self, db_path="bot_topup.db"):
         self.DB_PATH = db_path
@@ -50,7 +54,25 @@ class OrderHandler:
                 updated_at TEXT
             )
         ''')
-        
+
+        # Riwayat Pembelian table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS riwayat_pembelian (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT,
+                kode_produk TEXT,
+                nama_produk TEXT,
+                tujuan TEXT,
+                harga REAL,
+                saldo_awal REAL,
+                saldo_akhir REAL,
+                reff_id TEXT,
+                status_api TEXT,
+                keterangan TEXT,
+                waktu TEXT
+            )
+        ''')
+
         # Check if sample products exist
         c.execute("SELECT COUNT(*) FROM products WHERE status='active'")
         if c.fetchone()[0] == 0:
@@ -101,12 +123,11 @@ class OrderHandler:
         conn.close()
         return product
 
-    def save_order(self, user_id, product, tujuan, saldo_awal, status="SUCCESS"):
+    def save_order(self, user_id, product, tujuan, saldo_awal, status="SUCCESS", api_status="", api_keterangan="", reff_id=None):
         """Save order to database"""
-        import database
-        reff_id = f"ORDER_{datetime.now().strftime('%Y%m%d%H%M%S')}"
         waktu = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         saldo_akhir = saldo_awal - product[2]
+        reff_id = reff_id if reff_id else f"ORDER_{datetime.now().strftime('%Y%m%d%H%M%S')}"
         
         conn = sqlite3.connect(self.DB_PATH)
         c = conn.cursor()
@@ -117,15 +138,13 @@ class OrderHandler:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             user_id, product[0], product[1], tujuan, product[2], 
-            saldo_awal, saldo_akhir, reff_id, status, "Order berhasil diproses", waktu
+            saldo_awal, saldo_akhir, reff_id, api_status, api_keterangan, waktu
         ))
         
         # Update product stock
         c.execute("UPDATE products SET stock = stock - 1 WHERE code = ?", (product[0],))
-        
         conn.commit()
         conn.close()
-        
         return reff_id, saldo_akhir
 
     # Order Conversation Handlers
@@ -352,15 +371,36 @@ class OrderHandler:
             )
             context.user_data.clear()
             return ConversationHandler.END
-        
-        # Process order
+
+        # Create a unique reff_id
+        reff_id = str(uuid.uuid4())
+
+        # Call external khfy-store API to create transaction
+        api_endpoint = f"{API_URL}/trx"
+        params = {
+            "produk": product[0],
+            "tujuan": tujuan,
+            "reff_id": reff_id,
+            "api_key": API_KEY
+        }
         try:
+            response = requests.get(api_endpoint, params=params, timeout=20)
+            api_json = response.json()
+            api_status = str(api_json.get("status", "unknown"))
+            api_keterangan = api_json.get("keterangan", "")
+            # Optionally parse more fields from api_json if available
+
             # Deduct balance
             database.increment_user_saldo(user_id, -product[2])
-            
-            # Save order to database
-            reff_id, saldo_akhir = self.save_order(user_id, product, tujuan, saldo_awal)
-            
+            # Save order to internal database
+            reff_id_db, saldo_akhir = self.save_order(
+                user_id, product, tujuan, saldo_awal,
+                status=api_status,
+                api_status=api_status,
+                api_keterangan=api_keterangan,
+                reff_id=reff_id
+            )
+
             # Send success message
             success_message = (
                 f"🎉 **ORDER BERHASIL!**\n\n"
@@ -371,22 +411,22 @@ class OrderHandler:
                 f"💳 **Saldo Akhir:** Rp {saldo_akhir:,}\n\n"
                 f"📋 **ID Transaksi:** `{reff_id}`\n"
                 f"🕐 **Waktu:** {datetime.now().strftime('%d-%m-%Y %H:%M:%S')}\n\n"
+                f"Status API: {api_status}\n"
+                f"Keterangan: {api_keterangan}\n\n"
                 "✅ **Pesanan sedang diproses...**\n"
                 "Anda akan menerima konfirmasi dalam 1-5 menit.\n\n"
                 "Terima kasih telah berbelanja! 😊"
             )
-            
             await update.message.reply_text(
                 success_message,
                 reply_markup=ReplyKeyboardRemove(),
                 parse_mode='Markdown'
             )
-            
         except Exception as e:
-            logger.error(f"Error processing order: {e}")
+            logger.error(f"Error processing external order: {e}")
             await update.message.reply_text(
                 "❌ **Terjadi Kesalahan**\n\n"
-                "Maaf, terjadi kesalahan saat memproses order.\n"
+                "Maaf, terjadi kesalahan saat memproses order di server.\n"
                 "Silakan coba lagi atau hubungi admin.",
                 reply_markup=ReplyKeyboardRemove()
             )
