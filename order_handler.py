@@ -2,6 +2,7 @@ import logging
 import sqlite3
 import requests
 import uuid
+import re
 from datetime import datetime
 from telegram import (
     Update, 
@@ -9,7 +10,6 @@ from telegram import (
     ReplyKeyboardRemove
 )
 from telegram.ext import (
-    CallbackQueryHandler,
     ConversationHandler,
     CommandHandler,
     MessageHandler,
@@ -198,37 +198,30 @@ class OrderHandler:
 
     async def order_produk(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_input = update.message.text.strip()
-        logger.info(f"User memilih produk: {user_input}")
-        import re
-        match = re.match(r'(?:🛒 )?([A-Za-z0-9]+)', user_input)
+        logger.info(f"User memilih produk: {repr(user_input)}")
+        # PATCH: Ambil kode produk apapun formatnya (emoji, tanpa emoji, strip, dsb)
+        match = re.match(r'(?:🛒 *)?([A-Za-z0-9]+)', user_input)
         if user_input == "❌ Batalkan Order":
             await update.message.reply_text(
-                "❌ **Order Dibatalkan**\n\n"
-                "Gunakan /order untuk memulai pemesanan kembali.",
+                "❌ **Order Dibatalkan**\n\nGunakan /order untuk memulai pemesanan kembali.",
                 reply_markup=ReplyKeyboardRemove()
             )
             return ConversationHandler.END
         if match:
             kode_produk = match.group(1)
         else:
-            kode_produk = user_input.strip()
+            # Fallback ambil kode produk dari awal string
+            kode_produk = user_input.split(" ")[0].replace("🛒", "").strip()
+        logger.info(f"Kode produk yang diambil: {kode_produk}")
         product = self.get_product_by_code(kode_produk)
         if not product:
             products = context.user_data.get("produk_list", [])
-            if not products:
-                await update.message.reply_text(
-                    "❌ **Tidak ada produk tersedia**\n\n"
-                    "Silakan mulai ulang dengan /order",
-                    reply_markup=ReplyKeyboardRemove()
-                )
-                return ConversationHandler.END
             produk_keyboard = []
             for code, name, price, description, stock in products:
                 produk_keyboard.append([f"🛒 {code} - {name}"])
             produk_keyboard.append(["❌ Batalkan Order"])
             await update.message.reply_text(
-                "❌ **Kode produk tidak valid atau stok habis**\n\n"
-                "Silakan pilih produk yang tersedia dari keyboard:",
+                "❌ **Kode produk tidak valid atau stok habis**\n\nSilakan pilih produk yang tersedia dari keyboard.",
                 reply_markup=ReplyKeyboardMarkup(
                     produk_keyboard,
                     one_time_keyboard=True,
@@ -255,11 +248,7 @@ class OrderHandler:
         tujuan = update.message.text.strip()
         if not self._validate_phone_number(tujuan):
             await update.message.reply_text(
-                "❌ **Format Nomor Tidak Valid**\n\n"
-                "Format yang benar: `08xxxxxxxxxx`\n"
-                "Panjang: 10-14 digit\n"
-                "Hanya angka yang diperbolehkan\n\n"
-                "Silakan masukkan ulang nomor tujuan:",
+                "❌ **Format Nomor Tidak Valid**\n\nFormat yang benar: `08xxxxxxxxxx`\nPanjang: 10-14 digit\nHanya angka yang diperbolehkan\n\nSilakan masukkan ulang nomor tujuan:",
                 parse_mode='Markdown'
             )
             return ASK_ORDER_TUJUAN
@@ -274,8 +263,7 @@ class OrderHandler:
             f"🆔 **Kode:** {product[0]}\n"
             f"💵 **Harga:** Rp {product[2]:,}\n"
             f"📱 **Tujuan:** `{tujuan}`\n\n"
-            "**Apakah data sudah benar?**\n"
-            "Tekan 'Konfirmasi & Bayar' untuk melanjutkan.",
+            "**Apakah data sudah benar?**\nTekan 'Konfirmasi & Bayar' untuk melanjutkan.",
             reply_markup=ReplyKeyboardMarkup(
                 confirm_keyboard,
                 one_time_keyboard=True,
@@ -292,16 +280,14 @@ class OrderHandler:
         user_input = update.message.text.strip()
         if user_input == "❌ Batalkan Order":
             await update.message.reply_text(
-                "❌ **Order Dibatalkan**\n\n"
-                "Tidak ada yang ditagih. Gunakan /order untuk memulai lagi.",
+                "❌ **Order Dibatalkan**\n\nTidak ada yang ditagih. Gunakan /order untuk memulai lagi.",
                 reply_markup=ReplyKeyboardRemove()
             )
             context.user_data.clear()
             return ConversationHandler.END
         if user_input != "✅ Konfirmasi & Bayar":
             await update.message.reply_text(
-                "❌ **Order Dibatalkan**\n\n"
-                "Konfirmasi tidak valid. Gunakan /order untuk memulai lagi.",
+                "❌ **Order Dibatalkan**\n\nKonfirmasi tidak valid. Gunakan /order untuk memulai lagi.",
                 reply_markup=ReplyKeyboardRemove()
             )
             context.user_data.clear()
@@ -313,11 +299,7 @@ class OrderHandler:
         if saldo_awal < product[2]:
             saldo_kurang = product[2] - saldo_awal
             await update.message.reply_text(
-                f"❌ **Saldo Tidak Cukup**\n\n"
-                f"💰 **Saldo Anda:** Rp {saldo_awal:,}\n"
-                f"💵 **Dibutuhkan:** Rp {product[2]:,}\n"
-                f"📊 **Kekurangan:** Rp {saldo_kurang:,}\n\n"
-                "Silakan topup saldo terlebih dahulu menggunakan /topup",
+                f"❌ **Saldo Tidak Cukup**\n\n💰 **Saldo Anda:** Rp {saldo_awal:,}\n💵 **Dibutuhkan:** Rp {product[2]:,}\n📊 **Kekurangan:** Rp {saldo_kurang:,}\n\nSilakan topup saldo terlebih dahulu menggunakan /topup",
                 reply_markup=ReplyKeyboardRemove(),
                 parse_mode='Markdown'
             )
@@ -326,9 +308,7 @@ class OrderHandler:
         current_product = self.get_product_by_code(product[0])
         if not current_product:
             await update.message.reply_text(
-                f"❌ **Stok Habis**\n\n"
-                f"Maaf, produk {product[1]} sudah habis.\n"
-                f"Silakan pilih produk lain menggunakan /order",
+                f"❌ **Stok Habis**\n\nMaaf, produk {product[1]} sudah habis.\nSilakan pilih produk lain menggunakan /order",
                 reply_markup=ReplyKeyboardRemove(),
                 parse_mode='Markdown'
             )
@@ -366,9 +346,7 @@ class OrderHandler:
                 f"🕐 **Waktu:** {datetime.now().strftime('%d-%m-%Y %H:%M:%S')}\n\n"
                 f"Status API: {api_status}\n"
                 f"Keterangan: {api_keterangan}\n\n"
-                "✅ **Pesanan sedang diproses...**\n"
-                "Anda akan menerima konfirmasi dalam 1-5 menit.\n\n"
-                "Terima kasih telah berbelanja! 😊"
+                "✅ **Pesanan sedang diproses...**\nAnda akan menerima konfirmasi dalam 1-5 menit.\n\nTerima kasih telah berbelanja! 😊"
             )
             await update.message.reply_text(
                 success_message,
@@ -378,9 +356,7 @@ class OrderHandler:
         except Exception as e:
             logger.error(f"Error processing external order: {e}")
             await update.message.reply_text(
-                "❌ **Terjadi Kesalahan**\n\n"
-                "Maaf, terjadi kesalahan saat memproses order di server.\n"
-                "Silakan coba lagi atau hubungi admin.",
+                "❌ **Terjadi Kesalahan**\n\nMaaf, terjadi kesalahan saat memproses order di server.\nSilakan coba lagi atau hubungi admin.",
                 reply_markup=ReplyKeyboardRemove()
             )
         context.user_data.clear()
@@ -388,57 +364,11 @@ class OrderHandler:
 
     async def order_cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
-            "❌ **Proses Order Dibatalkan**\n\n"
-            "Tidak ada yang ditagih.\n"
-            "Gunakan /order untuk memulai pemesanan baru.",
+            "❌ **Proses Order Dibatalkan**\n\nTidak ada yang ditagih.\nGunakan /order untuk memulai pemesanan baru.",
             reply_markup=ReplyKeyboardRemove()
         )
         context.user_data.clear()
         return ConversationHandler.END
-
-    async def start_order_from_callback(self, query, context: ContextTypes.DEFAULT_TYPE):
-        import database
-        user = query.from_user
-        user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
-        saldo = database.get_user_saldo(user_id)
-        products = self.get_active_products()
-        context.user_data["produk_list"] = products
-        if not products:
-            await query.edit_message_text(
-                "❌ **Produk Belum Tersedia**\n\n"
-                "Maaf, saat ini tidak ada produk yang tersedia.\n"
-                "Silakan coba lagi nanti.",
-                parse_mode='Markdown'
-            )
-            return
-        produk_keyboard = []
-        for code, name, price, description, stock in products:
-            produk_keyboard.append([f"🛒 {code} - {name}"])
-        produk_keyboard.append(["❌ Batalkan Order"])
-        await context.bot.send_message(
-            chat_id=query.message.chat_id,
-            text=(
-                f"💰 **Saldo Anda:** Rp {saldo:,}\n\n"
-                "🎮 **PILIH PRODUK:**\n\n"
-                "Silakan pilih produk dari keyboard di bawah:"
-            ),
-            reply_markup=ReplyKeyboardMarkup(
-                produk_keyboard,
-                one_time_keyboard=True,
-                resize_keyboard=True,
-                input_field_placeholder="Pilih produk..."
-            ),
-            parse_mode='Markdown'
-        )
-
-    def _validate_phone_number(self, phone):
-        if not phone.startswith("08"):
-            return False
-        if not (10 <= len(phone) <= 14):
-            return False
-        if not phone.isdigit():
-            return False
-        return True
 
     def get_conversation_handler(self):
         return ConversationHandler(
