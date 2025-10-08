@@ -79,7 +79,6 @@ class OrderHandler:
             except sqlite3.OperationalError:
                 dflt_str = f" DEFAULT {dflt}" if dflt is not None else ""
                 c.execute(f"ALTER TABLE products ADD COLUMN {col} {dtype}{dflt_str}")
-        # Ensure stock always at least 1 for all products
         c.execute("UPDATE products SET stock = 10 WHERE stock IS NULL OR stock = 0")
         conn.commit()
         conn.close()
@@ -147,13 +146,11 @@ class OrderHandler:
             user_id, product[0], product[1], tujuan, product[2], 
             saldo_awal, saldo_akhir, reff_id, api_status, api_keterangan, waktu
         ))
-        # Update product stock
         c.execute("UPDATE products SET stock = stock - 1 WHERE code = ?", (product[0],))
         conn.commit()
         conn.close()
         return reff_id, saldo_akhir
 
-    # --- Conversation Handlers ---
     async def order_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         import database
         user = update.message.from_user
@@ -199,7 +196,6 @@ class OrderHandler:
     async def order_produk(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_input = update.message.text.strip()
         logger.info(f"User memilih produk: {repr(user_input)}")
-        # PATCH: Ambil kode produk apapun formatnya (emoji, tanpa emoji, strip, dsb)
         match = re.match(r'(?:🛒 *)?([A-Za-z0-9]+)', user_input)
         if user_input == "❌ Batalkan Order":
             await update.message.reply_text(
@@ -210,7 +206,6 @@ class OrderHandler:
         if match:
             kode_produk = match.group(1)
         else:
-            # Fallback ambil kode produk dari awal string
             kode_produk = user_input.split(" ")[0].replace("🛒", "").strip()
         logger.info(f"Kode produk yang diambil: {kode_produk}")
         product = self.get_product_by_code(kode_produk)
@@ -369,6 +364,50 @@ class OrderHandler:
         )
         context.user_data.clear()
         return ConversationHandler.END
+
+    async def start_order_from_callback(self, query, context: ContextTypes.DEFAULT_TYPE):
+        import database
+        user = query.from_user
+        user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
+        saldo = database.get_user_saldo(user_id)
+        products = self.get_active_products()
+        context.user_data["produk_list"] = products
+        if not products:
+            await query.edit_message_text(
+                "❌ **Produk Belum Tersedia**\n\n"
+                "Maaf, saat ini tidak ada produk yang tersedia.\n"
+                "Silakan coba lagi nanti.",
+                parse_mode='Markdown'
+            )
+            return
+        produk_keyboard = []
+        for code, name, price, description, stock in products:
+            produk_keyboard.append([f"🛒 {code} - {name}"])
+        produk_keyboard.append(["❌ Batalkan Order"])
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=(
+                f"💰 **Saldo Anda:** Rp {saldo:,}\n\n"
+                "🎮 **PILIH PRODUK:**\n\n"
+                "Silakan pilih produk dari keyboard di bawah:"
+            ),
+            reply_markup=ReplyKeyboardMarkup(
+                produk_keyboard,
+                one_time_keyboard=True,
+                resize_keyboard=True,
+                input_field_placeholder="Pilih produk..."
+            ),
+            parse_mode='Markdown'
+        )
+
+    def _validate_phone_number(self, phone):
+        if not phone.startswith("08"):
+            return False
+        if not (10 <= len(phone) <= 14):
+            return False
+        if not phone.isdigit():
+            return False
+        return True
 
     def get_conversation_handler(self):
         return ConversationHandler(
