@@ -19,7 +19,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DB_PATH = "bot_topup.db"
+DB_PATH = "bot_database.db"
 
 # State untuk conversation handler
 EDIT_PRODUK_MENU, EDIT_PRODUK_PILIH, EDIT_HARGA, EDIT_DESKRIPSI = range(4)
