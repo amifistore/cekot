@@ -5,7 +5,7 @@ from telegram import Bot
 import database
 import asyncio
 
-DB_PATH = "bot_topup.db"
+DB_PATH = "bot_database.db"
 bot = Bot(config.BOT_TOKEN)
 
 async def check_pending_orders():
