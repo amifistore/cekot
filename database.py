@@ -14,12 +14,12 @@ logger = logging.getLogger(__name__)
 DB_PATH = "bot_database.db"
 
 def init_db():
-    """Initialize database tables"""
+    """Initialize database tables with proper column structure"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         
-        # Users table - UPDATED dengan kolom saldo
+        # Users table - dengan pengecekan dan alter table jika diperlukan
         c.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
@@ -30,6 +30,13 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        
+        # Check if saldo column exists, if not add it
+        try:
+            c.execute("SELECT saldo FROM users LIMIT 1")
+        except sqlite3.OperationalError:
+            logger.info("Adding saldo column to users table")
+            c.execute("ALTER TABLE users ADD COLUMN saldo REAL DEFAULT 0")
         
         # Transactions table
         c.execute('''
@@ -44,7 +51,7 @@ def init_db():
             )
         ''')
         
-        # Riwayat pembelian table - DITAMBAHKAN untuk order_handler
+        # Riwayat pembelian table
         c.execute('''
             CREATE TABLE IF NOT EXISTS riwayat_pembelian (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -69,7 +76,7 @@ def init_db():
         logger.error(f"Error initializing database: {e}")
 
 def get_or_create_user(telegram_id, username, full_name):
-    """Get user ID or create new user if not exists - DITAMBAHKAN"""
+    """Get user ID or create new user if not exists"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -83,8 +90,8 @@ def get_or_create_user(telegram_id, username, full_name):
         else:
             # Buat user baru
             c.execute(
-                "INSERT INTO users (user_id, username, full_name) VALUES (?, ?, ?)",
-                (telegram_id, username, full_name)
+                "INSERT INTO users (user_id, username, full_name, saldo) VALUES (?, ?, ?, ?)",
+                (telegram_id, username, full_name, 0)
             )
             user_id = telegram_id
             conn.commit()
@@ -103,7 +110,20 @@ def get_user_saldo(user_id):
         c.execute("SELECT saldo FROM users WHERE user_id = ?", (user_id,))
         result = c.fetchone()
         conn.close()
-        return result[0] if result else 0
+        if result:
+            return result[0]
+        else:
+            # Jika user tidak ditemukan, buat user baru
+            return 0
+    except sqlite3.OperationalError as e:
+        if "no such column: saldo" in str(e):
+            # Jika kolom saldo tidak ada, perbaiki database
+            logger.error("Kolom saldo tidak ditemukan, memperbaiki database...")
+            init_db()  # Re-initialize database
+            return 0
+        else:
+            logger.error(f"Error getting user saldo: {e}")
+            return 0
     except Exception as e:
         logger.error(f"Error getting user saldo: {e}")
         return 0
@@ -113,6 +133,10 @@ def increment_user_saldo(user_id, amount):
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
+        
+        # Pastikan user exists
+        get_or_create_user(user_id, None, None)
+        
         c.execute("UPDATE users SET saldo = saldo + ? WHERE user_id = ?", (amount, user_id))
         conn.commit()
         conn.close()
@@ -127,8 +151,6 @@ def create_user(user_id, username, full_name):
 
 def add_user_admin(telegram_id):
     """Add user to admin list in config"""
-    # This function should modify config.ADMIN_TELEGRAM_IDS
-    # For now, we'll just log it
     logger.info(f"Admin added: {telegram_id}")
     return True
 
@@ -145,5 +167,76 @@ def get_all_users():
         logger.error(f"Error getting all users: {e}")
         return []
 
+# Emergency fix function
+def emergency_fix_database():
+    """Emergency function to fix database structure"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        # Drop and recreate users table with correct structure
+        c.execute("DROP TABLE IF EXISTS users")
+        c.execute('''
+            CREATE TABLE users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                full_name TEXT,
+                saldo REAL DEFAULT 0,
+                is_admin BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Recreate other tables
+        c.execute("DROP TABLE IF EXISTS transactions")
+        c.execute('''
+            CREATE TABLE transactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                type TEXT,
+                amount REAL,
+                description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users (user_id)
+            )
+        ''')
+        
+        c.execute("DROP TABLE IF EXISTS riwayat_pembelian")
+        c.execute('''
+            CREATE TABLE riwayat_pembelian (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT,
+                kode_produk TEXT,
+                nama_produk TEXT,
+                tujuan TEXT,
+                harga REAL,
+                saldo_awal REAL,
+                reff_id TEXT,
+                status_api TEXT,
+                keterangan TEXT,
+                waktu TEXT
+            )
+        ''')
+        
+        conn.commit()
+        conn.close()
+        logger.info("Emergency database fix completed successfully")
+        return True
+    except Exception as e:
+        logger.error(f"Error in emergency_fix_database: {e}")
+        return False
+
 # Initialize database when module is imported
 init_db()
+
+# Jika masih ada error, jalankan emergency fix
+try:
+    # Test database connection and structure
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT saldo FROM users LIMIT 1")
+    conn.close()
+except sqlite3.OperationalError as e:
+    if "no such column: saldo" in str(e):
+        logger.warning("Database structure issue detected, running emergency fix...")
+        emergency_fix_database()
