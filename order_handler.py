@@ -22,16 +22,14 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = "bot_database.db"
 
-# Conversation states
 ASK_ORDER_PRODUK, ASK_ORDER_TUJUAN, ASK_ORDER_CONFIRM = range(3)
 
-# KHFSY API config
 API_URL = "https://panel.khfy-store.com/api_v2"
 from config import API_KEY_PROVIDER
-...
 API_KEY = API_KEY_PROVIDER
+
 class OrderHandler:
-    def __init__(self, db_path="bot_topup.db"):
+    def __init__(self, db_path=DB_PATH):
         self.DB_PATH = db_path
         self._init_database()
 
@@ -39,7 +37,6 @@ class OrderHandler:
         """Initialize database with required tables"""
         conn = sqlite3.connect(self.DB_PATH)
         c = conn.cursor()
-        
         # Products table
         c.execute('''
             CREATE TABLE IF NOT EXISTS products (
@@ -49,11 +46,13 @@ class OrderHandler:
                 status TEXT DEFAULT 'active',
                 description TEXT,
                 category TEXT,
+                provider TEXT,
+                gangguan INTEGER DEFAULT 0,
+                kosong INTEGER DEFAULT 0,
                 stock INTEGER DEFAULT 0,
                 updated_at TEXT
             )
         ''')
-
         # Riwayat Pembelian table
         c.execute('''
             CREATE TABLE IF NOT EXISTS riwayat_pembelian (
@@ -71,30 +70,28 @@ class OrderHandler:
                 waktu TEXT
             )
         ''')
-
         # Check if sample products exist
         c.execute("SELECT COUNT(*) FROM products WHERE status='active'")
         if c.fetchone()[0] == 0:
             self._insert_sample_products(c)
-        
         conn.commit()
         conn.close()
         logger.info("✅ Order Handler database initialized successfully")
 
     def _insert_sample_products(self, cursor):
         """Insert sample products"""
+        now = datetime.now().isoformat()
         sample_products = [
-            ('XLA14', 'SuperMini', 40000, 'active', 'Produk SuperMini terbaik', 'VPS', 10, datetime.now().isoformat()),
-            ('TES', 'Produk TEST', 20000, 'active', 'Produk untuk testing', 'TEST', 5, datetime.now().isoformat()),
-            ('XLA39', 'XLA39 Premium', 50000, 'active', 'Produk premium dengan fitur lengkap', 'VPS', 8, datetime.now().isoformat()),
+            ('XLA14', 'SuperMini', 40000, 'active', 'Produk SuperMini terbaik', 'VPS', 'PROVIDER', 0, 0, 10, now),
+            ('TES', 'Produk TEST', 20000, 'active', 'Produk untuk testing', 'TEST', 'PROVIDER', 0, 0, 5, now),
+            ('XLA39', 'XLA39 Premium', 50000, 'active', 'Produk premium dengan fitur lengkap', 'VPS', 'PROVIDER', 0, 0, 8, now),
         ]
         cursor.executemany(
-            "INSERT INTO products (code, name, price, status, description, category, stock, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO products (code, name, price, status, description, category, provider, gangguan, kosong, stock, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             sample_products
         )
         logger.info("✅ Sample products inserted")
 
-    # Database methods
     def get_active_products(self):
         """Get all active products from database"""
         conn = sqlite3.connect(self.DB_PATH)
@@ -102,7 +99,7 @@ class OrderHandler:
         c.execute('''
             SELECT code, name, price, description, stock 
             FROM products 
-            WHERE status='active' AND stock > 0 
+            WHERE status='active' AND gangguan=0 AND kosong=0 AND stock > 0 
             ORDER BY category, name ASC
         ''')
         products = c.fetchall()
@@ -116,7 +113,7 @@ class OrderHandler:
         c.execute('''
             SELECT code, name, price, description, stock 
             FROM products 
-            WHERE code = ? AND status='active' AND stock > 0
+            WHERE code = ? AND status='active' AND gangguan=0 AND kosong=0 AND stock > 0
         ''', (code,))
         product = c.fetchone()
         conn.close()
@@ -127,10 +124,8 @@ class OrderHandler:
         waktu = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         saldo_akhir = saldo_awal - product[2]
         reff_id = reff_id if reff_id else f"ORDER_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-        
         conn = sqlite3.connect(self.DB_PATH)
         c = conn.cursor()
-        
         c.execute('''
             INSERT INTO riwayat_pembelian 
             (user_id, kode_produk, nama_produk, tujuan, harga, saldo_awal, saldo_akhir, reff_id, status_api, keterangan, waktu)
@@ -139,25 +134,20 @@ class OrderHandler:
             user_id, product[0], product[1], tujuan, product[2], 
             saldo_awal, saldo_akhir, reff_id, api_status, api_keterangan, waktu
         ))
-        
         # Update product stock
         c.execute("UPDATE products SET stock = stock - 1 WHERE code = ?", (product[0],))
         conn.commit()
         conn.close()
         return reff_id, saldo_akhir
 
-    # Order Conversation Handlers
+    # --- Conversation Handlers ---
     async def order_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Start order process from command"""
         import database
         user = update.message.from_user
         user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
         saldo = database.get_user_saldo(user_id)
-        
-        # Get products from database
         products = self.get_active_products()
         context.user_data["produk_list"] = products
-        
         if not products:
             await update.message.reply_text(
                 "❌ **Produk Belum Tersedia**\n\n"
@@ -167,19 +157,13 @@ class OrderHandler:
                 reply_markup=ReplyKeyboardRemove()
             )
             return ConversationHandler.END
-        
-        # Create product keyboard
         produk_keyboard = []
         product_details = []
-        
         for code, name, price, description, stock in products:
             emoji = "🟢" if stock > 5 else "🟡" if stock > 0 else "🔴"
             product_details.append(f"{emoji} **{name}**\n   💰 Rp {price:,} | 📦 Stok: {stock} | 🆔 `{code}`")
             produk_keyboard.append([f"🛒 {code} - {name}"])
-        
         produk_keyboard.append(["❌ Batalkan Order"])
-        
-        # Format message with product details
         message = (
             f"👋 **Halo {user.full_name}!**\n\n"
             f"💰 **Saldo Anda:** Rp {saldo:,}\n\n"
@@ -187,7 +171,6 @@ class OrderHandler:
             "\n".join(product_details) +
             "\n\nSilakan pilih produk dari keyboard di bawah:"
         )
-        
         await update.message.reply_text(
             message,
             reply_markup=ReplyKeyboardMarkup(
@@ -198,14 +181,10 @@ class OrderHandler:
             ),
             parse_mode='Markdown'
         )
-        
         return ASK_ORDER_PRODUK
 
     async def order_produk(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle product selection"""
         user_input = update.message.text.strip()
-        
-        # Handle cancellation
         if user_input == "❌ Batalkan Order":
             await update.message.reply_text(
                 "❌ **Order Dibatalkan**\n\n"
@@ -213,19 +192,12 @@ class OrderHandler:
                 reply_markup=ReplyKeyboardRemove()
             )
             return ConversationHandler.END
-        
-        # Extract product code from input
         if user_input.startswith("🛒 "):
             kode_produk = user_input.split(" - ")[0].replace("🛒 ", "").strip()
         else:
-            # Allow direct code input
             kode_produk = user_input
-        
-        # Get product from database
         product = self.get_product_by_code(kode_produk)
-        
         if not product:
-            # Show available products again
             products = context.user_data.get("produk_list", [])
             if not products:
                 await update.message.reply_text(
@@ -234,12 +206,10 @@ class OrderHandler:
                     reply_markup=ReplyKeyboardRemove()
                 )
                 return ConversationHandler.END
-            
             produk_keyboard = []
             for code, name, price, description, stock in products:
                 produk_keyboard.append([f"🛒 {code} - {name}"])
             produk_keyboard.append(["❌ Batalkan Order"])
-            
             await update.message.reply_text(
                 "❌ **Kode produk tidak valid atau stok habis**\n\n"
                 "Silakan pilih produk yang tersedia dari keyboard:",
@@ -250,10 +220,7 @@ class OrderHandler:
                 )
             )
             return ASK_ORDER_PRODUK
-        
         context.user_data["order_produk"] = product
-        
-        # Show product details and ask for destination
         await update.message.reply_text(
             f"✅ **PRODUK DIPILIH**\n\n"
             f"📦 **Nama:** {product[1]}\n"
@@ -266,14 +233,10 @@ class OrderHandler:
             reply_markup=ReplyKeyboardRemove(),
             parse_mode='Markdown'
         )
-        
         return ASK_ORDER_TUJUAN
 
     async def order_tujuan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle destination number input"""
         tujuan = update.message.text.strip()
-        
-        # Validate phone number format
         if not self._validate_phone_number(tujuan):
             await update.message.reply_text(
                 "❌ **Format Nomor Tidak Valid**\n\n"
@@ -284,15 +247,11 @@ class OrderHandler:
                 parse_mode='Markdown'
             )
             return ASK_ORDER_TUJUAN
-        
         context.user_data["order_tujuan"] = tujuan
         product = context.user_data["order_produk"]
-        
-        # Create confirmation keyboard
         confirm_keyboard = [
             ["✅ Konfirmasi & Bayar", "❌ Batalkan Order"]
         ]
-        
         await update.message.reply_text(
             f"📋 **KONFIRMASI ORDER**\n\n"
             f"📦 **Produk:** {product[1]}\n"
@@ -309,16 +268,12 @@ class OrderHandler:
             ),
             parse_mode='Markdown'
         )
-        
         return ASK_ORDER_CONFIRM
 
     async def order_confirm(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle order confirmation and processing"""
         import database
         user = update.message.from_user
         user_input = update.message.text.strip()
-        
-        # Handle cancellation
         if user_input == "❌ Batalkan Order":
             await update.message.reply_text(
                 "❌ **Order Dibatalkan**\n\n"
@@ -327,8 +282,6 @@ class OrderHandler:
             )
             context.user_data.clear()
             return ConversationHandler.END
-        
-        # Check confirmation
         if user_input != "✅ Konfirmasi & Bayar":
             await update.message.reply_text(
                 "❌ **Order Dibatalkan**\n\n"
@@ -337,13 +290,10 @@ class OrderHandler:
             )
             context.user_data.clear()
             return ConversationHandler.END
-        
         user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
         product = context.user_data["order_produk"]
         tujuan = context.user_data["order_tujuan"]
         saldo_awal = database.get_user_saldo(user_id)
-        
-        # Check balance
         if saldo_awal < product[2]:
             saldo_kurang = product[2] - saldo_awal
             await update.message.reply_text(
@@ -357,7 +307,6 @@ class OrderHandler:
             )
             context.user_data.clear()
             return ConversationHandler.END
-        
         # Check product stock again (in case changed since selection)
         current_product = self.get_product_by_code(product[0])
         if not current_product:
@@ -370,11 +319,7 @@ class OrderHandler:
             )
             context.user_data.clear()
             return ConversationHandler.END
-
-        # Create a unique reff_id
         reff_id = str(uuid.uuid4())
-
-        # Call external khfy-store API to create transaction
         api_endpoint = f"{API_URL}/trx"
         params = {
             "produk": product[0],
@@ -387,11 +332,7 @@ class OrderHandler:
             api_json = response.json()
             api_status = str(api_json.get("status", "unknown"))
             api_keterangan = api_json.get("keterangan", "")
-            # Optionally parse more fields from api_json if available
-
-            # Deduct balance
             database.increment_user_saldo(user_id, -product[2])
-            # Save order to internal database
             reff_id_db, saldo_akhir = self.save_order(
                 user_id, product, tujuan, saldo_awal,
                 status=api_status,
@@ -399,8 +340,6 @@ class OrderHandler:
                 api_keterangan=api_keterangan,
                 reff_id=reff_id
             )
-
-            # Send success message
             success_message = (
                 f"🎉 **ORDER BERHASIL!**\n\n"
                 f"📦 **Produk:** {product[1]}\n"
@@ -429,13 +368,10 @@ class OrderHandler:
                 "Silakan coba lagi atau hubungi admin.",
                 reply_markup=ReplyKeyboardRemove()
             )
-        
-        # Clear user data
         context.user_data.clear()
         return ConversationHandler.END
 
     async def order_cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Cancel order process"""
         await update.message.reply_text(
             "❌ **Proses Order Dibatalkan**\n\n"
             "Tidak ada yang ditagih.\n"
@@ -445,18 +381,13 @@ class OrderHandler:
         context.user_data.clear()
         return ConversationHandler.END
 
-    # Callback handlers for inline keyboard
     async def start_order_from_callback(self, query, context: ContextTypes.DEFAULT_TYPE):
-        """Start order process from callback query"""
         import database
         user = query.from_user
         user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
         saldo = database.get_user_saldo(user_id)
-        
-        # Get products from database
         products = self.get_active_products()
         context.user_data["produk_list"] = products
-        
         if not products:
             await query.edit_message_text(
                 "❌ **Produk Belum Tersedia**\n\n"
@@ -465,14 +396,10 @@ class OrderHandler:
                 parse_mode='Markdown'
             )
             return
-        
-        # Create product keyboard
         produk_keyboard = []
         for code, name, price, description, stock in products:
             produk_keyboard.append([f"🛒 {code} - {name}"])
         produk_keyboard.append(["❌ Batalkan Order"])
-        
-        # Send new message with product selection
         await context.bot.send_message(
             chat_id=query.message.chat_id,
             text=(
@@ -489,9 +416,7 @@ class OrderHandler:
             parse_mode='Markdown'
         )
 
-    # Utility methods
     def _validate_phone_number(self, phone):
-        """Validate Indonesian phone number format"""
         if not phone.startswith("08"):
             return False
         if not (10 <= len(phone) <= 14):
@@ -501,7 +426,6 @@ class OrderHandler:
         return True
 
     def get_conversation_handler(self):
-        """Return the conversation handler for orders"""
         return ConversationHandler(
             entry_points=[
                 CommandHandler('order', self.order_start),
@@ -526,5 +450,4 @@ class OrderHandler:
             ]
         )
 
-# Export handler instance
 order_handler = OrderHandler()
