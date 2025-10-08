@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# bot.py - Main Bot File with Complete Menu System
+# bot.py - Main Bot File with Customized Menu for Your Products
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
@@ -31,13 +31,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Create user in database if not exists
     database.create_user(user.id, user.username, user.full_name)
     
-    # Main menu keyboard
+    # Main menu keyboard - SESUAI PRODUK YANG DIJUAL
     keyboard = [
-        [InlineKeyboardButton("💰 Top Up Saldo", callback_data="user_topup")],
-        [InlineKeyboardButton("📦 Beli Produk", callback_data="user_products")],
-        [InlineKeyboardButton("💳 Cek Saldo", callback_data="user_balance")],
-        [InlineKeyboardButton("📋 Riwayat Transaksi", callback_data="user_history")],
-        [InlineKeyboardButton("🆘 Bantuan", callback_data="user_help")],
+        [InlineKeyboardButton("📱 Pulsa & Data", callback_data="category_pulsa")],
+        [InlineKeyboardButton("⚡ Token Listrik", callback_data="category_pln")],
+        [InlineKeyboardButton("🎮 Voucher Game", callback_data="category_game")],
+        [InlineKeyboardButton("💳 Top Up Saldo", callback_data="user_topup")],
+        [InlineKeyboardButton("💰 Cek Saldo", callback_data="user_balance")],
     ]
     
     # Add admin button if user is admin
@@ -49,12 +49,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
         f"👋 **Selamat Datang, {user.full_name}!**\n\n"
         f"🤖 **Saya adalah Bot TopUp & Payment**\n\n"
-        f"📋 **Fitur yang tersedia:**\n"
-        f"• 💰 Top Up Saldo\n"
-        f"• 📦 Beli Pulsa/Token/PLN/Game\n"
-        f"• 💳 Cek Saldo\n"
-        f"• 📋 Riwayat Transaksi\n\n"
-        f"Pilih menu di bawah untuk mulai menggunakan bot:"
+        f"🛍️ **Produk yang tersedia:**\n"
+        f"• 📱 **Pulsa & Paket Data**\n"
+        f"• ⚡ **Token Listrik PLN**\n"
+        f"• 🎮 **Voucher Game**\n\n"
+        f"💳 **Fitur Lainnya:**\n"
+        f"• Top Up Saldo\n"
+        f"• Cek Saldo\n\n"
+        f"Pilih produk yang ingin dibeli:"
     )
     
     await update.message.reply_text(
@@ -68,11 +70,11 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
     keyboard = [
-        [InlineKeyboardButton("💰 Top Up Saldo", callback_data="user_topup")],
-        [InlineKeyboardButton("📦 Beli Produk", callback_data="user_products")],
-        [InlineKeyboardButton("💳 Cek Saldo", callback_data="user_balance")],
-        [InlineKeyboardButton("📋 Riwayat Transaksi", callback_data="user_history")],
-        [InlineKeyboardButton("🆘 Bantuan", callback_data="user_help")],
+        [InlineKeyboardButton("📱 Pulsa & Data", callback_data="category_pulsa")],
+        [InlineKeyboardButton("⚡ Token Listrik", callback_data="category_pln")],
+        [InlineKeyboardButton("🎮 Voucher Game", callback_data="category_game")],
+        [InlineKeyboardButton("💳 Top Up Saldo", callback_data="user_topup")],
+        [InlineKeyboardButton("💰 Cek Saldo", callback_data="user_balance")],
     ]
     
     if is_admin(user):
@@ -81,7 +83,7 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.message.reply_text(
-        "📱 **MENU UTAMA**\n\nPilih menu yang diinginkan:",
+        "🛍️ **MENU PRODUK**\n\nPilih produk yang ingin dibeli:",
         reply_markup=reply_markup,
         parse_mode='Markdown'
     )
@@ -92,21 +94,20 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🆘 **BANTUAN & CARA PENGGUNAAN**\n\n"
         "📋 **Menu Utama:**\n"
         "• /start - Memulai bot\n"
-        "• /menu - Menampilkan menu utama\n"
+        "• /menu - Menampilkan menu produk\n"
         "• /help - Menampilkan bantuan\n\n"
+        "🛍️ **Cara Beli Produk:**\n"
+        "1. Pilih kategori produk (Pulsa, Token Listrik, atau Game)\n"
+        "2. Pilih produk yang diinginkan\n"
+        "3. Ikuti instruksi pembelian\n\n"
         "💰 **Top Up Saldo:**\n"
         "1. Klik 'Top Up Saldo' di menu\n"
-        "2. Ikuti instruksi yang diberikan\n"
-        "3. Kirim bukti transfer\n"
-        "4. Tunggu konfirmasi admin\n\n"
-        "📦 **Beli Produk:**\n"
-        "1. Klik 'Beli Produk' di menu\n"
-        "2. Pilih kategori produk\n"
-        "3. Pilih produk yang diinginkan\n"
-        "4. Ikuti instruksi pembelian\n\n"
+        "2. Transfer ke rekening yang tertera\n"
+        "3. Kirim bukti transfer dengan command `/topup <jumlah>`\n"
+        "4. Tunggu konfirmasi admin (1-15 menit)\n\n"
         "💳 **Cek Saldo:**\n"
         "Klik 'Cek Saldo' untuk melihat saldo terkini\n\n"
-        "📞 **Bantuan Lainnya:**\n"
+        "📞 **Bantuan Admin:**\n"
         "Jika mengalami kendala, hubungi admin langsung."
     )
     
@@ -121,8 +122,20 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💳 **INFORMASI SALDO**\n\n"
         f"👤 **User:** {user.full_name}\n"
         f"💎 **Saldo:** Rp {saldo:,.0f}\n\n"
-        f"💡 **Tips:** Gunakan saldo untuk membeli produk tanpa perlu transfer setiap kali."
+        f"🛍️ **Cukup untuk beli:**\n"
     )
+    
+    # Add product examples based on balance
+    if saldo >= 5000:
+        balance_text += f"• 📱 Pulsa Rp 5,000\n"
+    if saldo >= 10000:
+        balance_text += f"• ⚡ Token Listrik Rp 10,000\n"
+    if saldo >= 25000:
+        balance_text += f"• 🎮 Voucher Mobile Legends\n"
+    if saldo >= 50000:
+        balance_text += f"• 📦 Paket Data 5GB\n"
+    
+    balance_text += f"\n💡 **Tips:** Gunakan saldo untuk beli produk lebih cepat!"
     
     await update.message.reply_text(balance_text, parse_mode='Markdown')
 
@@ -140,14 +153,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if data == "user_topup":
         await show_topup_instructions(query, context)
-    elif data == "user_products":
-        await show_product_categories(query, context)
     elif data == "user_balance":
         await show_user_balance(query, context)
-    elif data == "user_history":
-        await show_user_history(query, context)
-    elif data == "user_help":
-        await show_help(query, context)
+    elif data == "category_pulsa":
+        await show_pulsa_products(query, context)
+    elif data == "category_pln":
+        await show_pln_products(query, context)
+    elif data == "category_game":
+        await show_game_products(query, context)
     elif data == "admin_menu":
         if is_admin(user):
             await show_admin_menu(query, context)
@@ -166,7 +179,7 @@ async def show_topup_instructions(query, context):
         "   **No.Rek:** 123-456-7890\n"
         "   **A/N:** NAMA ADMIN\n\n"
         "2. Setelah transfer, kirim bukti transfer dengan command:\n"
-        "   `/topup <jumlah>``\n"
+        "   `/topup <jumlah>`\n"
         "   Contoh: `/topup 50000`\n\n"
         "3. Admin akan memverifikasi dan menambahkan saldo\n\n"
         "💡 **Catatan:**\n"
@@ -177,8 +190,9 @@ async def show_topup_instructions(query, context):
     
     keyboard = [
         [InlineKeyboardButton("💳 Cek Saldo", callback_data="user_balance")],
-        [InlineKeyboardButton("📦 Beli Produk", callback_data="user_products")],
-        [InlineKeyboardButton("⬅️ Kembali", callback_data="back_to_menu")]
+        [InlineKeyboardButton("📱 Beli Pulsa", callback_data="category_pulsa")],
+        [InlineKeyboardButton("⚡ Token Listrik", callback_data="category_pln")],
+        [InlineKeyboardButton("⬅️ Menu Utama", callback_data="back_to_menu")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -188,30 +202,110 @@ async def show_topup_instructions(query, context):
         parse_mode='Markdown'
     )
 
-async def show_product_categories(query, context):
-    """Show product categories"""
-    categories_text = (
-        "📦 **KATEGORI PRODUK**\n\n"
-        "Pilih kategori produk yang ingin dibeli:\n\n"
-        "• 📱 **Pulsa & Data**\n"
-        "• ⚡ **Token Listrik**\n"
-        "• 🎮 **Voucher Game**\n"
-        "• 📺 **TV & Internet**\n"
-        "• 💳 **E-Money**\n\n"
-        "Fitur ini sedang dalam pengembangan..."
+async def show_pulsa_products(query, context):
+    """Show pulsa and data products"""
+    products_text = (
+        "📱 **PULSA & PAKET DATA**\n\n"
+        "🛍️ **Pilihan Produk:**\n\n"
+        "**📞 Pulsa Reguler:**\n"
+        "• Rp 5.000\n"
+        "• Rp 10.000\n"
+        "• Rp 25.000\n"
+        "• Rp 50.000\n"
+        "• Rp 100.000\n\n"
+        "**📦 Paket Data:**\n"
+        "• 1GB - Rp 10.000\n"
+        "• 3GB - Rp 25.000\n"
+        "• 5GB - Rp 40.000\n"
+        "• 10GB - Rp 70.000\n\n"
+        "🔧 **Fitur pembelian otomatis sedang dalam pengembangan.**\n"
+        "Untuk saat ini, silakan hubungi admin untuk pemesanan."
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("⚡ Token Listrik", callback_data="category_pln")],
+        [InlineKeyboardButton("🎮 Voucher Game", callback_data="category_game")],
+        [InlineKeyboardButton("💳 Top Up Saldo", callback_data="user_topup")],
+        [InlineKeyboardButton("⬅️ Menu Utama", callback_data="back_to_menu")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        products_text,
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
+async def show_pln_products(query, context):
+    """Show PLN token products"""
+    products_text = (
+        "⚡ **TOKEN LISTRIK PLN**\n\n"
+        "🛍️ **Pilihan Produk:**\n\n"
+        "**💡 Token Listrik:**\n"
+        "• Rp 10.000\n"
+        "• Rp 20.000\n"
+        "• Rp 50.000\n"
+        "• Rp 100.000\n"
+        "• Rp 200.000\n"
+        "• Rp 500.000\n"
+        "• Rp 1.000.000\n\n"
+        "📝 **Cara Beli:**\n"
+        "1. Pastikan saldo mencukupi\n"
+        "2. Kirim format: `PLN <NOMOR METER> <JUMLAH>`\n"
+        "3. Contoh: `PLN 12345678901 20000`\n\n"
+        "🔧 **Fitur pembelian otomatis sedang dalam pengembangan.**\n"
+        "Untuk saat ini, silakan hubungi admin untuk pemesanan."
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("📱 Pulsa & Data", callback_data="category_pulsa")],
+        [InlineKeyboardButton("🎮 Voucher Game", callback_data="category_game")],
+        [InlineKeyboardButton("💳 Top Up Saldo", callback_data="user_topup")],
+        [InlineKeyboardButton("⬅️ Menu Utama", callback_data="back_to_menu")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        products_text,
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
+async def show_game_products(query, context):
+    """Show game voucher products"""
+    products_text = (
+        "🎮 **VOUCHER GAME**\n\n"
+        "🛍️ **Pilihan Produk:**\n\n"
+        "**📱 Mobile Legends:**\n"
+        "• 86 Diamond - Rp 20.000\n"
+        "• 172 Diamond - Rp 40.000\n"
+        "• 257 Diamond - Rp 60.000\n"
+        "• 344 Diamond - Rp 80.000\n"
+        "• 429 Diamond - Rp 100.000\n\n"
+        "**🎯 Free Fire:**\n"
+        "• 70 Diamond - Rp 10.000\n"
+        "• 140 Diamond - Rp 20.000\n"
+        "• 355 Diamond - Rp 50.000\n"
+        "• 720 Diamond - Rp 100.000\n\n"
+        "**⚡ PUBG Mobile:**\n"
+        "• 75 UC - Rp 15.000\n"
+        "• 150 UC - Rp 30.000\n"
+        "• 385 UC - Rp 75.000\n"
+        "• 770 UC - Rp 150.000\n\n"
+        "🔧 **Fitur pembelian otomatis sedang dalam pengembangan.**\n"
+        "Untuk saat ini, silakan hubungi admin untuk pemesanan."
     )
     
     keyboard = [
         [InlineKeyboardButton("📱 Pulsa & Data", callback_data="category_pulsa")],
         [InlineKeyboardButton("⚡ Token Listrik", callback_data="category_pln")],
-        [InlineKeyboardButton("🎮 Voucher Game", callback_data="category_game")],
-        [InlineKeyboardButton("💳 Cek Saldo", callback_data="user_balance")],
-        [InlineKeyboardButton("⬅️ Kembali", callback_data="back_to_menu")]
+        [InlineKeyboardButton("💳 Top Up Saldo", callback_data="user_topup")],
+        [InlineKeyboardButton("⬅️ Menu Utama", callback_data="back_to_menu")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await query.edit_message_text(
-        categories_text,
+        products_text,
         reply_markup=reply_markup,
         parse_mode='Markdown'
     )
@@ -225,91 +319,32 @@ async def show_user_balance(query, context):
         f"💳 **SALDO ANDA**\n\n"
         f"👤 **User:** {user.full_name}\n"
         f"💎 **Saldo:** Rp {saldo:,.0f}\n\n"
-        f"💰 **Cukup untuk beli:**\n"
+        f"🛍️ **Cukup untuk beli:**\n"
     )
     
-    # Add some product examples based on balance
+    # Add product examples based on balance
     if saldo >= 5000:
         balance_text += f"• 📱 Pulsa Rp 5,000\n"
     if saldo >= 10000:
         balance_text += f"• ⚡ Token Listrik Rp 10,000\n"
+    if saldo >= 20000:
+        balance_text += f"• 🎮 ML 86 Diamond\n"
     if saldo >= 50000:
-        balance_text += f"• 🎮 Voucher Game Rp 50,000\n"
-    if saldo >= 100000:
-        balance_text += f"• 📺 Paket Data 10GB\n"
+        balance_text += f"• 📦 Paket Data 5GB\n"
+    
+    balance_text += f"\n💡 **Tips:** Gunakan saldo untuk beli produk lebih cepat!"
     
     keyboard = [
-        [InlineKeyboardButton("💰 Top Up", callback_data="user_topup")],
-        [InlineKeyboardButton("📦 Beli Produk", callback_data="user_products")],
-        [InlineKeyboardButton("⬅️ Kembali", callback_data="back_to_menu")]
+        [InlineKeyboardButton("📱 Beli Pulsa", callback_data="category_pulsa")],
+        [InlineKeyboardButton("⚡ Token Listrik", callback_data="category_pln")],
+        [InlineKeyboardButton("🎮 Voucher Game", callback_data="category_game")],
+        [InlineKeyboardButton("💳 Top Up", callback_data="user_topup")],
+        [InlineKeyboardButton("⬅️ Menu Utama", callback_data="back_to_menu")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await query.edit_message_text(
         balance_text,
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
-
-async def show_user_history(query, context):
-    """Show user transaction history"""
-    user = query.from_user
-    
-    history_text = (
-        f"📋 **RIWAYAT TRANSAKSI**\n\n"
-        f"👤 **User:** {user.full_name}\n\n"
-        f"📊 **Fitur riwayat transaksi sedang dalam pengembangan.**\n\n"
-        f"💡 **Fitur yang akan datang:**\n"
-        f"• Riwayat top up\n"
-        f"• Riwayat pembelian\n"
-        f"• Filter berdasarkan tanggal\n"
-        f"• Export data transaksi"
-    )
-    
-    keyboard = [
-        [InlineKeyboardButton("💳 Cek Saldo", callback_data="user_balance")],
-        [InlineKeyboardButton("📦 Beli Produk", callback_data="user_products")],
-        [InlineKeyboardButton("⬅️ Kembali", callback_data="back_to_menu")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(
-        history_text,
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
-
-async def show_help(query, context):
-    """Show help in callback"""
-    help_text = (
-        "🆘 **BANTUAN & CARA PENGGUNAAN**\n\n"
-        "📋 **Menu Utama:**\n"
-        "• /start - Memulai bot\n"
-        "• /menu - Menampilkan menu utama\n"
-        "• /help - Menampilkan bantuan\n\n"
-        "💰 **Top Up Saldo:**\n"
-        "1. Klik 'Top Up Saldo' di menu\n"
-        "2. Transfer ke rekening yang tertera\n"
-        "3. Kirim bukti transfer dengan command `/topup <jumlah>`\n"
-        "4. Tunggu konfirmasi admin (1-15 menit)\n\n"
-        "📦 **Beli Produk:**\n"
-        "1. Klik 'Beli Produk' di menu\n"
-        "2. Pilih kategori produk\n"
-        "3. Pilih produk yang diinginkan\n"
-        "4. Ikuti instruksi pembelian\n\n"
-        "📞 **Bantuan Admin:**\n"
-        "Jika mengalami kendala, hubungi admin langsung."
-    )
-    
-    keyboard = [
-        [InlineKeyboardButton("💰 Top Up", callback_data="user_topup")],
-        [InlineKeyboardButton("📦 Beli Produk", callback_data="user_products")],
-        [InlineKeyboardButton("⬅️ Kembali", callback_data="back_to_menu")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(
-        help_text,
         reply_markup=reply_markup,
         parse_mode='Markdown'
     )
@@ -353,11 +388,11 @@ async def show_main_menu(query, context):
     user = query.from_user
     
     keyboard = [
-        [InlineKeyboardButton("💰 Top Up Saldo", callback_data="user_topup")],
-        [InlineKeyboardButton("📦 Beli Produk", callback_data="user_products")],
-        [InlineKeyboardButton("💳 Cek Saldo", callback_data="user_balance")],
-        [InlineKeyboardButton("📋 Riwayat Transaksi", callback_data="user_history")],
-        [InlineKeyboardButton("🆘 Bantuan", callback_data="user_help")],
+        [InlineKeyboardButton("📱 Pulsa & Data", callback_data="category_pulsa")],
+        [InlineKeyboardButton("⚡ Token Listrik", callback_data="category_pln")],
+        [InlineKeyboardButton("🎮 Voucher Game", callback_data="category_game")],
+        [InlineKeyboardButton("💳 Top Up Saldo", callback_data="user_topup")],
+        [InlineKeyboardButton("💰 Cek Saldo", callback_data="user_balance")],
     ]
     
     if is_admin(user):
@@ -366,7 +401,7 @@ async def show_main_menu(query, context):
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await query.edit_message_text(
-        "📱 **MENU UTAMA**\n\nPilih menu yang diinginkan:",
+        "🛍️ **MENU PRODUK**\n\nPilih produk yang ingin dibeli:",
         reply_markup=reply_markup,
         parse_mode='Markdown'
     )
@@ -468,7 +503,7 @@ async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Echo the user message with menu suggestion."""
     await update.message.reply_text(
         "🤖 Saya adalah bot TopUp & Payment.\n\n"
-        "Gunakan /menu untuk melihat menu utama atau /help untuk bantuan."
+        "Gunakan /menu untuk melihat menu produk atau /help untuk bantuan."
     )
 
 # ============================
@@ -502,10 +537,12 @@ def main():
 
     # Start the Bot
     print("🤖 Starting Telegram Bot...")
-    print("📱 Main Menu: READY")
-    print("👑 Admin Menu: READY") 
-    print("💰 TopUp System: READY")
-    print("📦 Product System: READY")
+    print("🛍️  Product Menu: READY")
+    print("📱 Pulsa & Data: READY")
+    print("⚡ Token Listrik: READY") 
+    print("🎮 Voucher Game: READY")
+    print("💳 TopUp System: READY")
+    print("👑 Admin Menu: READY")
     print("🔧 Bot is now running...")
     
     application.run_polling(allowed_updates=Update.ALL_TYPES)
