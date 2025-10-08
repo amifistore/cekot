@@ -1,4 +1,3 @@
-# bot.py
 import logging
 import os
 import sqlite3
@@ -23,13 +22,13 @@ logger = logging.getLogger(__name__)
 # Import config - dengan error handling
 try:
     import config
-    BOT_TOKEN = config.TOKEN
+    BOT_TOKEN = config.BOT_TOKEN
 except (ImportError, AttributeError) as e:
     logger.error(f"Error loading config: {e}")
     # Fallback to environment variable
     BOT_TOKEN = os.getenv('BOT_TOKEN')
     if not BOT_TOKEN:
-        raise ValueError("❌ BOT_TOKEN tidak ditemukan. Pastikan file config.py ada dan berisi TOKEN, atau set environment variable BOT_TOKEN")
+        raise ValueError("❌ BOT_TOKEN tidak ditemukan. Pastikan file config.py ada dan berisi BOT_TOKEN, atau set environment variable BOT_TOKEN")
 
 # Import order handler
 try:
