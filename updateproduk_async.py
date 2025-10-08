@@ -3,7 +3,7 @@ import aiosqlite
 from datetime import datetime
 import config
 
-DB_PATH = "bot_topup.db"
+DB_PATH = "bot_database.db"
 API_KEY = config.API_KEY_PROVIDER  # Ambil dari config.json
 
 async def update_produk_async():
