@@ -19,7 +19,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Import config
+# Import config - dengan error handling
 try:
     import config
     BOT_TOKEN = config.BOT_TOKEN
@@ -49,7 +49,7 @@ except ImportError as e:
 
 # Import admin handler
 try:
-    from admin_handler import get_admin_handlers
+    from admin_handler import get_admin_handlers, admin_menu
     admin_handlers = get_admin_handlers()
     ADMIN_HANDLER_AVAILABLE = True
     logger.info("✅ Admin handler loaded successfully")
@@ -57,6 +57,7 @@ except ImportError as e:
     logger.warning(f"⚠️ Admin handler not available: {e}")
     ADMIN_HANDLER_AVAILABLE = False
     admin_handlers = []
+    admin_menu = None
 
 # Import database
 try:
@@ -131,12 +132,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     elif callback_data == "topup":
         if TOPUP_HANDLER_AVAILABLE:
-            # Mulai conversation topup
+            # Trigger conversation, user lanjut /topup
             await query.edit_message_text(
-                "💳 Memulai proses topup...\n\nKetik nominal yang ingin di-topup, contoh: `10000`",
+                "💳 Memulai proses topup...\n\nKetik nominal yang ingin di-topup, contoh: `10000`.\nAtau ketik /topup untuk mulai.",
                 parse_mode='Markdown'
             )
-            # User lanjut /topup
         else:
             await query.edit_message_text(
                 "❌ **Fitur Topup Sedang Tidak Tersedia**\n\n"
@@ -161,12 +161,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Terima kasih! 😊"
         )
         await query.edit_message_text(help_text, parse_mode='Markdown')
-    elif callback_data == "admin" and ADMIN_HANDLER_AVAILABLE:
-        await query.edit_message_text(
-            "👑 Mengakses panel admin...",
-            parse_mode='Markdown'
-        )
-        # Selanjutnya admin_handler akan takeover menu dan fitur
+    elif callback_data == "admin" and ADMIN_HANDLER_AVAILABLE and admin_menu is not None:
+        # PATCH: panggil menu admin langsung agar inline keyboard admin muncul dan handler takeover
+        await admin_menu(update, context)
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Exception while handling an update: {context.error}")
@@ -189,6 +186,7 @@ def main():
         application = Application.builder().token(BOT_TOKEN).build()
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("help", start))
+
         if ORDER_HANDLER_AVAILABLE:
             application.add_handler(order_handler.get_conversation_handler())
             logger.info("✅ Order handler registered")
@@ -199,13 +197,16 @@ def main():
             logger.info("✅ Topup handler registered")
         else:
             logger.warning("⚠️ Topup handler not available")
+
         application.add_handler(CallbackQueryHandler(handle_callback))
+
         if ADMIN_HANDLER_AVAILABLE:
             for handler in admin_handlers:
                 application.add_handler(handler)
             logger.info("✅ Admin handlers loaded")
         else:
             logger.warning("⚠️ Admin handler not available")
+
         application.add_error_handler(error_handler)
 
         logger.info("🤖 Bot is running...")
