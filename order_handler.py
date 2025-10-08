@@ -35,6 +35,7 @@ class OrderHandler:
     def _init_database(self):
         conn = sqlite3.connect(self.DB_PATH)
         c = conn.cursor()
+        # Sinkronisasi tabel
         c.execute('''
             CREATE TABLE IF NOT EXISTS products (
                 code TEXT PRIMARY KEY,
@@ -53,21 +54,35 @@ class OrderHandler:
         c.execute('''
             CREATE TABLE IF NOT EXISTS riwayat_pembelian (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT,
+                user_id TEXT,
                 kode_produk TEXT,
                 nama_produk TEXT,
                 tujuan TEXT,
                 harga REAL,
                 saldo_awal REAL,
+                saldo_akhir REAL,
                 reff_id TEXT,
                 status_api TEXT,
                 keterangan TEXT,
                 waktu TEXT
             )
         ''')
+        # Patch kolom wajib
+        for col, dtype, dflt in [
+            ("provider", "TEXT", None),
+            ("gangguan", "INTEGER", "0"),
+            ("kosong", "INTEGER", "0"),
+            ("stock", "INTEGER", "0"),
+        ]:
+            try:
+                c.execute(f"SELECT {col} FROM products LIMIT 1")
+            except sqlite3.OperationalError:
+                dflt_str = f" DEFAULT {dflt}" if dflt is not None else ""
+                c.execute(f"ALTER TABLE products ADD COLUMN {col} {dtype}{dflt_str}")
         c.execute("UPDATE products SET stock = 10 WHERE stock IS NULL OR stock = 0")
         conn.commit()
         conn.close()
+        logger.info("✅ Order Handler database initialized successfully")
 
     def get_active_products(self):
         conn = sqlite3.connect(self.DB_PATH)
@@ -101,33 +116,30 @@ class OrderHandler:
         conn.close()
         return product
 
-    def get_user_saldo(self, user_id):
-        import database
-        return database.get_user_saldo(user_id)
-
-    def decrement_user_saldo(self, user_id, amount):
-        import database
-        return database.increment_user_saldo(user_id, -amount)
-
-    def save_riwayat(self, username, kode_produk, nama_produk, tujuan, harga, saldo_awal, reff_id, status_api, keterangan):
+    def save_order(self, user_id, product, tujuan, saldo_awal, status="SUCCESS", api_status="", api_keterangan="", reff_id=None):
         waktu = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        saldo_akhir = saldo_awal - product[2]
+        reff_id = reff_id if reff_id else f"ORDER_{datetime.now().strftime('%Y%m%d%H%M%S')}"
         conn = sqlite3.connect(self.DB_PATH)
         c = conn.cursor()
         c.execute('''
             INSERT INTO riwayat_pembelian 
-            (username, kode_produk, nama_produk, tujuan, harga, saldo_awal, reff_id, status_api, keterangan, waktu)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (user_id, kode_produk, nama_produk, tujuan, harga, saldo_awal, saldo_akhir, reff_id, status_api, keterangan, waktu)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
-            username, kode_produk, nama_produk, tujuan, harga, saldo_awal, reff_id, status_api, keterangan, waktu
+            user_id, product[0], product[1], tujuan, product[2], 
+            saldo_awal, saldo_akhir, reff_id, api_status, api_keterangan, waktu
         ))
+        c.execute("UPDATE products SET stock = stock - 1 WHERE code = ?", (product[0],))
         conn.commit()
         conn.close()
+        return reff_id, saldo_akhir
 
     async def order_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         import database
         user = update.message.from_user
         user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
-        saldo = self.get_user_saldo(user_id)
+        saldo = database.get_user_saldo(user_id)
         products = self.get_active_products()
         context.user_data["produk_list"] = products
         if not products:
@@ -152,25 +164,38 @@ class OrderHandler:
 
     async def order_produk(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_input = update.message.text.strip()
-        import database
-        user = update.message.from_user
-        user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
-        username = user.username
-        # PATCH: Ambil kode produk apapun formatnya
+        logger.info(f"User memilih produk: {repr(user_input)}")
+        # PATCH: Ambil kode produk dengan regex dan fallback split (agar selalu kena)
         match = re.match(r'(?:🛒 *)?([A-Za-z0-9]+)', user_input)
         if match:
             kode_produk = match.group(1)
         else:
-            kode_produk = user_input.split(" ")[0].replace("🛒", "").strip()
+            kode_produk = user_input.split(" - ")[0].replace("🛒", "").strip()
+        logger.info(f"Kode produk yang diambil: {kode_produk}")
+
         if user_input == "❌ Batalkan Order":
             await update.message.reply_text("❌ Order dibatalkan.", reply_markup=ReplyKeyboardRemove())
             return ConversationHandler.END
+
         product = self.get_product_by_code(kode_produk)
         if not product:
-            await update.message.reply_text("❌ Produk tidak valid atau stok habis.", reply_markup=ReplyKeyboardRemove())
+            products = context.user_data.get("produk_list", [])
+            produk_keyboard = []
+            for code, name, price, description, stock in products:
+                produk_keyboard.append([f"🛒 {code} - {name}"])
+            produk_keyboard.append(["❌ Batalkan Order"])
+            await update.message.reply_text(
+                "❌ Kode produk tidak valid atau stok habis.\nSilakan pilih produk lagi.",
+                reply_markup=ReplyKeyboardMarkup(
+                    produk_keyboard,
+                    one_time_keyboard=True,
+                    resize_keyboard=True
+                )
+            )
             return ASK_ORDER_PRODUK
+
+        # Jika produk valid, lanjut ke input tujuan
         context.user_data["order_produk"] = product
-        context.user_data["username"] = username
         await update.message.reply_text(
             f"✅ Produk: {product[1]}\nHarga: Rp {product[2]:,}\nStok: {product[4]}\n\nKetik nomor tujuan (ex: 08123456789):",
             reply_markup=ReplyKeyboardRemove()
@@ -178,24 +203,29 @@ class OrderHandler:
         return ASK_ORDER_TUJUAN
 
     async def order_tujuan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        tujuan = ''.join(filter(str.isdigit, update.message.text.strip()))
-        if not tujuan or not tujuan.startswith("08") or not (10 <= len(tujuan) <= 14):
-            await update.message.reply_text("❌ Nomor tujuan tidak valid.\nCoba lagi.", reply_markup=ReplyKeyboardRemove())
+        tujuan = update.message.text.strip()
+        if not self._validate_phone_number(tujuan):
+            await update.message.reply_text(
+                "❌ Format nomor tidak valid.\nFormat: 08xxxxxxxxxx (10-14 digit, hanya angka)\nCoba lagi.",
+                reply_markup=ReplyKeyboardRemove()
+            )
             return ASK_ORDER_TUJUAN
         context.user_data["order_tujuan"] = tujuan
         product = context.user_data["order_produk"]
         confirm_keyboard = [["✅ Konfirmasi & Bayar", "❌ Batalkan Order"]]
         await update.message.reply_text(
             f"📋 KONFIRMASI\nProduk: {product[1]}\nKode: {product[0]}\nHarga: Rp {product[2]:,}\nTujuan: {tujuan}\n\nKonfirmasi?",
-            reply_markup=ReplyKeyboardMarkup(confirm_keyboard, one_time_keyboard=True, resize_keyboard=True)
+            reply_markup=ReplyKeyboardMarkup(
+                confirm_keyboard,
+                one_time_keyboard=True,
+                resize_keyboard=True
+            )
         )
         return ASK_ORDER_CONFIRM
 
     async def order_confirm(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         import database
         user = update.message.from_user
-        user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
-        username = user.username
         user_input = update.message.text.strip()
         if user_input == "❌ Batalkan Order":
             await update.message.reply_text("❌ Order dibatalkan.", reply_markup=ReplyKeyboardRemove())
@@ -205,56 +235,58 @@ class OrderHandler:
             await update.message.reply_text("❌ Konfirmasi tidak valid. Order dibatalkan.", reply_markup=ReplyKeyboardRemove())
             context.user_data.clear()
             return ConversationHandler.END
-
+        user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
         product = context.user_data["order_produk"]
         tujuan = context.user_data["order_tujuan"]
-        kode_produk = product[0]
-        nama_produk = product[1]
-        harga_produk = int(product[2])
-        saldo_awal = self.get_user_saldo(user_id)
-
-        if saldo_awal < harga_produk:
+        saldo_awal = database.get_user_saldo(user_id)
+        if saldo_awal < product[2]:
+            saldo_kurang = product[2] - saldo_awal
             await update.message.reply_text(
-                f"❌ Saldo tidak cukup.\nSaldo Anda: Rp {saldo_awal:,}\nHarga: Rp {harga_produk:,}\nSilakan topup saldo.",
+                f"❌ Saldo tidak cukup.\nSaldo Anda: Rp {saldo_awal:,}\nDibutuhkan: Rp {product[2]:,}\nKekurangan: Rp {saldo_kurang:,}\nSilakan topup saldo.",
                 reply_markup=ReplyKeyboardRemove()
             )
             context.user_data.clear()
             return ConversationHandler.END
-
-        # Potong saldo dulu sebelum call API
-        self.decrement_user_saldo(user_id, harga_produk)
-
-        reff_id = "akrab_" + uuid.uuid4().hex
-        api_url = f"{API_URL}/trx?produk={kode_produk}&tujuan={tujuan}&reff_id={reff_id}&api_key={API_KEY}"
+        current_product = self.get_product_by_code(product[0])
+        if not current_product:
+            await update.message.reply_text(
+                f"❌ Stok Habis.\nProduk {product[1]} sudah habis.\nSilakan pilih produk lain menggunakan /order",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            context.user_data.clear()
+            return ConversationHandler.END
+        reff_id = str(uuid.uuid4())
+        api_endpoint = f"{API_URL}/trx"
+        params = {
+            "produk": product[0],
+            "tujuan": tujuan,
+            "reff_id": reff_id,
+            "api_key": API_KEY
+        }
         try:
-            response = requests.get(api_url, timeout=20)
-            status_api = "PROSES"
-            keterangan = "Order terkirim, menunggu update provider"
-            if response.ok:
-                api_json = response.json()
-                status_api = api_json.get("status", "PROSES").upper()
-                keterangan = api_json.get("msg", keterangan)
+            response = requests.get(api_endpoint, params=params, timeout=20)
+            api_json = response.json()
+            api_status = str(api_json.get("status", "unknown"))
+            api_keterangan = api_json.get("keterangan", "")
+            database.increment_user_saldo(user_id, -product[2])
+            reff_id_db, saldo_akhir = self.save_order(
+                user_id, product, tujuan, saldo_awal,
+                status=api_status,
+                api_status=api_status,
+                api_keterangan=api_keterangan,
+                reff_id=reff_id
+            )
+            success_message = (
+                f"🎉 ORDER BERHASIL!\nProduk: {product[1]}\nHarga: Rp {product[2]:,}\nTujuan: {tujuan}\nSaldo Awal: Rp {saldo_awal:,}\nSaldo Akhir: Rp {saldo_akhir:,}\nID Transaksi: {reff_id}\nStatus: {api_status}\nKeterangan: {api_keterangan}\nPesanan diproses, tunggu konfirmasi."
+            )
+            await update.message.reply_text(
+                success_message,
+                reply_markup=ReplyKeyboardRemove()
+            )
         except Exception as e:
-            status_api = "ERROR"
-            keterangan = "Gagal proses ke provider"
-
-        # Simpan ke riwayat
-        self.save_riwayat(username, kode_produk, nama_produk, tujuan, harga_produk, saldo_awal, reff_id, status_api, keterangan)
-
-        # Feedback ke user
-        if status_api in ("SUKSES", "SUCCESS"):
+            logger.error(f"Error processing order: {e}")
             await update.message.reply_text(
-                f"🎉 SUKSES!\nProduk: {nama_produk}\nHarga: Rp {harga_produk:,}\nTujuan: {tujuan}\nID: {reff_id}\n{status_api}: {keterangan}",
-                reply_markup=ReplyKeyboardRemove()
-            )
-        elif status_api in ("GAGAL", "FAILED", "ERROR"):
-            await update.message.reply_text(
-                f"❌ GAGAL!\nProduk: {nama_produk}\nHarga: Rp {harga_produk:,}\nTujuan: {tujuan}\nID: {reff_id}\n{status_api}: {keterangan}",
-                reply_markup=ReplyKeyboardRemove()
-            )
-        else:
-            await update.message.reply_text(
-                f"📦 PROSES!\nProduk: {nama_produk}\nHarga: Rp {harga_produk:,}\nTujuan: {tujuan}\nID: {reff_id}\n{status_api}: {keterangan}\nTunggu update status.",
+                "❌ Terjadi Kesalahan.\nMaaf, error saat proses order di server.\nCoba lagi atau hubungi admin.",
                 reply_markup=ReplyKeyboardRemove()
             )
         context.user_data.clear()
@@ -269,7 +301,7 @@ class OrderHandler:
         import database
         user = query.from_user
         user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
-        saldo = self.get_user_saldo(user_id)
+        saldo = database.get_user_saldo(user_id)
         products = self.get_active_products()
         context.user_data["produk_list"] = products
         if not products:
