@@ -1,4 +1,3 @@
-# database.py
 import sqlite3
 import logging
 from datetime import datetime
@@ -67,7 +66,27 @@ def init_db():
                 waktu TEXT
             )
         ''')
-        
+
+        # Products table (fix: ensure stock column exists!)
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS products (
+                code TEXT PRIMARY KEY,
+                name TEXT,
+                price REAL,
+                status TEXT DEFAULT 'active',
+                description TEXT,
+                category TEXT,
+                stock INTEGER DEFAULT 0,
+                updated_at TEXT
+            )
+        ''')
+        # Emergency fix: add stock column if missing
+        try:
+            c.execute("SELECT stock FROM products LIMIT 1")
+        except sqlite3.OperationalError:
+            logger.info("Adding stock column to products table")
+            c.execute("ALTER TABLE products ADD COLUMN stock INTEGER DEFAULT 0")
+
         conn.commit()
         conn.close()
         logger.info("Database initialized successfully")
@@ -186,7 +205,7 @@ def emergency_fix_database():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        
+
         # Recreate other tables
         c.execute("DROP TABLE IF EXISTS transactions")
         c.execute('''
@@ -200,7 +219,7 @@ def emergency_fix_database():
                 FOREIGN KEY (user_id) REFERENCES users (user_id)
             )
         ''')
-        
+
         c.execute("DROP TABLE IF EXISTS riwayat_pembelian")
         c.execute('''
             CREATE TABLE riwayat_pembelian (
@@ -217,7 +236,22 @@ def emergency_fix_database():
                 waktu TEXT
             )
         ''')
-        
+
+        # Recreate products table with stock
+        c.execute("DROP TABLE IF EXISTS products")
+        c.execute('''
+            CREATE TABLE products (
+                code TEXT PRIMARY KEY,
+                name TEXT,
+                price REAL,
+                status TEXT DEFAULT 'active',
+                description TEXT,
+                category TEXT,
+                stock INTEGER DEFAULT 0,
+                updated_at TEXT
+            )
+        ''')
+
         conn.commit()
         conn.close()
         logger.info("Emergency database fix completed successfully")
@@ -235,8 +269,9 @@ try:
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT saldo FROM users LIMIT 1")
+    c.execute("SELECT stock FROM products LIMIT 1")
     conn.close()
 except sqlite3.OperationalError as e:
-    if "no such column: saldo" in str(e):
+    if "no such column: saldo" in str(e) or "no such column: stock" in str(e):
         logger.warning("Database structure issue detected, running emergency fix...")
         emergency_fix_database()
