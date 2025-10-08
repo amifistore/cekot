@@ -20,7 +20,6 @@ from telegram.ext import (
 # Setup logging
 logger = logging.getLogger(__name__)
 
-# Database path
 DB_PATH = "bot_database.db"
 
 # Conversation states
