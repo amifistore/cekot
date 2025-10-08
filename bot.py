@@ -1,4 +1,5 @@
 import config
+from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler
 from topup_handler import topup_conv_handler
 from order_handler import order_conv_handler
@@ -143,11 +144,8 @@ def main():
     print("✅ All handlers registered")
     print("🚀 Bot is running...")
     
-    # Start the bot
-    application.run_polling(
-        drop_pending_updates=True,
-        allowed_updates=Update.ALL_TYPES
-    )
+    # Start the bot - FIX: Remove Update.ALL_TYPES parameter
+    application.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
