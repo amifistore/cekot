@@ -499,3 +499,264 @@ def get_admin_handlers():
         admin_callback_query_handler,
         edit_produk_conv_handler,
     ]
+# ... (import dan setup di atas tetap sama, pastikan DB_PATH, log_admin_action, admin_check, dsb. sudah ada)
+
+# ============================
+# FITUR KELOLA TOPUP
+# ============================
+
+async def topup_list(update_or_query, context):
+    if isinstance(update_or_query, Update):
+        msg_func = update_or_query.message.reply_text
+    else:
+        msg_func = update_or_query.edit_message_text
+    await ensure_topup_requests_table()
+    async with aiosqlite.connect(DB_PATH) as conn:
+        async with conn.execute("""
+            SELECT id, user_id, username, full_name, amount, status, created_at 
+            FROM topup_requests 
+            ORDER BY created_at DESC LIMIT 20
+        """) as cursor:
+            rows = await cursor.fetchall()
+    if not rows:
+        await msg_func("📭 Tidak ada permintaan topup.")
+        return
+    msg = f"💳 **DAFTAR PERMINTAAN TOPUP (20 terbaru):**\n\n"
+    for req_id, user_id, username, full_name, amount, status, created_at in rows:
+        status_emoji = "⏳" if status == 'pending' else "✅" if status == 'approved' else "❌"
+        msg += f"{status_emoji} ID:`{req_id}` User:{full_name or username or user_id} Jumlah:Rp{amount:,.0f} Status:{status} Waktu:{created_at}\n"
+    await msg_func(msg, parse_mode='Markdown')
+
+# ============================
+# FITUR KELOLA USER
+# ============================
+
+async def show_users_menu(query):
+    keyboard = [
+        [InlineKeyboardButton("Cek User", callback_data="cek_user")],
+        [InlineKeyboardButton("Jadikan Admin", callback_data="jadikan_admin")],
+        [InlineKeyboardButton("⬅️ Kembali", callback_data="admin_back")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(
+        "👥 **MENU USER ADMIN**\n\nGunakan perintah:\n`/cek_user <username>` untuk cek saldo user.\n`/jadikan_admin <telegram_id>` untuk jadikan admin.",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
+async def cek_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    username = args[0] if args else None
+    if not username:
+        await update.message.reply_text("❌ Format: `/cek_user <username>`")
+        return
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT saldo, telegram_id FROM users WHERE username=?", (username,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        await update.message.reply_text(f"❌ User tidak ditemukan: `{username}`")
+        return
+    saldo, telegram_id = row
+    admin_status = "✅ Ya" if str(telegram_id) in config.ADMIN_TELEGRAM_IDS else "❌ Tidak"
+    await update.message.reply_text(
+        f"👤 **INFORMASI USER**\n\n"
+        f"📛 **Username:** `{username}`\n"
+        f"💰 **Saldo:** Rp {saldo:,.0f}\n"
+        f"🆔 **Telegram ID:** `{telegram_id}`\n"
+        f"👑 **Status Admin:** {admin_status}",
+        parse_mode='Markdown'
+    )
+
+async def jadikan_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    telegram_id = args[0] if args else None
+    if not telegram_id:
+        await update.message.reply_text("❌ Format: `/jadikan_admin <telegram_id>`")
+        return
+    config.ADMIN_TELEGRAM_IDS.append(str(telegram_id))
+    await update.message.reply_text(
+        f"✅ **Admin Berhasil Ditambahkan**\n\n"
+        f"**Telegram ID:** `{telegram_id}`",
+        parse_mode='Markdown'
+    )
+
+# ============================
+# FITUR STATISTIK
+# ============================
+
+async def show_stats_menu(query, context):
+    await ensure_products_table()
+    await ensure_topup_requests_table()
+    async with aiosqlite.connect(DB_PATH) as conn:
+        async with conn.execute("SELECT COUNT(*) FROM products WHERE status='active'") as cursor:
+            total_products = (await cursor.fetchone())[0]
+        async with conn.execute("SELECT COUNT(*) FROM products WHERE status='active' AND gangguan = 0 AND kosong = 0") as cursor:
+            available_products = (await cursor.fetchone())[0]
+        async with conn.execute("SELECT COUNT(*) FROM topup_requests WHERE status='pending'") as cursor:
+            pending_topups = (await cursor.fetchone())[0]
+        async with conn.execute("SELECT COUNT(*) FROM topup_requests WHERE status='approved'") as cursor:
+            approved_topups = (await cursor.fetchone())[0]
+        async with conn.execute("SELECT COUNT(*) FROM topup_requests") as cursor:
+            total_topups = (await cursor.fetchone())[0]
+    await query.edit_message_text(
+        f"📊 **STATISTIK SISTEM**\n\n"
+        f"📦 **PRODUK:**\n"
+        f"├ Total Produk: {total_products}\n"
+        f"└ Tersedia: {available_products}\n\n"
+        f"💳 **TOPUP:**\n"
+        f"├ Total: {total_topups}\n"
+        f"├ Pending: {pending_topups}\n"
+        f"└ Approved: {approved_topups}\n\n"
+        f"⏰ **Update:** {datetime.now().strftime('%d-%m-%Y %H:%M')}",
+        parse_mode='Markdown'
+    )
+
+# ============================
+# FITUR BROADCAST
+# ============================
+
+async def broadcast_start(query, context):
+    await query.edit_message_text(
+        "📢 Kirim pesan broadcast ke semua user.\n\nFormat: /broadcast <pesan>",
+        parse_mode='Markdown'
+    )
+
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("❌ Format: /broadcast <pesan>")
+        return
+    message = " ".join(context.args)
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT telegram_id FROM users")
+    users = c.fetchall()
+    conn.close()
+    success_count, fail_count = 0, 0
+    for (user_id,) in users:
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=f"📢 **BROADCAST FROM ADMIN**\n\n{message}",
+                parse_mode='Markdown'
+            )
+            success_count += 1
+        except Exception:
+            fail_count += 1
+    await update.message.reply_text(
+        f"✅ **Broadcast Selesai**\n\n"
+        f"Berhasil: {success_count}, Gagal: {fail_count}, Total: {success_count+fail_count}",
+        parse_mode='Markdown'
+    )
+
+# ============================
+# FITUR BACKUP DATABASE
+# ============================
+
+async def backup_database_from_query(query, context):
+    try:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_file = f"backup_{timestamp}.db"
+        shutil.copy2(DB_PATH, backup_file)
+        await context.bot.send_document(
+            chat_id=query.message.chat_id,
+            document=open(backup_file, 'rb'),
+            filename=backup_file,
+            caption=f"📦 Backup database berhasil\n🕒 {datetime.now().strftime('%d-%m-%Y %H:%M')}"
+        )
+        os.remove(backup_file)
+    except Exception as e:
+        await query.edit_message_text(f"❌ Gagal backup: {str(e)}")
+
+# ============================
+# FITUR SYSTEM HEALTH
+# ============================
+
+async def system_health_from_query(query, context):
+    try:
+        async with aiosqlite.connect(DB_PATH) as conn:
+            await conn.execute("SELECT 1")
+            db_status = "✅ Connected"
+        api_key = config.API_KEY_PROVIDER
+        url = f"https://panel.khfy-store.com/api_v2/list_product?api_key={api_key}"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=10) as resp:
+                    api_status = "✅ Connected" if resp.status == 200 else "❌ Disconnected"
+        except:
+            api_status = "❌ Disconnected"
+        stat = shutil.disk_usage(".")
+        free_gb = stat.free / (1024**3)
+        disk_status = f"✅ {free_gb:.1f} GB free"
+        await query.edit_message_text(
+            f"🏥 **SYSTEM HEALTH CHECK**\n\n"
+            f"📦 Database: {db_status}\n"
+            f"🌐 API Provider: {api_status}\n"
+            f"💾 Disk Space: {disk_status}\n"
+            f"🕒 Check Time: {datetime.now().strftime('%d-%m-%Y %H:%M:%S')}",
+            parse_mode='Markdown'
+        )
+    except Exception as e:
+        await query.edit_message_text(f"❌ Health check failed: {str(e)}")
+
+# ============================
+# FITUR CLEANUP DATA
+# ============================
+
+async def cleanup_data_from_query(query, context):
+    try:
+        cutoff_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+        async with aiosqlite.connect(DB_PATH) as conn:
+            cursor = await conn.execute(
+                "DELETE FROM topup_requests WHERE status='rejected' AND created_at < ?",
+                (cutoff_date,)
+            )
+            rejected_deleted = cursor.rowcount
+            cursor = await conn.execute(
+                "DELETE FROM admin_logs WHERE created_at < ?",
+                (cutoff_date,)
+            )
+            logs_deleted = cursor.rowcount
+            await conn.commit()
+        await query.edit_message_text(
+            f"🧹 **Cleanup Data Berhasil**\n\n"
+            f"📊 **Data yang dihapus:**\n"
+            f"├ Topup rejected: {rejected_deleted}\n"
+            f"└ Logs admin: {logs_deleted}\n\n"
+            f"⏰ **Cutoff date:** {cutoff_date}",
+            parse_mode='Markdown'
+        )
+    except Exception as e:
+        await query.edit_message_text(f"❌ Gagal cleanup: {str(e)}")
+
+# ============================
+# REGISTER HANDLERS & EXPORTS (tambahkan ke get_admin_handlers)
+# ============================
+
+admin_menu_handler = CommandHandler("admin", admin_menu)
+admin_callback_query_handler = CallbackQueryHandler(admin_callback_handler, pattern=r'^admin_')
+broadcast_handler = CommandHandler("broadcast", broadcast)
+cek_user_handler = CommandHandler("cek_user", cek_user)
+jadikan_admin_handler = CommandHandler("jadikan_admin", jadikan_admin)
+edit_produk_conv_handler = ConversationHandler(
+    entry_points=[CallbackQueryHandler(edit_produk_menu_handler, pattern='^(edit_harga|edit_deskripsi|admin_back|back_to_edit_menu)$')],
+    states={
+        EDIT_MENU: [CallbackQueryHandler(edit_produk_menu_handler, pattern='^(edit_harga|edit_deskripsi|admin_back|back_to_edit_menu)$')],
+        CHOOSE_PRODUCT: [CallbackQueryHandler(select_product_handler, pattern='^select_product:')],
+        EDIT_HARGA: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_harga_handler)],
+        EDIT_DESKRIPSI: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_deskripsi_handler)],
+    },
+    fallbacks=[CommandHandler('cancel', edit_produk_cancel)],
+    per_message=False
+)
+
+def get_admin_handlers():
+    return [
+        admin_menu_handler,
+        admin_callback_query_handler,
+        edit_produk_conv_handler,
+        broadcast_handler,
+        cek_user_handler,
+        jadikan_admin_handler,
+    ]
