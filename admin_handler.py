@@ -760,3 +760,32 @@ def get_admin_handlers():
         cek_user_handler,
         jadikan_admin_handler,
     ]
+admin_menu_handler = CommandHandler("admin", admin_menu)
+admin_callback_query_handler = CallbackQueryHandler(admin_callback_handler, pattern=r'^admin_')
+edit_produk_conv_handler = ConversationHandler(
+    entry_points=[CallbackQueryHandler(edit_produk_menu_handler, pattern='^(edit_harga|edit_deskripsi|admin_back|back_to_edit_menu)$')],
+    states={
+        EDIT_MENU: [CallbackQueryHandler(edit_produk_menu_handler, pattern='^(edit_harga|edit_deskripsi|admin_back|back_to_edit_menu)$')],
+        CHOOSE_PRODUCT: [CallbackQueryHandler(select_product_handler, pattern='^select_product:')],
+        EDIT_HARGA: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_harga_handler)],
+        EDIT_DESKRIPSI: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_deskripsi_handler)],
+    },
+    fallbacks=[CommandHandler('cancel', edit_produk_cancel)],
+    per_message=False
+)
+broadcast_handler = CommandHandler("broadcast", broadcast)
+cek_user_handler = CommandHandler("cek_user", cek_user)
+jadikan_admin_handler = CommandHandler("jadikan_admin", jadikan_admin)
+topup_list_handler = CommandHandler("topup_list", topup_list)
+
+def get_admin_handlers():
+    return [
+        admin_menu_handler,
+        admin_callback_query_handler,
+        edit_produk_conv_handler,
+        broadcast_handler,
+        cek_user_handler,
+        jadikan_admin_handler,
+        topup_list_handler,
+        # tambahkan handler admin lain di sini
+    ]
