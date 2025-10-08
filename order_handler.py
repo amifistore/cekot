@@ -51,24 +51,6 @@ class OrderHandler:
             )
         ''')
         
-        # Orders history table
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS riwayat_pembelian (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id TEXT,
-                kode_produk TEXT,
-                nama_produk TEXT,
-                tujuan TEXT,
-                harga REAL,
-                saldo_awal REAL,
-                saldo_akhir REAL,
-                reff_id TEXT,
-                status_api TEXT,
-                keterangan TEXT,
-                waktu TEXT
-            )
-        ''')
-        
         # Check if sample products exist
         c.execute("SELECT COUNT(*) FROM products WHERE status='active'")
         if c.fetchone()[0] == 0:
@@ -76,7 +58,7 @@ class OrderHandler:
         
         conn.commit()
         conn.close()
-        logger.info("Database initialized successfully")
+        logger.info("✅ Order Handler database initialized successfully")
 
     def _insert_sample_products(self, cursor):
         """Insert sample products"""
@@ -84,53 +66,14 @@ class OrderHandler:
             ('XLA14', 'SuperMini', 40000, 'active', 'Produk SuperMini terbaik', 'VPS', 10, datetime.now().isoformat()),
             ('TES', 'Produk TEST', 20000, 'active', 'Produk untuk testing', 'TEST', 5, datetime.now().isoformat()),
             ('XLA39', 'XLA39 Premium', 50000, 'active', 'Produk premium dengan fitur lengkap', 'VPS', 8, datetime.now().isoformat()),
-            ('M1', 'Medium Package 1', 75000, 'active', 'Paket medium dengan spesifikasi menengah', 'VPS', 6, datetime.now().isoformat()),
-            ('L1', 'Large Package 1', 100000, 'active', 'Paket besar untuk kebutuhan tinggi', 'VPS', 3, datetime.now().isoformat())
         ]
         cursor.executemany(
             "INSERT INTO products (code, name, price, status, description, category, stock, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             sample_products
         )
-        logger.info("Sample products inserted")
+        logger.info("✅ Sample products inserted")
 
-    # Database helper methods
-    def get_or_create_user(self, user_id, username, full_name):
-        """Get or create user in database"""
-        conn = sqlite3.connect(self.DB_PATH)
-        c = conn.cursor()
-        
-        c.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
-        user = c.fetchone()
-        
-        if not user:
-            c.execute(
-                "INSERT INTO users (user_id, username, full_name, created_at) VALUES (?, ?, ?, ?)",
-                (user_id, username, full_name, datetime.now().isoformat())
-            )
-            conn.commit()
-            logger.info(f"New user created: {user_id}")
-        
-        conn.close()
-        return user_id
-
-    def get_user_saldo(self, user_id):
-        """Get user balance"""
-        conn = sqlite3.connect(self.DB_PATH)
-        c = conn.cursor()
-        c.execute("SELECT saldo FROM users WHERE user_id = ?", (user_id,))
-        result = c.fetchone()
-        conn.close()
-        
-        return result[0] if result else 0
-
-    def increment_user_saldo(self, user_id, amount):
-        """Update user balance"""
-        conn = sqlite3.connect(self.DB_PATH)
-        c = conn.cursor()
-        c.execute("UPDATE users SET saldo = saldo + ? WHERE user_id = ?", (amount, user_id))
-        conn.commit()
-        conn.close()
-
+    # Database methods
     def get_active_products(self):
         """Get all active products from database"""
         conn = sqlite3.connect(self.DB_PATH)
@@ -160,6 +103,7 @@ class OrderHandler:
 
     def save_order(self, user_id, product, tujuan, saldo_awal, status="SUCCESS"):
         """Save order to database"""
+        import database
         reff_id = f"ORDER_{datetime.now().strftime('%Y%m%d%H%M%S')}"
         waktu = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         saldo_akhir = saldo_awal - product[2]
@@ -187,9 +131,10 @@ class OrderHandler:
     # Order Conversation Handlers
     async def order_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start order process from command"""
+        import database
         user = update.message.from_user
-        user_id = self.get_or_create_user(str(user.id), user.username, user.full_name)
-        saldo = self.get_user_saldo(user_id)
+        user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
+        saldo = database.get_user_saldo(user_id)
         
         # Get products from database
         products = self.get_active_products()
@@ -200,7 +145,8 @@ class OrderHandler:
                 "❌ **Produk Belum Tersedia**\n\n"
                 "Maaf, saat ini tidak ada produk yang tersedia.\n"
                 "Silakan coba lagi nanti atau hubungi admin.",
-                parse_mode='Markdown'
+                parse_mode='Markdown',
+                reply_markup=ReplyKeyboardRemove()
             )
             return ConversationHandler.END
         
@@ -350,6 +296,7 @@ class OrderHandler:
 
     async def order_confirm(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle order confirmation and processing"""
+        import database
         user = update.message.from_user
         user_input = update.message.text.strip()
         
@@ -373,10 +320,10 @@ class OrderHandler:
             context.user_data.clear()
             return ConversationHandler.END
         
-        user_id = self.get_or_create_user(str(user.id), user.username, user.full_name)
+        user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
         product = context.user_data["order_produk"]
         tujuan = context.user_data["order_tujuan"]
-        saldo_awal = self.get_user_saldo(user_id)
+        saldo_awal = database.get_user_saldo(user_id)
         
         # Check balance
         if saldo_awal < product[2]:
@@ -409,7 +356,7 @@ class OrderHandler:
         # Process order
         try:
             # Deduct balance
-            self.increment_user_saldo(user_id, -product[2])
+            database.increment_user_saldo(user_id, -product[2])
             
             # Save order to database
             reff_id, saldo_akhir = self.save_order(user_id, product, tujuan, saldo_awal)
@@ -434,9 +381,6 @@ class OrderHandler:
                 reply_markup=ReplyKeyboardRemove(),
                 parse_mode='Markdown'
             )
-            
-            # Send notification to admin (optional)
-            await self._notify_admin(context.bot, user, product, tujuan, reff_id)
             
         except Exception as e:
             logger.error(f"Error processing order: {e}")
@@ -465,9 +409,10 @@ class OrderHandler:
     # Callback handlers for inline keyboard
     async def start_order_from_callback(self, query, context: ContextTypes.DEFAULT_TYPE):
         """Start order process from callback query"""
+        import database
         user = query.from_user
-        user_id = self.get_or_create_user(str(user.id), user.username, user.full_name)
-        saldo = self.get_user_saldo(user_id)
+        user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
+        saldo = database.get_user_saldo(user_id)
         
         # Get products from database
         products = self.get_active_products()
@@ -504,9 +449,6 @@ class OrderHandler:
             ),
             parse_mode='Markdown'
         )
-        
-        # Set conversation state
-        context.user_data['conversation_state'] = ASK_ORDER_PRODUK
 
     # Utility methods
     def _validate_phone_number(self, phone):
@@ -518,30 +460,6 @@ class OrderHandler:
         if not phone.isdigit():
             return False
         return True
-
-    async def _notify_admin(self, bot, user, product, tujuan, reff_id):
-        """Notify admin about new order (optional)"""
-        try:
-            # Replace with actual admin chat ID
-            admin_chat_id = "ADMIN_CHAT_ID"  # You should set this in config
-            
-            notification = (
-                f"🆕 **ORDER BARU**\n\n"
-                f"👤 **User:** {user.full_name} (@{user.username})\n"
-                f"📦 **Produk:** {product[1]}\n"
-                f"💵 **Harga:** Rp {product[2]:,}\n"
-                f"📱 **Tujuan:** {tujuan}\n"
-                f"📋 **ID Transaksi:** {reff_id}\n"
-                f"🕐 **Waktu:** {datetime.now().strftime('%d-%m-%Y %H:%M:%S')}"
-            )
-            
-            await bot.send_message(
-                chat_id=admin_chat_id,
-                text=notification,
-                parse_mode='Markdown'
-            )
-        except Exception as e:
-            logger.error(f"Failed to notify admin: {e}")
 
     def get_conversation_handler(self):
         """Return the conversation handler for orders"""
@@ -566,21 +484,8 @@ class OrderHandler:
                 CommandHandler('cancel', self.order_cancel),
                 CommandHandler('batal', self.order_cancel),
                 MessageHandler(filters.Regex('^❌ Batalkan Order$'), self.order_cancel)
-            ],
-            allow_reentry=True
+            ]
         )
-
-    def get_callback_handler(self):
-        """Return callback handler for order-related callbacks"""
-        return CallbackQueryHandler(self._handle_order_callback, pattern="^(order|beli|buy)")
-
-    async def _handle_order_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle order-related callback queries"""
-        query = update.callback_query
-        await query.answer()
-        
-        if query.data in ["order", "beli", "buy"]:
-            await self.start_order_from_callback(query, context)
 
 # Export handler instance
 order_handler = OrderHandler()
