@@ -2,7 +2,7 @@ import requests
 import sqlite3
 from datetime import datetime
 
-DB_PATH = "bot_topup.db"
+DB_PATH = "bot_database.db"
 API_KEY = "B66AB76B-A7AF-40BF-B037-1E58332E12EA"  # Ganti sesuai config!
 
 def update_produk():
