@@ -5,7 +5,7 @@ import re
 from datetime import datetime
 import database
 
-DB_PATH = "bot_topup.db"
+DB_PATH = "bot_database.db"
 
 app = Flask(__name__)
 
