@@ -13,11 +13,6 @@ from telegram.ext import (
     filters
 )
 
-# Import handlers
-from order_handler import order_handler
-from admin_handler import admin_handler
-import database
-
 # Setup logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -36,14 +31,49 @@ except (ImportError, AttributeError) as e:
     if not BOT_TOKEN:
         raise ValueError("❌ BOT_TOKEN tidak ditemukan. Pastikan file config.py ada dan berisi TOKEN, atau set environment variable BOT_TOKEN")
 
+# Import order handler
+try:
+    from order_handler import order_handler
+    ORDER_HANDLER_AVAILABLE = True
+    logger.info("✅ Order handler loaded successfully")
+except ImportError as e:
+    logger.error(f"❌ Failed to load order handler: {e}")
+    ORDER_HANDLER_AVAILABLE = False
+
+# Import admin handler dengan error handling
+try:
+    from admin_handler import admin_handler
+    ADMIN_HANDLER_AVAILABLE = True
+    logger.info("✅ Admin handler loaded successfully")
+except ImportError as e:
+    logger.warning(f"⚠️ Admin handler not available: {e}")
+    ADMIN_HANDLER_AVAILABLE = False
+
+# Import database
+try:
+    import database
+    DATABASE_AVAILABLE = True
+    logger.info("✅ Database module loaded successfully")
+except ImportError as e:
+    logger.error(f"❌ Failed to load database module: {e}")
+    DATABASE_AVAILABLE = False
+
 # Start command handler
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send welcome message with inline keyboard"""
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     
     user = update.message.from_user
-    user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
-    saldo = database.get_user_saldo(user_id)
+    
+    # Get user balance if database available
+    saldo = 0
+    if DATABASE_AVAILABLE:
+        try:
+            user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
+            saldo = database.get_user_saldo(user_id)
+        except Exception as e:
+            logger.error(f"Error getting user balance: {e}")
+            saldo = 0
     
     keyboard = [
         [
@@ -55,6 +85,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("📞 BANTUAN", callback_data="help")
         ]
     ]
+    
+    if ADMIN_HANDLER_AVAILABLE:
+        keyboard.append([InlineKeyboardButton("👑 ADMIN PANEL", callback_data="admin")])
+    
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.message.reply_text(
@@ -76,15 +110,29 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     callback_data = query.data
     user = query.from_user
-    user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
-    saldo = database.get_user_saldo(user_id)
+    
+    if DATABASE_AVAILABLE:
+        try:
+            user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
+            saldo = database.get_user_saldo(user_id)
+        except Exception as e:
+            logger.error(f"Error getting user balance: {e}")
+            saldo = 0
+    else:
+        saldo = 0
     
     if callback_data == "order":
-        # Start order process
-        await order_handler.start_order_from_callback(query, context)
+        if ORDER_HANDLER_AVAILABLE:
+            await order_handler.start_order_from_callback(query, context)
+        else:
+            await query.edit_message_text(
+                "❌ **Fitur Order Sedang Tidak Tersedia**\n\n"
+                "Maaf, sistem order sedang dalam perbaikan.\n"
+                "Silakan coba lagi nanti atau hubungi admin.",
+                parse_mode='Markdown'
+            )
         
     elif callback_data == "saldo":
-        # Check balance
         await query.edit_message_text(
             f"💰 **SALDO ANDA**\n\n"
             f"Saldo saat ini: **Rp {saldo:,.0f}**\n\n"
@@ -93,7 +141,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
     elif callback_data == "topup":
-        # Topup instructions
         instructions = (
             "💰 **TOP UP SALDO**\n\n"
             "Untuk topup saldo, silakan transfer ke:\n\n"
@@ -106,7 +153,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(instructions, parse_mode='Markdown')
         
     elif callback_data == "help":
-        # Help message
         help_text = (
             "📞 **BANTUAN & SUPPORT**\n\n"
             "Jika Anda mengalami kendala atau butuh bantuan:\n\n"
@@ -123,6 +169,26 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Terima kasih! 😊"
         )
         await query.edit_message_text(help_text, parse_mode='Markdown')
+        
+    elif callback_data == "admin" and ADMIN_HANDLER_AVAILABLE:
+        # Handle admin panel callback
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        
+        admin_keyboard = [
+            [InlineKeyboardButton("📊 Statistik", callback_data="admin_stats")],
+            [InlineKeyboardButton("📦 Kelola Produk", callback_data="admin_products")],
+            [InlineKeyboardButton("👥 Kelola User", callback_data="admin_users")],
+            [InlineKeyboardButton("🔙 Kembali", callback_data="back_to_main")]
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(admin_keyboard)
+        
+        await query.edit_message_text(
+            "👑 **ADMIN PANEL**\n\n"
+            "Silakan pilih menu admin:",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
 
 # Error handler
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -152,25 +218,42 @@ def main():
         # Create application
         application = Application.builder().token(BOT_TOKEN).build()
         
-        # Add handlers
+        # Add basic handlers
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("help", start))
         
-        # Add order conversation handler
-        application.add_handler(order_handler.get_conversation_handler())
+        # Add order conversation handler jika available
+        if ORDER_HANDLER_AVAILABLE:
+            application.add_handler(order_handler.get_conversation_handler())
+            logger.info("✅ Order handler registered")
+        else:
+            logger.warning("⚠️ Order handler not available")
         
         # Add callback query handler
         application.add_handler(CallbackQueryHandler(handle_callback))
         
-        # Add admin handlers if available
-        try:
-            if hasattr(admin_handler, 'get_admin_handlers'):
-                admin_handlers = admin_handler.get_admin_handlers()
-                for handler in admin_handlers:
-                    application.add_handler(handler)
-                logger.info("✅ Admin handlers loaded")
-        except Exception as e:
-            logger.warning(f"⚠️ Admin handlers not loaded: {e}")
+        # Add admin handlers jika available
+        if ADMIN_HANDLER_AVAILABLE:
+            try:
+                # Coba berbagai cara untuk mendapatkan admin handlers
+                if hasattr(admin_handler, 'get_admin_handlers'):
+                    admin_handlers = admin_handler.get_admin_handlers()
+                    for handler in admin_handlers:
+                        application.add_handler(handler)
+                    logger.info("✅ Admin handlers loaded via get_admin_handlers()")
+                elif hasattr(admin_handler, 'get_conversation_handler'):
+                    application.add_handler(admin_handler.get_conversation_handler())
+                    logger.info("✅ Admin conversation handler loaded")
+                elif isinstance(admin_handler, list):
+                    for handler in admin_handler:
+                        application.add_handler(handler)
+                    logger.info("✅ Admin handlers loaded as list")
+                else:
+                    logger.warning("⚠️ Unknown admin handler format")
+            except Exception as e:
+                logger.error(f"❌ Failed to load admin handlers: {e}")
+        else:
+            logger.warning("⚠️ Admin handler not available")
         
         # Add error handler
         application.add_error_handler(error_handler)
