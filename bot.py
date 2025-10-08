@@ -49,7 +49,7 @@ except ImportError as e:
 
 # Import admin handler
 try:
-    from admin_handler import get_admin_handlers, admin_menu
+    from admin_handler import get_admin_handlers, admin_menu, admin_callback_handler
     admin_handlers = get_admin_handlers()
     ADMIN_HANDLER_AVAILABLE = True
     logger.info("✅ Admin handler loaded successfully")
@@ -113,6 +113,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Error getting user balance: {e}")
             saldo = 0
 
+    # Prioritaskan menu admin jika callback_data dimulai "admin_"
+    if ADMIN_HANDLER_AVAILABLE and (callback_data.startswith("admin_") or callback_data in [
+        "edit_harga", "edit_deskripsi", "back_to_edit_menu", "select_product:"
+    ]):
+        await admin_callback_handler(update, context)
+        return
+
     if callback_data == "order":
         if ORDER_HANDLER_AVAILABLE:
             await order_handler.start_order_from_callback(query, context)
@@ -132,7 +139,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     elif callback_data == "topup":
         if TOPUP_HANDLER_AVAILABLE:
-            # Trigger conversation, user lanjut /topup
             await query.edit_message_text(
                 "💳 Memulai proses topup...\n\nKetik nominal yang ingin di-topup, contoh: `10000`.\nAtau ketik /topup untuk mulai.",
                 parse_mode='Markdown'
