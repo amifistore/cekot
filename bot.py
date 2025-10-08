@@ -19,7 +19,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Import config - dengan error handling
+# Import config
 try:
     import config
     BOT_TOKEN = config.BOT_TOKEN
@@ -37,6 +37,15 @@ try:
 except ImportError as e:
     logger.error(f"❌ Failed to load order handler: {e}")
     ORDER_HANDLER_AVAILABLE = False
+
+# Import topup handler
+try:
+    from topup_handler import topup_conv_handler
+    TOPUP_HANDLER_AVAILABLE = True
+    logger.info("✅ Topup handler loaded successfully")
+except ImportError as e:
+    logger.error(f"❌ Failed to load topup handler: {e}")
+    TOPUP_HANDLER_AVAILABLE = False
 
 # Import admin handler
 try:
@@ -121,16 +130,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
     elif callback_data == "topup":
-        instructions = (
-            "💰 **TOP UP SALDO**\n\n"
-            "Untuk topup saldo, silakan transfer ke:\n\n"
-            "📍 **BCA**: 123-456-7890 (Amifi Store)\n"
-            "📍 **BRI**: 098-765-4321 (Amifi Store)\n\n"
-            "Setelah transfer, kirim bukti transfer ke @admin\n"
-            "Saldo akan ditambahkan dalam 1-5 menit.\n\n"
-            "Terima kasih! 😊"
-        )
-        await query.edit_message_text(instructions, parse_mode='Markdown')
+        if TOPUP_HANDLER_AVAILABLE:
+            # Mulai conversation topup
+            await query.edit_message_text(
+                "💳 Memulai proses topup...\n\nKetik nominal yang ingin di-topup, contoh: `10000`",
+                parse_mode='Markdown'
+            )
+            # User lanjut /topup
+        else:
+            await query.edit_message_text(
+                "❌ **Fitur Topup Sedang Tidak Tersedia**\n\n"
+                "Maaf, sistem topup sedang dalam perbaikan.\n"
+                "Silakan coba lagi nanti atau hubungi admin.",
+                parse_mode='Markdown'
+            )
     elif callback_data == "help":
         help_text = (
             "📞 **BANTUAN & SUPPORT**\n\n"
@@ -149,25 +162,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await query.edit_message_text(help_text, parse_mode='Markdown')
     elif callback_data == "admin" and ADMIN_HANDLER_AVAILABLE:
-        # Direct all admin callbacks to admin_handler's own menu/conversation
-        for handler in admin_handlers:
-            if hasattr(handler, "handle_callback"):
-                await handler.handle_callback(update, context)
-                return
-        # Fallback: show default admin panel
-        admin_keyboard = [
-            [InlineKeyboardButton("📊 Statistik", callback_data="admin_stats")],
-            [InlineKeyboardButton("📦 Kelola Produk", callback_data="admin_products")],
-            [InlineKeyboardButton("👥 Kelola User", callback_data="admin_users")],
-            [InlineKeyboardButton("🔙 Kembali", callback_data="back_to_main")]
-        ]
-        reply_markup = InlineKeyboardMarkup(admin_keyboard)
         await query.edit_message_text(
-            "👑 **ADMIN PANEL**\n\n"
-            "Silakan pilih menu admin:",
-            reply_markup=reply_markup,
+            "👑 Mengakses panel admin...",
             parse_mode='Markdown'
         )
+        # Selanjutnya admin_handler akan takeover menu dan fitur
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Exception while handling an update: {context.error}")
@@ -195,6 +194,11 @@ def main():
             logger.info("✅ Order handler registered")
         else:
             logger.warning("⚠️ Order handler not available")
+        if TOPUP_HANDLER_AVAILABLE:
+            application.add_handler(topup_conv_handler)
+            logger.info("✅ Topup handler registered")
+        else:
+            logger.warning("⚠️ Topup handler not available")
         application.add_handler(CallbackQueryHandler(handle_callback))
         if ADMIN_HANDLER_AVAILABLE:
             for handler in admin_handlers:
