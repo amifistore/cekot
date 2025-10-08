@@ -34,10 +34,9 @@ class OrderHandler:
         self._init_database()
 
     def _init_database(self):
-        """Initialize database with required tables"""
+        """Initialize database with required tables and columns (full fitur)"""
         conn = sqlite3.connect(self.DB_PATH)
         c = conn.cursor()
-        # Products table
         c.execute('''
             CREATE TABLE IF NOT EXISTS products (
                 code TEXT PRIMARY KEY,
@@ -53,7 +52,6 @@ class OrderHandler:
                 updated_at TEXT
             )
         ''')
-        # Riwayat Pembelian table
         c.execute('''
             CREATE TABLE IF NOT EXISTS riwayat_pembelian (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -70,36 +68,48 @@ class OrderHandler:
                 waktu TEXT
             )
         ''')
-        # Check if sample products exist
-        c.execute("SELECT COUNT(*) FROM products WHERE status='active'")
-        if c.fetchone()[0] == 0:
-            self._insert_sample_products(c)
+        # Patch: make sure required columns always exist
+        for col, dtype, dflt in [
+            ("provider", "TEXT", None),
+            ("gangguan", "INTEGER", "0"),
+            ("kosong", "INTEGER", "0"),
+            ("stock", "INTEGER", "0"),
+        ]:
+            try:
+                c.execute(f"SELECT {col} FROM products LIMIT 1")
+            except sqlite3.OperationalError:
+                dflt_str = f" DEFAULT {dflt}" if dflt is not None else ""
+                c.execute(f"ALTER TABLE products ADD COLUMN {col} {dtype}{dflt_str}")
+        # Ensure stock always at least 1 for all products
+        c.execute("UPDATE products SET stock = 10 WHERE stock IS NULL OR stock = 0")
         conn.commit()
         conn.close()
         logger.info("✅ Order Handler database initialized successfully")
 
-    def _insert_sample_products(self, cursor):
-        """Insert sample products"""
-        now = datetime.now().isoformat()
-        sample_products = [
-            ('XLA14', 'SuperMini', 40000, 'active', 'Produk SuperMini terbaik', 'VPS', 'PROVIDER', 0, 0, 10, now),
-            ('TES', 'Produk TEST', 20000, 'active', 'Produk untuk testing', 'TEST', 'PROVIDER', 0, 0, 5, now),
-            ('XLA39', 'XLA39 Premium', 50000, 'active', 'Produk premium dengan fitur lengkap', 'VPS', 'PROVIDER', 0, 0, 8, now),
-        ]
-        cursor.executemany(
-            "INSERT INTO products (code, name, price, status, description, category, provider, gangguan, kosong, stock, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            sample_products
-        )
-        logger.info("✅ Sample products inserted")
+    def get_all_products(self):
+        """Get all products (active, non-active, kosong, gangguan, stok 0)"""
+        conn = sqlite3.connect(self.DB_PATH)
+        c = conn.cursor()
+        c.execute('''
+            SELECT code, name, price, description, category, provider, gangguan, kosong, stock, status
+            FROM products
+            ORDER BY category, name ASC
+        ''')
+        products = c.fetchall()
+        conn.close()
+        return products
 
     def get_active_products(self):
-        """Get all active products from database"""
+        """Get all active products from database, fallback if field NULL."""
         conn = sqlite3.connect(self.DB_PATH)
         c = conn.cursor()
         c.execute('''
             SELECT code, name, price, description, stock 
             FROM products 
-            WHERE status='active' AND gangguan=0 AND kosong=0 AND stock > 0 
+            WHERE status='active'
+              AND COALESCE(gangguan,0)=0
+              AND COALESCE(kosong,0)=0
+              AND COALESCE(stock,10)>0
             ORDER BY category, name ASC
         ''')
         products = c.fetchall()
@@ -107,13 +117,17 @@ class OrderHandler:
         return products
 
     def get_product_by_code(self, code):
-        """Get product by code"""
+        """Get product by code, fallback if field NULL."""
         conn = sqlite3.connect(self.DB_PATH)
         c = conn.cursor()
         c.execute('''
             SELECT code, name, price, description, stock 
             FROM products 
-            WHERE code = ? AND status='active' AND gangguan=0 AND kosong=0 AND stock > 0
+            WHERE code = ?
+              AND status='active'
+              AND COALESCE(gangguan,0)=0
+              AND COALESCE(kosong,0)=0
+              AND COALESCE(stock,10)>0
         ''', (code,))
         product = c.fetchone()
         conn.close()
