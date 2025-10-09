@@ -1,4 +1,3 @@
-# FIXED: No regex bug, verified full flow for order, cancel, validation, logging
 import logging
 import sqlite3
 import requests
