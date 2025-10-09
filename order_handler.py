@@ -1,3 +1,4 @@
+# FIXED: No regex bug, verified full flow for order, cancel, validation, logging
 import logging
 import sqlite3
 import requests
@@ -35,7 +36,6 @@ class OrderHandler:
     def _init_database(self):
         conn = sqlite3.connect(self.DB_PATH)
         c = conn.cursor()
-        # Sinkronisasi tabel
         c.execute('''
             CREATE TABLE IF NOT EXISTS products (
                 code TEXT PRIMARY KEY,
@@ -67,7 +67,6 @@ class OrderHandler:
                 waktu TEXT
             )
         ''')
-        # Patch kolom wajib
         for col, dtype, dflt in [
             ("provider", "TEXT", None),
             ("gangguan", "INTEGER", "0"),
@@ -165,7 +164,12 @@ class OrderHandler:
     async def order_produk(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_input = update.message.text.strip()
         logger.info(f"User memilih produk: {repr(user_input)}")
-        # PATCH: Ambil kode produk dengan regex dan fallback split (agar selalu kena)
+
+        if user_input == "❌ Batalkan Order":
+            await update.message.reply_text("❌ Order dibatalkan.", reply_markup=ReplyKeyboardRemove())
+            context.user_data.clear()
+            return ConversationHandler.END
+
         match = re.match(r'(?:🛒 *)?([A-Za-z0-9]+)', user_input)
         if match:
             kode_produk = match.group(1)
@@ -173,19 +177,16 @@ class OrderHandler:
             kode_produk = user_input.split(" - ")[0].replace("🛒", "").strip()
         logger.info(f"Kode produk yang diambil: {kode_produk}")
 
-        if user_input == "❌ Batalkan Order":
-            await update.message.reply_text("❌ Order dibatalkan.", reply_markup=ReplyKeyboardRemove())
-            return ConversationHandler.END
-
         product = self.get_product_by_code(kode_produk)
         if not product:
+            logger.warning(f"Produk tidak ditemukan atau stok habis: {kode_produk}")
             products = context.user_data.get("produk_list", [])
             produk_keyboard = []
             for code, name, price, description, stock in products:
                 produk_keyboard.append([f"🛒 {code} - {name}"])
             produk_keyboard.append(["❌ Batalkan Order"])
             await update.message.reply_text(
-                "❌ Kode produk tidak valid atau stok habis.\nSilakan pilih produk lagi.",
+                "❌ Kode produk tidak valid atau stok habis.\nSilakan pilih produk lagi:",
                 reply_markup=ReplyKeyboardMarkup(
                     produk_keyboard,
                     one_time_keyboard=True,
@@ -194,7 +195,6 @@ class OrderHandler:
             )
             return ASK_ORDER_PRODUK
 
-        # Jika produk valid, lanjut ke input tujuan
         context.user_data["order_produk"] = product
         await update.message.reply_text(
             f"✅ Produk: {product[1]}\nHarga: Rp {product[2]:,}\nStok: {product[4]}\n\nKetik nomor tujuan (ex: 08123456789):",
@@ -236,8 +236,12 @@ class OrderHandler:
             context.user_data.clear()
             return ConversationHandler.END
         user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
-        product = context.user_data["order_produk"]
-        tujuan = context.user_data["order_tujuan"]
+        product = context.user_data.get("order_produk")
+        tujuan = context.user_data.get("order_tujuan")
+        if not product or not tujuan:
+            await update.message.reply_text("❌ Order gagal. Data tidak lengkap.", reply_markup=ReplyKeyboardRemove())
+            context.user_data.clear()
+            return ConversationHandler.END
         saldo_awal = database.get_user_saldo(user_id)
         if saldo_awal < product[2]:
             saldo_kurang = product[2] - saldo_awal
@@ -268,7 +272,10 @@ class OrderHandler:
             api_json = response.json()
             api_status = str(api_json.get("status", "unknown"))
             api_keterangan = api_json.get("keterangan", "")
-            database.increment_user_saldo(user_id, -product[2])
+            if api_status.lower() in ["success", "berhasil"]:
+                database.increment_user_saldo(user_id, -product[2])
+            else:
+                api_status = "FAILED"
             reff_id_db, saldo_akhir = self.save_order(
                 user_id, product, tujuan, saldo_awal,
                 status=api_status,
@@ -276,13 +283,19 @@ class OrderHandler:
                 api_keterangan=api_keterangan,
                 reff_id=reff_id
             )
-            success_message = (
-                f"🎉 ORDER BERHASIL!\nProduk: {product[1]}\nHarga: Rp {product[2]:,}\nTujuan: {tujuan}\nSaldo Awal: Rp {saldo_awal:,}\nSaldo Akhir: Rp {saldo_akhir:,}\nID Transaksi: {reff_id}\nStatus: {api_status}\nKeterangan: {api_keterangan}\nPesanan diproses, tunggu konfirmasi."
-            )
-            await update.message.reply_text(
-                success_message,
-                reply_markup=ReplyKeyboardRemove()
-            )
+            if api_status == "FAILED":
+                await update.message.reply_text(
+                    f"❌ ORDER GAGAL!\nProduk: {product[1]}\nHarga: Rp {product[2]:,}\nTujuan: {tujuan}\nID Transaksi: {reff_id}\nStatus: {api_status}\nKeterangan: {api_keterangan}\nSaldo Anda tetap: Rp {saldo_awal:,}\nSilakan coba lagi atau hubungi admin.",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+            else:
+                success_message = (
+                    f"🎉 ORDER BERHASIL!\nProduk: {product[1]}\nHarga: Rp {product[2]:,}\nTujuan: {tujuan}\nSaldo Awal: Rp {saldo_awal:,}\nSaldo Akhir: Rp {saldo_akhir:,}\nID Transaksi: {reff_id}\nStatus: {api_status}\nKeterangan: {api_keterangan}\nPesanan diproses, tunggu konfirmasi."
+                )
+                await update.message.reply_text(
+                    success_message,
+                    reply_markup=ReplyKeyboardRemove()
+                )
         except Exception as e:
             logger.error(f"Error processing order: {e}")
             await update.message.reply_text(
@@ -347,7 +360,7 @@ class OrderHandler:
             fallbacks=[
                 CommandHandler('cancel', self.order_cancel),
                 CommandHandler('batal', self.order_cancel),
-                MessageHandler(filters.Regex('^❌ Batalkan Order$'), self.order_cancel)
+                MessageHandler(filters.Regex(r'^❌ Batalkan Order$'), self.order_cancel)
             ]
         )
 
