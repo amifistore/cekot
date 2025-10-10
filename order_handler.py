@@ -4,28 +4,20 @@ import requests
 import uuid
 import re
 from datetime import datetime
-from telegram import (
-    Update, 
-    ReplyKeyboardMarkup, 
-    ReplyKeyboardRemove
-)
-from telegram.ext import (
-    ConversationHandler,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters
-)
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram.ext import ConversationHandler, CommandHandler, MessageHandler, ContextTypes, filters
 
 logger = logging.getLogger(__name__)
 
 DB_PATH = "bot_database.db"
-
 ASK_ORDER_PRODUK, ASK_ORDER_TUJUAN, ASK_ORDER_CONFIRM = range(3)
 
 API_URL = "https://panel.khfy-store.com/api_v2"
-from config import API_KEY_PROVIDER
-API_KEY = API_KEY_PROVIDER
+try:
+    from config import API_KEY_PROVIDER
+    API_KEY = API_KEY_PROVIDER
+except ImportError:
+    API_KEY = "YOUR_API_KEY"
 
 class OrderHandler:
     def __init__(self, db_path=DB_PATH):
@@ -35,7 +27,6 @@ class OrderHandler:
     def _init_database(self):
         conn = sqlite3.connect(self.DB_PATH)
         c = conn.cursor()
-        # Sinkronisasi tabel produk
         c.execute('''
             CREATE TABLE IF NOT EXISTS products (
                 code TEXT PRIMARY KEY,
@@ -44,10 +35,7 @@ class OrderHandler:
                 status TEXT DEFAULT 'active',
                 description TEXT,
                 category TEXT,
-                provider TEXT,
-                gangguan INTEGER DEFAULT 0,
-                kosong INTEGER DEFAULT 0,
-                stock INTEGER DEFAULT 0,
+                stock INTEGER DEFAULT 10,
                 updated_at TEXT
             )
         ''')
@@ -67,21 +55,8 @@ class OrderHandler:
                 waktu TEXT
             )
         ''')
-        for col, dtype, dflt in [
-            ("provider", "TEXT", None),
-            ("gangguan", "INTEGER", "0"),
-            ("kosong", "INTEGER", "0"),
-            ("stock", "INTEGER", "0"),
-        ]:
-            try:
-                c.execute(f"SELECT {col} FROM products LIMIT 1")
-            except sqlite3.OperationalError:
-                dflt_str = f" DEFAULT {dflt}" if dflt is not None else ""
-                c.execute(f"ALTER TABLE products ADD COLUMN {col} {dtype}{dflt_str}")
-        c.execute("UPDATE products SET stock = 10 WHERE stock IS NULL OR stock = 0")
         conn.commit()
         conn.close()
-        logger.info("✅ Order Handler database initialized successfully")
 
     def get_active_products(self):
         conn = sqlite3.connect(self.DB_PATH)
@@ -89,10 +64,7 @@ class OrderHandler:
         c.execute('''
             SELECT code, name, price, description, stock
             FROM products
-            WHERE status='active'
-              AND COALESCE(gangguan,0)=0
-              AND COALESCE(kosong,0)=0
-              AND COALESCE(stock,10)>0
+            WHERE status='active' AND stock > 0
             ORDER BY category, name ASC
         ''')
         products = c.fetchall()
@@ -105,11 +77,7 @@ class OrderHandler:
         c.execute('''
             SELECT code, name, price, description, stock
             FROM products
-            WHERE code = ?
-              AND status='active'
-              AND COALESCE(gangguan,0)=0
-              AND COALESCE(kosong,0)=0
-              AND COALESCE(stock,10)>0
+            WHERE code = ? AND status='active' AND stock > 0
         ''', (code,))
         product = c.fetchone()
         conn.close()
@@ -142,59 +110,34 @@ class OrderHandler:
         products = self.get_active_products()
         context.user_data["produk_list"] = products
         if not products:
-            await update.message.reply_text(
-                "❌ Tidak ada produk tersedia.\nCoba lagi nanti.",
-                reply_markup=ReplyKeyboardRemove()
-            )
+            await update.message.reply_text("❌ Tidak ada produk tersedia.", reply_markup=ReplyKeyboardRemove())
             return ConversationHandler.END
-        produk_keyboard = []
-        for code, name, price, description, stock in products:
-            produk_keyboard.append([f"🛒 {code} - {name}"])
+        produk_keyboard = [[f"🛒 {code} - {name}"] for code, name, price, description, stock in products]
         produk_keyboard.append(["❌ Batalkan Order"])
         await update.message.reply_text(
             f"💰 Saldo Anda: Rp {saldo:,}\n\nPILIH PRODUK:",
-            reply_markup=ReplyKeyboardMarkup(
-                produk_keyboard,
-                one_time_keyboard=True,
-                resize_keyboard=True
-            )
+            reply_markup=ReplyKeyboardMarkup(produk_keyboard, one_time_keyboard=True, resize_keyboard=True)
         )
         return ASK_ORDER_PRODUK
 
     async def order_produk(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_input = update.message.text.strip()
-        logger.info(f"User memilih produk: {repr(user_input)}")
-
         if user_input == "❌ Batalkan Order":
             await update.message.reply_text("❌ Order dibatalkan.", reply_markup=ReplyKeyboardRemove())
             context.user_data.clear()
             return ConversationHandler.END
-
         match = re.match(r'(?:🛒 *)?([A-Za-z0-9]+)', user_input)
-        if match:
-            kode_produk = match.group(1)
-        else:
-            kode_produk = user_input.split(" - ")[0].replace("🛒", "").strip()
-        logger.info(f"Kode produk yang diambil: {kode_produk}")
-
+        kode_produk = match.group(1) if match else user_input.split(" - ")[0].replace("🛒", "").strip()
         product = self.get_product_by_code(kode_produk)
         if not product:
-            logger.warning(f"Produk tidak ditemukan atau stok habis: {kode_produk}")
             products = context.user_data.get("produk_list", [])
-            produk_keyboard = []
-            for code, name, price, description, stock in products:
-                produk_keyboard.append([f"🛒 {code} - {name}"])
+            produk_keyboard = [[f"🛒 {code} - {name}"] for code, name, price, description, stock in products]
             produk_keyboard.append(["❌ Batalkan Order"])
             await update.message.reply_text(
                 "❌ Kode produk tidak valid atau stok habis.\nSilakan pilih produk lagi:",
-                reply_markup=ReplyKeyboardMarkup(
-                    produk_keyboard,
-                    one_time_keyboard=True,
-                    resize_keyboard=True
-                )
+                reply_markup=ReplyKeyboardMarkup(produk_keyboard, one_time_keyboard=True, resize_keyboard=True)
             )
             return ASK_ORDER_PRODUK
-
         context.user_data["order_produk"] = product
         await update.message.reply_text(
             f"✅ Produk: {product[1]}\nHarga: Rp {product[2]:,}\nStok: {product[4]}\n\nKetik nomor tujuan (ex: 08123456789):",
@@ -204,7 +147,7 @@ class OrderHandler:
 
     async def order_tujuan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         tujuan = update.message.text.strip()
-        if not self._validate_phone_number(tujuan):
+        if not (tujuan.startswith("08") and tujuan.isdigit() and 10 <= len(tujuan) <= 14):
             await update.message.reply_text(
                 "❌ Format nomor tidak valid.\nFormat: 08xxxxxxxxxx (10-14 digit, hanya angka)\nCoba lagi.",
                 reply_markup=ReplyKeyboardRemove()
@@ -215,11 +158,7 @@ class OrderHandler:
         confirm_keyboard = [["✅ Konfirmasi & Bayar", "❌ Batalkan Order"]]
         await update.message.reply_text(
             f"📋 KONFIRMASI\nProduk: {product[1]}\nKode: {product[0]}\nHarga: Rp {product[2]:,}\nTujuan: {tujuan}\n\nKonfirmasi?",
-            reply_markup=ReplyKeyboardMarkup(
-                confirm_keyboard,
-                one_time_keyboard=True,
-                resize_keyboard=True
-            )
+            reply_markup=ReplyKeyboardMarkup(confirm_keyboard, one_time_keyboard=True, resize_keyboard=True)
         )
         return ASK_ORDER_CONFIRM
 
@@ -272,7 +211,6 @@ class OrderHandler:
             api_json = response.json()
             api_status = str(api_json.get("status", "unknown"))
             api_keterangan = api_json.get("keterangan", "")
-            # Saldo hanya dipotong jika API success
             if api_status.lower() in ["success", "berhasil"]:
                 database.increment_user_saldo(user_id, -product[2])
             else:
@@ -290,15 +228,11 @@ class OrderHandler:
                     reply_markup=ReplyKeyboardRemove()
                 )
             else:
-                success_message = (
-                    f"🎉 ORDER BERHASIL!\nProduk: {product[1]}\nHarga: Rp {product[2]:,}\nTujuan: {tujuan}\nSaldo Awal: Rp {saldo_awal:,}\nSaldo Akhir: Rp {saldo_akhir:,}\nID Transaksi: {reff_id}\nStatus: {api_status}\nKeterangan: {api_keterangan}\nPesanan diproses, tunggu konfirmasi."
-                )
                 await update.message.reply_text(
-                    success_message,
+                    f"🎉 ORDER BERHASIL!\nProduk: {product[1]}\nHarga: Rp {product[2]:,}\nTujuan: {tujuan}\nSaldo Awal: Rp {saldo_awal:,}\nSaldo Akhir: Rp {saldo_akhir:,}\nID Transaksi: {reff_id}\nStatus: {api_status}\nKeterangan: {api_keterangan}\nPesanan diproses.",
                     reply_markup=ReplyKeyboardRemove()
                 )
-        except Exception as e:
-            logger.error(f"Error processing order: {e}")
+        except Exception:
             await update.message.reply_text(
                 "❌ Terjadi Kesalahan.\nMaaf, error saat proses order di server.\nCoba lagi atau hubungi admin.",
                 reply_markup=ReplyKeyboardRemove()
@@ -321,31 +255,18 @@ class OrderHandler:
         if not products:
             await query.edit_message_text("❌ Tidak ada produk tersedia.", parse_mode='Markdown')
             return
-        produk_keyboard = []
-        for code, name, price, description, stock in products:
-            produk_keyboard.append([f"🛒 {code} - {name}"])
+        produk_keyboard = [[f"🛒 {code} - {name}"] for code, name, price, description, stock in products]
         produk_keyboard.append(["❌ Batalkan Order"])
         await context.bot.send_message(
             chat_id=query.message.chat_id,
-            text=(
-                f"💰 Saldo Anda: Rp {saldo:,}\n\nPILIH PRODUK dari keyboard di bawah:"
-            ),
-            reply_markup=ReplyKeyboardMarkup(
-                produk_keyboard,
-                one_time_keyboard=True,
-                resize_keyboard=True
-            )
+            text=f"💰 Saldo Anda: Rp {saldo:,}\n\nPILIH PRODUK dari keyboard di bawah:",
+            reply_markup=ReplyKeyboardMarkup(produk_keyboard, one_time_keyboard=True, resize_keyboard=True)
         )
-
-    def _validate_phone_number(self, phone):
-        return phone.startswith("08") and phone.isdigit() and (10 <= len(phone) <= 14)
 
     def get_conversation_handler(self):
         return ConversationHandler(
             entry_points=[
-                CommandHandler('order', self.order_start),
-                CommandHandler('beli', self.order_start),
-                CommandHandler('buy', self.order_start)
+                CommandHandler('order', self.order_start)
             ],
             states={
                 ASK_ORDER_PRODUK: [
@@ -360,7 +281,6 @@ class OrderHandler:
             },
             fallbacks=[
                 CommandHandler('cancel', self.order_cancel),
-                CommandHandler('batal', self.order_cancel),
                 MessageHandler(filters.Regex(r'^❌ Batalkan Order$'), self.order_cancel)
             ]
         )
