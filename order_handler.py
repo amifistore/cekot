@@ -66,18 +66,6 @@ class OrderHandler:
                 waktu TEXT
             )
         ''')
-        for col, dtype, dflt in [
-            ("provider", "TEXT", None),
-            ("gangguan", "INTEGER", "0"),
-            ("kosong", "INTEGER", "0"),
-            ("stock", "INTEGER", "0"),
-        ]:
-            try:
-                c.execute(f"SELECT {col} FROM products LIMIT 1")
-            except sqlite3.OperationalError:
-                dflt_str = f" DEFAULT {dflt}" if dflt is not None else ""
-                c.execute(f"ALTER TABLE products ADD COLUMN {col} {dtype}{dflt_str}")
-        c.execute("UPDATE products SET stock = 10 WHERE stock IS NULL OR stock = 0")
         conn.commit()
         conn.close()
         logger.info("✅ Order Handler database initialized successfully")
