@@ -12,13 +12,14 @@ from telegram.ext import (
     filters
 )
 
+# Setup logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Import config
+# Import config - dengan error handling
 try:
     import config
     BOT_TOKEN = config.BOT_TOKEN
@@ -67,9 +68,6 @@ except ImportError as e:
     logger.error(f"❌ Failed to load database module: {e}")
     DATABASE_AVAILABLE = False
 
-# User Telegram ID admin (replace with actual ID)
-ADMIN_IDS = [123456789, 987654321]
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     saldo = 0
@@ -87,7 +85,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("💳 CEK SALDO", callback_data="saldo"),
          InlineKeyboardButton("📞 BANTUAN", callback_data="help")]
     ]
-    if ADMIN_HANDLER_AVAILABLE and user.id in ADMIN_IDS:
+    if ADMIN_HANDLER_AVAILABLE:
         keyboard.append([InlineKeyboardButton("👑 ADMIN PANEL", callback_data="admin")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -114,6 +112,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Error getting user balance: {e}")
             saldo = 0
+
+    # Prioritaskan menu admin jika callback_data dimulai "admin_"
+    if ADMIN_HANDLER_AVAILABLE and (callback_data.startswith("admin_") or callback_data in [
+        "edit_harga", "edit_deskripsi", "back_to_edit_menu", "select_product:"
+    ]):
+        await admin_callback_handler(update, context)
+        return
 
     if callback_data == "order":
         if ORDER_HANDLER_AVAILABLE:
@@ -162,12 +167,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Terima kasih! 😊"
         )
         await query.edit_message_text(help_text, parse_mode='Markdown')
-    elif callback_data == "admin" and ADMIN_HANDLER_AVAILABLE and admin_menu is not None and user.id in ADMIN_IDS:
+    elif callback_data == "admin" and ADMIN_HANDLER_AVAILABLE and admin_menu is not None:
+        # PATCH: panggil menu admin langsung agar inline keyboard admin muncul dan handler takeover
         await admin_menu(update, context)
-    elif ADMIN_HANDLER_AVAILABLE and (callback_data.startswith("admin_") or callback_data in [
-        "edit_harga", "edit_deskripsi", "back_to_edit_menu", "select_product:"
-    ]) and user.id in ADMIN_IDS:
-        await admin_callback_handler(update, context)
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Exception while handling an update: {context.error}")
