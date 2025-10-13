@@ -54,14 +54,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup
     )
 
-# FITUR ADMIN PANEL
-async def admin_panel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    if user_id not in ADMIN_IDS:
-        await update.message.reply_text("❌ Hanya admin yang bisa akses panel ini.")
-        return
-    await admin_handler.admin_menu_from_message(update, context)
-
 async def approve_topup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     if user_id not in [str(i) for i in config.ADMIN_TELEGRAM_IDS]:
@@ -97,14 +89,19 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
+    # Start menu
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("admin", admin_panel_command))   # akses admin panel via /admin
+    # Order & menu (ConversationHandler)
     application.add_handler(order_handler.get_conversation_handler())
+    # Topup
     application.add_handler(topup_conv_handler)
+    # Admin fitur: approve/cancel topup
     application.add_handler(CommandHandler("approve_topup", approve_topup_command))
     application.add_handler(CommandHandler("cancel_topup", cancel_topup_command))
+    # Semua handler admin panel & admin input (edit produk, broadcast, cek user, jadikan admin, backup, dsb)
     for handler in admin_handler.get_admin_handlers():
         application.add_handler(handler)
+    # Error log
     application.add_error_handler(error_handler)
     logger.info("🤖 Bot is running...")
     application.run_polling()
