@@ -8,6 +8,10 @@ from telegram.ext import (
     ContextTypes,
     filters
 )
+import config
+import database
+import order_handler
+import admin_handler
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -15,33 +19,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-try:
-    import config
-    BOT_TOKEN = config.BOT_TOKEN
-    ADMIN_IDS = set(str(i) for i in getattr(config, "ADMIN_TELEGRAM_IDS", []))
-except (ImportError, AttributeError):
-    BOT_TOKEN = os.getenv('BOT_TOKEN')
-    ADMIN_IDS = set(["123456789", "987654321"]) # fallback manual
-    if not BOT_TOKEN:
-        raise ValueError("❌ BOT_TOKEN tidak ditemukan. Set di config.py atau environment.")
-
-try:
-    import database
-    DATABASE_AVAILABLE = True
-except ImportError:
-    DATABASE_AVAILABLE = False
-
-import order_handler
+BOT_TOKEN = config.BOT_TOKEN
+ADMIN_IDS = set(str(i) for i in getattr(config, "ADMIN_TELEGRAM_IDS", []))
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     saldo = 0
-    if DATABASE_AVAILABLE:
-        try:
-            user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
-            saldo = database.get_user_saldo(user_id)
-        except Exception:
-            saldo = 0
+    try:
+        user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
+        saldo = database.get_user_saldo(user_id)
+    except Exception:
+        saldo = 0
     keyboard = [
         [InlineKeyboardButton("🛒 BELI PRODUK", callback_data="menu_order")],
         [InlineKeyboardButton("💳 CEK SALDO", callback_data="menu_saldo")],
@@ -55,11 +43,44 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup
     )
 
+async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    user = query.from_user
+    saldo = 0
+    try:
+        user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
+        saldo = database.get_user_saldo(user_id)
+    except Exception:
+        saldo = 0
+    if data == "menu_order":
+        await order_handler.menu_main(update, context)
+    elif data == "menu_saldo":
+        await query.edit_message_text(
+            f"💳 SALDO ANDA\nSaldo: Rp {saldo:,.0f}\nGunakan menu untuk topup/order produk.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
+        )
+    elif data == "menu_help":
+        await query.edit_message_text(
+            "📞 BANTUAN\n\nJika mengalami masalah, hubungi admin @username_admin.\n"
+            "Cara order: pilih BELI PRODUK, pilih produk, isi nomor tujuan, konfirmasi.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
+        )
+    elif data == "menu_admin" and str(user.id) in ADMIN_IDS:
+        await admin_handler.admin_menu_from_query(query, context)
+    elif data == "menu_main":
+        await start(update, context)
+
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
-    # Handler menu modern dari order_handler (ConversationHandler)
+    application.add_handler(CallbackQueryHandler(menu_callback, pattern=r'^menu_'))
+    # Order menu modern ConversationHandler
     application.add_handler(order_handler.get_conversation_handler())
+    # Admin handlers (menu, edit, broadcast, etc)
+    for handler in admin_handler.get_admin_handlers():
+        application.add_handler(handler)
     logger.info("🤖 Bot is running...")
     application.run_polling()
 
