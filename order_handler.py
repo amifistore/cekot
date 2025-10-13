@@ -79,7 +79,6 @@ async def menu_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💰 Saldo Anda: *Rp {saldo:,.0f}*\n\n"
         f"Pilih menu di bawah:"
     )
-    # PATCH: handle Message is not modified
     try:
         if update.callback_query:
             await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
