@@ -417,22 +417,27 @@ def get_conversation_handler():
         states={
             MENU: [
                 CallbackQueryHandler(menu_handler, pattern=r'^menu_'),
+                CallbackQueryHandler(menu_main, pattern=r'^menu_main$'),
             ],
             CHOOSING_GROUP: [
                 CallbackQueryHandler(choose_group, pattern=r'^group_'),
-                CallbackQueryHandler(menu_handler, pattern=r'^menu_main'),
+                CallbackQueryHandler(menu_main, pattern=r'^menu_main$'),
             ],
             CHOOSING_PRODUCT: [
                 CallbackQueryHandler(choose_product, pattern=r'^prod_'),
                 CallbackQueryHandler(choose_product, pattern=r'^menu_order$'),
-                CallbackQueryHandler(choose_product, pattern=r'^menu_main$'),
                 CallbackQueryHandler(choose_product, pattern=r'^page_\d+$'),
+                CallbackQueryHandler(menu_main, pattern=r'^menu_main$'),
             ],
-            ENTER_TUJUAN: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_tujuan)],
+            ENTER_TUJUAN: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, enter_tujuan),
+                CallbackQueryHandler(menu_main, pattern=r'^menu_main$'),
+            ],
             CONFIRM_ORDER: [
-                CallbackQueryHandler(confirm_order, pattern=r'^(confirm_order|menu_main)$')
+                CallbackQueryHandler(confirm_order, pattern=r'^(confirm_order)$'),
+                CallbackQueryHandler(menu_main, pattern=r'^menu_main$'),
             ],
         },
-        fallbacks=[CallbackQueryHandler(menu_main, pattern=r'^menu_main')],
+        fallbacks=[CallbackQueryHandler(menu_main, pattern=r'^menu_main$')],
         allow_reentry=True
     )
