@@ -13,7 +13,6 @@ import database
 import order_handler
 import admin_handler
 from topup_handler import topup_conv_handler
-
 import telegram
 
 logging.basicConfig(
@@ -25,7 +24,7 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = config.BOT_TOKEN
 ADMIN_IDS = set(str(i) for i in getattr(config, "ADMIN_TELEGRAM_IDS", []))
 
-# PATCH: Helper agar edit_message_text tidak error jika "Message is not modified"
+# Helper anti error "Message is not modified"
 async def safe_edit_message_text(callback_query, *args, **kwargs):
     try:
         await callback_query.edit_message_text(*args, **kwargs)
