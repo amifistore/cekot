@@ -11,6 +11,7 @@ from telegram.ext import (
 )
 import database
 import config
+import sqlite3
 
 logger = logging.getLogger(__name__)
 
@@ -19,15 +20,25 @@ MENU, CHOOSING_PRODUCT, ENTER_TUJUAN, CONFIRM_ORDER = range(4)
 PRODUCTS_PER_PAGE = 5
 
 def get_product_list():
-    conn = database.sqlite3.connect(database.DB_PATH)
+    # Ambil produk persis seperti di menu admin: tampilkan yang status=active, gangguan=0, kosong=0, urut kategori + nama
+    conn = sqlite3.connect(database.DB_PATH)
     c = conn.cursor()
     c.execute("""
-        SELECT code, name, price, description 
-        FROM products 
-        WHERE kosong=0 AND gangguan=0 AND status='active'
-        ORDER BY name ASC
+        SELECT code, name, price, category, description
+        FROM products
+        WHERE status='active' AND gangguan=0 AND kosong=0
+        ORDER BY category ASC, name ASC
     """)
-    products = [{'code': row[0], 'name': row[1], 'price': row[2], 'description': row[3]} for row in c.fetchall()]
+    products = [
+        {
+            'code': row[0],
+            'name': row[1],
+            'price': row[2],
+            'category': row[3] or "Umum",
+            'description': row[4] or ""
+        }
+        for row in c.fetchall()
+    ]
     conn.close()
     return products
 
@@ -38,7 +49,7 @@ def get_products_keyboard(products, page=0):
     page_products = products[start:end]
     keyboard = [
         [InlineKeyboardButton(
-            f"{prod['name']} ({prod['code']}) - Rp {prod['price']:,.0f}",
+            f"{prod['name']} ({prod['code']}) - Rp {prod['price']:,.0f} [{prod['category']}]",
             callback_data=f"prod_{prod['code']}")
         ] for prod in page_products
     ]
@@ -152,6 +163,7 @@ async def choose_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         f"🛒 *Produk*: {found['name']}\n"
         f"*Kode*: {found['code']}\n"
+        f"*Kategori*: {found['category']}\n"
         f"*Harga*: Rp {found['price']:,.0f}\n\n"
         f"*Deskripsi:*\n{desc}\n\n"
         f"Masukkan nomor tujuan (misal: 08xxxxxxxxxx):",
@@ -179,6 +191,7 @@ async def enter_tujuan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"*Konfirmasi Order:*\n\n"
         f"Produk: *{prod['name']} ({prod['code']})*\n"
+        f"Kategori: *{prod['category']}*\n"
         f"Harga: *Rp {prod['price']:,.0f}*\n"
         f"Tujuan: *{tujuan}*\n\n"
         f"Tekan *Konfirmasi* untuk melanjutkan atau *Batal* untuk kembali ke menu utama.",
@@ -239,7 +252,7 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_api = api_response.get('status', 'PROSES').upper()
         keterangan = api_response.get('msg', keterangan)
     try:
-        conn = database.sqlite3.connect(database.DB_PATH)
+        conn = sqlite3.connect(database.DB_PATH)
         c = conn.cursor()
         c.execute('''
             INSERT INTO riwayat_pembelian (
@@ -265,7 +278,7 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if status_api in ['SUKSES', 'SUCCESS']:
         await update.callback_query.edit_message_text(
-            f"✅ Order berhasil!\n\nProduk: *{prod['name']}*\nTujuan: *{tujuan}*\n\n{keterangan}",
+            f"✅ Order berhasil!\n\nProduk: *{prod['name']}*\nKategori: *{prod['category']}*\nTujuan: *{tujuan}*\n\n{keterangan}",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]),
             parse_mode="Markdown"
         )
