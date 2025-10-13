@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = config.BOT_TOKEN
 ADMIN_IDS = set(str(i) for i in getattr(config, "ADMIN_TELEGRAM_IDS", []))
 
-# Anti error "Message is not modified"
+# Helper anti error "Message is not modified"
 async def safe_edit_message_text(callback_query, *args, **kwargs):
     try:
         await callback_query.edit_message_text(*args, **kwargs)
@@ -80,7 +80,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]),
                 parse_mode="Markdown"
             )
-        # Tidak menangani menu_admin di sini!
+        # Jangan tangani menu_admin di sini!
     except telegram.error.BadRequest as e:
         if "Message is not modified" in str(e):
             return
@@ -126,9 +126,9 @@ def main():
     application.add_handler(topup_conv_handler)
     application.add_handler(CommandHandler("approve_topup", approve_topup_command))
     application.add_handler(CommandHandler("cancel_topup", cancel_topup_command))
-    # CRUCIAL: CallbackQueryHandler menu_admin hanya ke admin_menu_from_query!
+    # PATCH PALING PENTING: CallbackQueryHandler menu_admin ke admin_menu_from_query!
     application.add_handler(CallbackQueryHandler(admin_handler.admin_menu_from_query, pattern=r'^menu_admin$'))
-    # Callback untuk menu_main dan menu_topup (Bukan menu_admin)
+    # CallbackQueryHandler untuk menu_main dan menu_topup saja (bukan menu_admin)
     application.add_handler(CallbackQueryHandler(menu_callback, pattern=r'^(menu_main|menu_topup)$'))
     # Semua handler admin panel dari admin_handler.py
     for handler in admin_handler.get_admin_handlers():
