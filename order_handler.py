@@ -16,51 +16,42 @@ import telegram
 
 logger = logging.getLogger(__name__)
 
-MENU, CHOOSING_PRODUCT, ENTER_TUJUAN, CONFIRM_ORDER = range(4)
-PRODUCTS_PER_PAGE = 5
+MENU, CHOOSING_GROUP, CHOOSING_PRODUCT, ENTER_TUJUAN, CONFIRM_ORDER = range(5)
+PRODUCTS_PER_PAGE = 8
 
-def get_product_list():
+def get_grouped_products():
     conn = sqlite3.connect(database.DB_PATH)
     c = conn.cursor()
     c.execute("""
         SELECT code, name, price, category, description
         FROM products
         WHERE status='active' AND gangguan=0 AND kosong=0
-        ORDER BY category ASC, name ASC
+        ORDER BY code ASC
     """)
-    products = [
-        {
-            'code': row[0],
-            'name': row[1],
-            'price': row[2],
-            'category': row[3] or "Umum",
-            'description': row[4] or ""
-        }
-        for row in c.fetchall()
-    ]
+    products = c.fetchall()
     conn.close()
-    return products
 
-def get_products_keyboard(products, page=0):
-    total_pages = (len(products) - 1) // PRODUCTS_PER_PAGE + 1
-    start = page * PRODUCTS_PER_PAGE
-    end = start + PRODUCTS_PER_PAGE
-    page_products = products[start:end]
-    keyboard = [
-        [InlineKeyboardButton(
-            f"{prod['name']} ({prod['code']}) - Rp {prod['price']:,.0f} [{prod['category']}]",
-            callback_data=f"prod_{prod['code']}")
-        ] for prod in page_products
-    ]
-    navigation = []
-    if page > 0:
-        navigation.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"page_{page-1}"))
-    if page < total_pages - 1:
-        navigation.append(InlineKeyboardButton("Next ➡️", callback_data=f"page_{page+1}"))
-    if navigation:
-        keyboard.append(navigation)
-    keyboard.append([InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")])
-    return InlineKeyboardMarkup(keyboard), total_pages
+    groups = {}
+    for code, name, price, category, description in products:
+        # Kelompokkan berdasarkan awalan kode
+        if code.startswith("BPAL"):
+            group = "BPAL (Bonus Akrab L)"
+        elif code.startswith("BPAXXL"):
+            group = "BPAXXL (Bonus Akrab XXL)"
+        elif code.startswith("XLA"):
+            group = "XLA (Umum)"
+        else:
+            group = category or "Lainnya"
+        if group not in groups:
+            groups[group] = []
+        groups[group].append({
+            'code': code,
+            'name': name,
+            'price': price,
+            'category': category,
+            'description': description
+        })
+    return groups
 
 async def menu_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -94,7 +85,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
     if data == "menu_order":
-        return await show_product_menu(update, context, page=0)
+        return await show_group_menu(update, context)
     elif data == "menu_saldo":
         saldo = database.get_user_saldo(str(query.from_user.id))
         try:
@@ -136,9 +127,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return MENU
     elif data == "menu_main":
         return await menu_main(update, context)
-    elif data.startswith("page_"):
-        page = int(data.split("_")[1])
-        return await show_product_menu(update, context, page)
     else:
         await query.answer()
         try:
@@ -149,23 +137,77 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             raise
         return MENU
 
-async def show_product_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, page=0):
-    products = get_product_list()
+async def show_group_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    groups = get_grouped_products()
+    keyboard = [
+        [InlineKeyboardButton(group, callback_data=f"group_{group}")]
+        for group in groups.keys()
+    ]
+    keyboard.append([InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    try:
+        await update.callback_query.edit_message_text(
+            "📦 *PILIH GRUP PRODUK*\nSilakan pilih grup kuota/produk yang diinginkan:",
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
+        )
+    except telegram.error.BadRequest as e:
+        if "Message is not modified" in str(e):
+            return CHOOSING_GROUP
+        raise
+    context.user_data["groups"] = groups
+    return CHOOSING_GROUP
+
+def get_products_keyboard_group(products, page=0):
+    total_pages = (len(products) - 1) // PRODUCTS_PER_PAGE + 1
+    start = page * PRODUCTS_PER_PAGE
+    end = start + PRODUCTS_PER_PAGE
+    page_products = products[start:end]
+    keyboard = [
+        [InlineKeyboardButton(
+            f"{prod['name']} ({prod['code']}) - Rp {prod['price']:,.0f}",
+            callback_data=f"prod_{prod['code']}")
+        ] for prod in page_products
+    ]
+    navigation = []
+    if page > 0:
+        navigation.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"page_{page-1}"))
+    if page < total_pages - 1:
+        navigation.append(InlineKeyboardButton("Next ➡️", callback_data=f"page_{page+1}"))
+    if navigation:
+        keyboard.append(navigation)
+    keyboard.append([InlineKeyboardButton("⬅️ Kembali Grup", callback_data="menu_order")])
+    keyboard.append([InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")])
+    return InlineKeyboardMarkup(keyboard), total_pages
+
+async def choose_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    group_name = query.data.replace("group_", "")
+    groups = context.user_data.get("groups")
+    products = groups.get(group_name, [])
+    context.user_data["current_group"] = group_name
+    context.user_data["product_list"] = products
+    context.user_data["product_page"] = 0
+    return await show_product_in_group(query, context, page=0)
+
+async def show_product_in_group(query, context, page=0):
+    products = context.user_data.get("product_list", [])
+    group_name = context.user_data.get("current_group", "")
     if not products:
         try:
-            await update.callback_query.edit_message_text(
-                "❌ Tidak ada produk tersedia saat ini.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
+            await query.edit_message_text(
+                f"❌ Tidak ada produk di grup {group_name}.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali Grup", callback_data="menu_order")]])
             )
         except telegram.error.BadRequest as e:
             if "Message is not modified" in str(e):
-                return MENU
+                return CHOOSING_GROUP
             raise
-        return MENU
-    reply_markup, total_pages = get_products_keyboard(products, page)
+        return CHOOSING_GROUP
+    reply_markup, total_pages = get_products_keyboard_group(products, page)
     try:
-        await update.callback_query.edit_message_text(
-            f"🛒 *PILIH PRODUK*\nHalaman {page+1} dari {total_pages}\n\nSilakan pilih produk digital yang ingin Anda beli:",
+        await query.edit_message_text(
+            f"🛒 *PILIH PRODUK DI {group_name}*\nHalaman {page+1} dari {total_pages}\n\nSilakan pilih produk:",
             reply_markup=reply_markup,
             parse_mode="Markdown"
         )
@@ -173,7 +215,6 @@ async def show_product_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         if "Message is not modified" in str(e):
             return CHOOSING_PRODUCT
         raise
-    context.user_data["product_list"] = products
     context.user_data["product_page"] = page
     return CHOOSING_PRODUCT
 
@@ -182,26 +223,31 @@ async def choose_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     if data == "menu_main":
         return await menu_main(update, context)
+    if data == "menu_order":
+        return await show_group_menu(update, context)
+    if data.startswith("page_"):
+        page = int(data.split("_")[1])
+        return await show_product_in_group(query, context, page)
     if not data.startswith("prod_"):
         await query.answer()
         try:
             await query.edit_message_text("❌ Produk tidak valid.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]))
         except telegram.error.BadRequest as e:
             if "Message is not modified" in str(e):
-                return MENU
+                return CHOOSING_PRODUCT
             raise
-        return MENU
+        return CHOOSING_PRODUCT
     kode_produk = data.replace("prod_", "")
-    products = context.user_data.get("product_list") or get_product_list()
+    products = context.user_data.get("product_list") or []
     found = next((p for p in products if p['code'] == kode_produk), None)
     if not found:
         try:
             await query.edit_message_text("❌ Produk tidak ditemukan atau tidak tersedia.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]))
         except telegram.error.BadRequest as e:
             if "Message is not modified" in str(e):
-                return MENU
+                return CHOOSING_PRODUCT
             raise
-        return MENU
+        return CHOOSING_PRODUCT
     context.user_data['selected_product'] = found
     desc = found['description'] or "(Deskripsi produk tidak tersedia)"
     try:
@@ -371,12 +417,16 @@ def get_conversation_handler():
         states={
             MENU: [
                 CallbackQueryHandler(menu_handler, pattern=r'^menu_'),
-                CallbackQueryHandler(menu_handler, pattern=r'^page_\d+')
+            ],
+            CHOOSING_GROUP: [
+                CallbackQueryHandler(choose_group, pattern=r'^group_'),
+                CallbackQueryHandler(menu_handler, pattern=r'^menu_main'),
             ],
             CHOOSING_PRODUCT: [
                 CallbackQueryHandler(choose_product, pattern=r'^prod_'),
-                CallbackQueryHandler(menu_handler, pattern=r'^menu_main'),
-                CallbackQueryHandler(menu_handler, pattern=r'^page_\d+')
+                CallbackQueryHandler(choose_product, pattern=r'^menu_order$'),
+                CallbackQueryHandler(choose_product, pattern=r'^menu_main$'),
+                CallbackQueryHandler(choose_product, pattern=r'^page_\d+$'),
             ],
             ENTER_TUJUAN: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_tujuan)],
             CONFIRM_ORDER: [
