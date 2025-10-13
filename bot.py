@@ -1,11 +1,10 @@
 import logging
-import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
     ContextTypes,
-    filters
+    filters,
 )
 import config
 import database
@@ -54,9 +53,41 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup
     )
 
+# Handler untuk menu utama yang tidak di-cover ConversationHandler
+async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    user = query.from_user
+    saldo = 0
+    try:
+        user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
+        saldo = database.get_user_saldo(user_id)
+    except Exception:
+        saldo = 0
+    try:
+        if data == "menu_admin" and str(user.id) in ADMIN_IDS:
+            await admin_handler.admin_menu_from_query(query, context)
+        elif data == "menu_main":
+            await start(update, context)
+        elif data == "menu_topup":
+            await safe_edit_message_text(
+                query,
+                "💸 *TOP UP SALDO*\n\nUntuk top up saldo, ketik perintah /topup dan ikuti instruksi.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
+                ]),
+                parse_mode="Markdown"
+            )
+        # Untuk menu lain, ConversationHandler menangani!
+    except telegram.error.BadRequest as e:
+        if "Message is not modified" in str(e):
+            return
+        raise
+
 async def approve_topup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
-    if user_id not in [str(i) for i in config.ADMIN_TELEGRAM_IDS]:
+    if user_id not in ADMIN_IDS:
         await update.message.reply_text("❌ Hanya admin yang boleh approve topup.")
         return
     if not context.args:
@@ -71,7 +102,7 @@ async def approve_topup_command(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def cancel_topup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
-    if user_id not in [str(i) for i in config.ADMIN_TELEGRAM_IDS]:
+    if user_id not in ADMIN_IDS:
         await update.message.reply_text("❌ Hanya admin yang boleh cancel/reject topup.")
         return
     if not context.args:
@@ -89,19 +120,22 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
-    # Start menu
     application.add_handler(CommandHandler("start", start))
-    # Order & menu (ConversationHandler)
+    # ConversationHandler untuk menu utama & order
     application.add_handler(order_handler.get_conversation_handler())
     # Topup
     application.add_handler(topup_conv_handler)
-    # Admin fitur: approve/cancel topup
+    # Handler untuk menu admin dan fallback ke menu utama
     application.add_handler(CommandHandler("approve_topup", approve_topup_command))
     application.add_handler(CommandHandler("cancel_topup", cancel_topup_command))
-    # Semua handler admin panel & admin input (edit produk, broadcast, cek user, jadikan admin, backup, dsb)
+    application.add_handler(CommandHandler("admin", admin_handler.admin_menu))  # Command /admin
+    application.add_handler(CommandHandler("menu_admin", admin_handler.admin_menu))  # Command /menu_admin (opsional)
+    application.add_handler(CommandHandler("menu_main", start))  # Command /menu_main (opsional)
+    # Callback menu utama (menu_admin, menu_main, menu_topup)
+    application.add_handler(telegram.ext.CallbackQueryHandler(menu_callback, pattern=r'^(menu_admin|menu_main|menu_topup)$'))
+    # Semua handler admin panel (edit produk, broadcast, cek user, jadikan admin, dsb)
     for handler in admin_handler.get_admin_handlers():
         application.add_handler(handler)
-    # Error log
     application.add_error_handler(error_handler)
     logger.info("🤖 Bot is running...")
     application.run_polling()
