@@ -1,15 +1,19 @@
 import logging
+import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
     CallbackQueryHandler,
     ContextTypes,
+    filters
 )
 import config
 import database
 import order_handler
 import admin_handler
+from topup_handler import topup_conv_handler  # pastikan file topup_handler.py sudah ada
+
 import telegram
 
 logging.basicConfig(
@@ -32,7 +36,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("🛒 BELI PRODUK", callback_data="menu_order")],
         [InlineKeyboardButton("💳 CEK SALDO", callback_data="menu_saldo")],
-        [InlineKeyboardButton("📞 BANTUAN", callback_data="menu_help")]
+        [InlineKeyboardButton("📞 BANTUAN", callback_data="menu_help")],
+        [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="menu_topup")]
     ]
     if str(user.id) in ADMIN_IDS:
         keyboard.append([InlineKeyboardButton("👑 ADMIN PANEL", callback_data="menu_admin")])
@@ -54,17 +59,37 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         saldo = 0
     try:
-        # Hanya handle menu utama, JANGAN handle menu_order di sini!
-        if data == "menu_saldo":
+        if data == "menu_order":
+            return await order_handler.menu_main(update, context)
+        elif data == "menu_saldo":
             await query.edit_message_text(
                 f"💳 SALDO ANDA\nSaldo: Rp {saldo:,.0f}\nGunakan menu untuk topup/order produk.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("💸 Top Up", callback_data="menu_topup")],
+                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
+                ])
             )
         elif data == "menu_help":
             await query.edit_message_text(
-                "📞 BANTUAN\n\nJika mengalami masalah, hubungi admin @username_admin.\n"
-                "Cara order: pilih BELI PRODUK, pilih produk, isi nomor tujuan, konfirmasi.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
+                "📞 BANTUAN\n\n"
+                "Jika mengalami masalah, hubungi admin @username_admin.\n"
+                "Cara order: pilih BELI PRODUK, pilih produk, isi nomor tujuan, konfirmasi.\n"
+                "Untuk top up saldo, gunakan tombol Top Up di bawah atau ketik /topup.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("💸 Top Up", callback_data="menu_topup")],
+                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
+                ])
+            )
+        elif data == "menu_topup":
+            # Kirim instruksi top up, atau arahkan user ke command /topup
+            await query.edit_message_text(
+                "💸 *TOP UP SALDO*\n\n"
+                "Untuk top up saldo, ketik perintah /topup di chat bot ini dan ikuti instruksi.\n"
+                "Nominal transfer akan diberi kode unik untuk verifikasi otomatis.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
+                ]),
+                parse_mode="Markdown"
             )
         elif data == "menu_admin" and str(user.id) in ADMIN_IDS:
             await admin_handler.admin_menu_from_query(query, context)
@@ -83,10 +108,9 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
-    # HANYA handle menu utama saja di CallbackQueryHandler ini!
-    application.add_handler(CallbackQueryHandler(menu_callback, pattern=r'^(menu_saldo|menu_help|menu_admin|menu_main)$'))
-    # Semua tombol order dikelola oleh ConversationHandler di order_handler.py
+    application.add_handler(CallbackQueryHandler(menu_callback, pattern=r'^menu_'))
     application.add_handler(order_handler.get_conversation_handler())
+    application.add_handler(topup_conv_handler)  # handler topup modern!
     for handler in admin_handler.get_admin_handlers():
         application.add_handler(handler)
     application.add_error_handler(error_handler)
