@@ -3,7 +3,6 @@ import logging
 from datetime import datetime
 import os
 
-# Setup logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -13,12 +12,10 @@ logger = logging.getLogger(__name__)
 DB_PATH = "bot_database.db"
 
 def init_db():
-    """Initialize database tables with all needed columns (full fitur)."""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         
-        # Users table
         c.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 user_id TEXT PRIMARY KEY,
@@ -29,8 +26,6 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-
-        # Transactions table
         c.execute('''
             CREATE TABLE IF NOT EXISTS transactions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,8 +36,6 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-
-        # Riwayat pembelian table
         c.execute('''
             CREATE TABLE IF NOT EXISTS riwayat_pembelian (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,8 +51,6 @@ def init_db():
                 waktu TEXT
             )
         ''')
-
-        # Products table
         c.execute('''
             CREATE TABLE IF NOT EXISTS products (
                 code TEXT PRIMARY KEY,
@@ -75,8 +66,6 @@ def init_db():
                 updated_at TEXT
             )
         ''')
-
-        # Topup requests table
         c.execute('''
             CREATE TABLE IF NOT EXISTS topup_requests (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -90,8 +79,6 @@ def init_db():
                 updated_at TEXT
             )
         ''')
-
-        # Admin logs table
         c.execute('''
             CREATE TABLE IF NOT EXISTS admin_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -101,7 +88,6 @@ def init_db():
                 created_at TEXT
             )
         ''')
-
         conn.commit()
         conn.close()
         logger.info("Database initialized successfully")
@@ -109,7 +95,6 @@ def init_db():
         logger.error(f"Error initializing database: {e}")
 
 def get_or_create_user(telegram_id, username, full_name):
-    """Get user ID or create new user if not exists"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -131,7 +116,6 @@ def get_or_create_user(telegram_id, username, full_name):
         return telegram_id
 
 def get_user_saldo(user_id):
-    """Get user balance"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -155,7 +139,6 @@ def get_user_saldo(user_id):
         return 0
 
 def increment_user_saldo(user_id, amount):
-    """Add/Subtract balance to user"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -169,7 +152,6 @@ def increment_user_saldo(user_id, amount):
         return False
 
 def get_all_users():
-    """Get all users"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -182,26 +164,19 @@ def get_all_users():
         return []
 
 def create_topup_request(user_id, base_amount, unique_amount, unique_digits, qris_base64):
-    """
-    Simpan permintaan topup ke tabel topup_requests.
-    """
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
-        # Ambil username & full_name jika ada
         c.execute("SELECT username, full_name FROM users WHERE user_id = ?", (user_id,))
         row = c.fetchone()
         username = row[0] if row else ""
         full_name = row[1] if row else ""
-
         c.execute("""
             INSERT INTO topup_requests (
                 user_id, username, full_name, amount, status, proof_image, created_at, updated_at
             ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)
         """, (user_id, username, full_name, unique_amount, qris_base64, now, now))
-
         request_id = c.lastrowid
         conn.commit()
         conn.close()
@@ -211,15 +186,11 @@ def create_topup_request(user_id, base_amount, unique_amount, unique_digits, qri
         return None
 
 def approve_topup_request(request_id, admin_id=None):
-    """
-    Set status permintaan topup jadi approved.
-    """
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         c.execute("UPDATE topup_requests SET status = 'approved', updated_at = ? WHERE id = ?", (now, request_id))
-        # Tambahkan saldo ke user
         c.execute("SELECT user_id, amount FROM topup_requests WHERE id = ?", (request_id,))
         row = c.fetchone()
         if row:
@@ -234,9 +205,6 @@ def approve_topup_request(request_id, admin_id=None):
         return False
 
 def reject_topup_request(request_id, admin_id=None):
-    """
-    Set status permintaan topup jadi rejected.
-    """
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -251,9 +219,6 @@ def reject_topup_request(request_id, admin_id=None):
         return False
 
 def get_topup_requests(status=None, limit=20):
-    """
-    Ambil daftar permintaan topup, filter status jika diisi.
-    """
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -269,7 +234,6 @@ def get_topup_requests(status=None, limit=20):
         return []
 
 def add_transaction(user_id, type, amount, description):
-    """Log transaksi ke tabel transactions"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -286,7 +250,6 @@ def add_transaction(user_id, type, amount, description):
         return False
 
 def log_admin_action(admin_id, action, details=""):
-    """Log aksi admin ke tabel admin_logs"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -302,9 +265,7 @@ def log_admin_action(admin_id, action, details=""):
         logger.error(f"Error log_admin_action: {e}")
         return False
 
-# Emergency fix checker (run fix if columns missing)
 def emergency_fix_database():
-    """Emergency function to fix database structure (drop and recreate)"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -394,5 +355,4 @@ def emergency_fix_database():
         logger.error(f"Error in emergency_fix_database: {e}")
         return False
 
-# Auto-init database
 init_db()
