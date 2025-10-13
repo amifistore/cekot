@@ -61,8 +61,33 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
+    
     if data == "menu_main":
-        await start(update, context)
+        # Recreate start menu for callback
+        user = query.from_user
+        saldo = 0
+        try:
+            user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
+            saldo = database.get_user_saldo(user_id)
+        except Exception:
+            saldo = 0
+            
+        keyboard = [
+            [InlineKeyboardButton("🛒 BELI PRODUK", callback_data="menu_order")],
+            [InlineKeyboardButton("💳 CEK SALDO", callback_data="menu_saldo")],
+            [InlineKeyboardButton("📞 BANTUAN", callback_data="menu_help")],
+            [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="menu_topup")]
+        ]
+        if str(user.id) in ADMIN_IDS:
+            keyboard.append([InlineKeyboardButton("👑 ADMIN PANEL", callback_data="menu_admin")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await safe_edit_message_text(
+            query,
+            f"🤖 Selamat Datang!\n\nHalo {user.full_name}!\n💰 Saldo Anda: Rp {saldo:,.0f}\nPilih menu di bawah.",
+            reply_markup=reply_markup
+        )
+        
     elif data == "menu_topup":
         await safe_edit_message_text(
             query,
@@ -72,6 +97,45 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]),
             parse_mode="Markdown"
         )
+    elif data == "menu_saldo":
+        user = query.from_user
+        saldo = 0
+        try:
+            user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
+            saldo = database.get_user_saldo(user_id)
+        except Exception:
+            saldo = 0
+            
+        await safe_edit_message_text(
+            query,
+            f"💰 *SALDO ANDA*\n\nSaldo saat ini: Rp {saldo:,.0f}",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
+            ]),
+            parse_mode="Markdown"
+        )
+    elif data == "menu_help":
+        await safe_edit_message_text(
+            query,
+            "📞 *BANTUAN*\n\nJika Anda membutuhkan bantuan, silakan hubungi admin.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
+            ]),
+            parse_mode="Markdown"
+        )
+
+# Handler untuk callback admin
+async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    # Gunakan fungsi dari admin_handler
+    if query.data == "menu_admin":
+        # Panggil admin_menu_from_query dari admin_handler
+        await admin_handler.admin_menu_from_query(query, context)
+    else:
+        # Handle other admin callbacks using the admin_handler's callback handler
+        await admin_handler.admin_callback_handler(update, context)
 
 async def approve_topup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -108,15 +172,27 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
+    
+    # Add basic command handlers
     application.add_handler(CommandHandler("start", start))
+    
+    # Add conversation handlers
     application.add_handler(order_handler.get_conversation_handler())
     application.add_handler(topup_conv_handler)
+    
+    # Add admin command handlers
     application.add_handler(CommandHandler("approve_topup", approve_topup_command))
     application.add_handler(CommandHandler("cancel_topup", cancel_topup_command))
-    application.add_handler(CallbackQueryHandler(admin_handler.admin_menu_from_query, pattern=r'^menu_admin$'))
-    application.add_handler(CallbackQueryHandler(menu_callback, pattern=r'^(menu_main|menu_topup)$'))
-    for handler in admin_handler.get_admin_handlers():
+    
+    # Add callback query handlers with proper patterns
+    application.add_handler(CallbackQueryHandler(menu_callback, pattern=r'^menu_(main|topup|saldo|help)$'))
+    application.add_handler(CallbackQueryHandler(admin_callback_handler, pattern=r'^(menu_admin|admin_.*)$'))
+    
+    # Add all admin handlers from admin_handler module
+    admin_handlers = admin_handler.get_admin_handlers()
+    for handler in admin_handlers:
         application.add_handler(handler)
+    
     application.add_error_handler(error_handler)
     logger.info("🤖 Bot is running...")
     application.run_polling()
