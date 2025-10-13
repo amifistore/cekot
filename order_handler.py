@@ -19,6 +19,15 @@ logger = logging.getLogger(__name__)
 MENU, CHOOSING_GROUP, CHOOSING_PRODUCT, ENTER_TUJUAN, CONFIRM_ORDER = range(5)
 PRODUCTS_PER_PAGE = 8
 
+# PATCH: Helper agar edit_message_text tidak error jika "Message is not modified"
+async def safe_edit_message_text(callback_query, *args, **kwargs):
+    try:
+        await callback_query.edit_message_text(*args, **kwargs)
+    except telegram.error.BadRequest as e:
+        if "Message is not modified" in str(e):
+            return
+        raise
+
 def get_grouped_products():
     conn = sqlite3.connect(database.DB_PATH)
     c = conn.cursor()
@@ -33,7 +42,6 @@ def get_grouped_products():
 
     groups = {}
     for code, name, price, category, description in products:
-        # Kelompokkan berdasarkan awalan kode
         if code.startswith("BPAL"):
             group = "BPAL (Bonus Akrab L)"
         elif code.startswith("BPAXXL"):
@@ -54,7 +62,6 @@ def get_grouped_products():
     return groups
 
 async def menu_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # PATCH: Selalu ambil user dengan fallback dari callback_query jika message None
     user = getattr(update, 'effective_user', None)
     if user is None and hasattr(update, "callback_query"):
         user = getattr(update.callback_query, "from_user", None)
@@ -73,15 +80,10 @@ async def menu_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💰 Saldo Anda: *Rp {saldo:,.0f}*\n\n"
         f"Pilih menu di bawah:"
     )
-    try:
-        if hasattr(update, "callback_query") and update.callback_query:
-            await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
-        elif hasattr(update, "message") and update.message:
-            await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
-    except telegram.error.BadRequest as e:
-        if "Message is not modified" in str(e):
-            return MENU
-        raise
+    if hasattr(update, "callback_query") and update.callback_query:
+        await safe_edit_message_text(update.callback_query, text, reply_markup=reply_markup, parse_mode="Markdown")
+    elif hasattr(update, "message") and update.message:
+        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
     return MENU
 
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -91,53 +93,36 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await show_group_menu(update, context)
     elif data == "menu_saldo":
         saldo = database.get_user_saldo(str(query.from_user.id))
-        try:
-            await query.edit_message_text(
-                f"💳 *SALDO ANDA*\n\nSaldo: *Rp {saldo:,.0f}*\n\nGunakan menu untuk topup atau order produk.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]),
-                parse_mode="Markdown"
-            )
-        except telegram.error.BadRequest as e:
-            if "Message is not modified" in str(e):
-                return MENU
-            raise
+        await safe_edit_message_text(
+            query,
+            f"💳 *SALDO ANDA*\n\nSaldo: *Rp {saldo:,.0f}*\n\nGunakan menu untuk topup atau order produk.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]),
+            parse_mode="Markdown"
+        )
         return MENU
     elif data == "menu_help":
-        try:
-            await query.edit_message_text(
-                "📞 *BANTUAN*\n\n"
-                "Jika mengalami masalah, hubungi admin @username_admin.\n\n"
-                "Cara order: pilih *Beli Produk*, pilih produk, isi nomor tujuan, konfirmasi.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]),
-                parse_mode="Markdown"
-            )
-        except telegram.error.BadRequest as e:
-            if "Message is not modified" in str(e):
-                return MENU
-            raise
+        await safe_edit_message_text(
+            query,
+            "📞 *BANTUAN*\n\n"
+            "Jika mengalami masalah, hubungi admin @username_admin.\n\n"
+            "Cara order: pilih *Beli Produk*, pilih produk, isi nomor tujuan, konfirmasi.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]),
+            parse_mode="Markdown"
+        )
         return MENU
     elif data == "menu_admin" and str(query.from_user.id) in config.ADMIN_TELEGRAM_IDS:
-        try:
-            await query.edit_message_text(
-                "👑 *ADMIN PANEL*\n\nFitur admin bisa dikembangkan di sini.\nContoh: tambah produk, cek riwayat, dsb.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]),
-                parse_mode="Markdown"
-            )
-        except telegram.error.BadRequest as e:
-            if "Message is not modified" in str(e):
-                return MENU
-            raise
+        await safe_edit_message_text(
+            query,
+            "👑 *ADMIN PANEL*\n\nFitur admin bisa dikembangkan di sini.\nContoh: tambah produk, cek riwayat, dsb.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]),
+            parse_mode="Markdown"
+        )
         return MENU
     elif data == "menu_main":
         return await menu_main(update, context)
     else:
         await query.answer()
-        try:
-            await query.edit_message_text("Menu tidak dikenal.")
-        except telegram.error.BadRequest as e:
-            if "Message is not modified" in str(e):
-                return MENU
-            raise
+        await safe_edit_message_text(query, "Menu tidak dikenal.")
         return MENU
 
 async def show_group_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -148,16 +133,12 @@ async def show_group_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     keyboard.append([InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")])
     reply_markup = InlineKeyboardMarkup(keyboard)
-    try:
-        await update.callback_query.edit_message_text(
-            "📦 *PILIH GRUP PRODUK*\nSilakan pilih grup kuota/produk yang diinginkan:",
-            reply_markup=reply_markup,
-            parse_mode="Markdown"
-        )
-    except telegram.error.BadRequest as e:
-        if "Message is not modified" in str(e):
-            return CHOOSING_GROUP
-        raise
+    await safe_edit_message_text(
+        update.callback_query,
+        "📦 *PILIH GRUP PRODUK*\nSilakan pilih grup kuota/produk yang diinginkan:",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
+    )
     context.user_data["groups"] = groups
     return CHOOSING_GROUP
 
@@ -197,27 +178,19 @@ async def show_product_in_group(query, context, page=0):
     products = context.user_data.get("product_list", [])
     group_name = context.user_data.get("current_group", "")
     if not products:
-        try:
-            await query.edit_message_text(
-                f"❌ Tidak ada produk di grup {group_name}.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali Grup", callback_data="menu_order")]])
-            )
-        except telegram.error.BadRequest as e:
-            if "Message is not modified" in str(e):
-                return CHOOSING_GROUP
-            raise
+        await safe_edit_message_text(
+            query,
+            f"❌ Tidak ada produk di grup {group_name}.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali Grup", callback_data="menu_order")]])
+        )
         return CHOOSING_GROUP
     reply_markup, total_pages = get_products_keyboard_group(products, page)
-    try:
-        await query.edit_message_text(
-            f"🛒 *PILIH PRODUK DI {group_name}*\nHalaman {page+1} dari {total_pages}\n\nSilakan pilih produk:",
-            reply_markup=reply_markup,
-            parse_mode="Markdown"
-        )
-    except telegram.error.BadRequest as e:
-        if "Message is not modified" in str(e):
-            return CHOOSING_PRODUCT
-        raise
+    await safe_edit_message_text(
+        query,
+        f"🛒 *PILIH PRODUK DI {group_name}*\nHalaman {page+1} dari {total_pages}\n\nSilakan pilih produk:",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
+    )
     context.user_data["product_page"] = page
     return CHOOSING_PRODUCT
 
@@ -233,41 +206,27 @@ async def choose_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await show_product_in_group(query, context, page)
     if not data.startswith("prod_"):
         await query.answer()
-        try:
-            await query.edit_message_text("❌ Produk tidak valid.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]))
-        except telegram.error.BadRequest as e:
-            if "Message is not modified" in str(e):
-                return CHOOSING_PRODUCT
-            raise
+        await safe_edit_message_text(query, "❌ Produk tidak valid.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]))
         return CHOOSING_PRODUCT
     kode_produk = data.replace("prod_", "")
     products = context.user_data.get("product_list") or []
     found = next((p for p in products if p['code'] == kode_produk), None)
     if not found:
-        try:
-            await query.edit_message_text("❌ Produk tidak ditemukan atau tidak tersedia.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]))
-        except telegram.error.BadRequest as e:
-            if "Message is not modified" in str(e):
-                return CHOOSING_PRODUCT
-            raise
+        await safe_edit_message_text(query, "❌ Produk tidak ditemukan atau tidak tersedia.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]))
         return CHOOSING_PRODUCT
     context.user_data['selected_product'] = found
     desc = found['description'] or "(Deskripsi produk tidak tersedia)"
-    try:
-        await query.edit_message_text(
-            f"🛒 *Produk*: {found['name']}\n"
-            f"*Kode*: {found['code']}\n"
-            f"*Kategori*: {found['category']}\n"
-            f"*Harga*: Rp {found['price']:,.0f}\n\n"
-            f"*Deskripsi:*\n{desc}\n\n"
-            f"Masukkan nomor tujuan (misal: 08xxxxxxxxxx):",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]),
-            parse_mode="Markdown"
-        )
-    except telegram.error.BadRequest as e:
-        if "Message is not modified" in str(e):
-            return ENTER_TUJUAN
-        raise
+    await safe_edit_message_text(
+        query,
+        f"🛒 *Produk*: {found['name']}\n"
+        f"*Kode*: {found['code']}\n"
+        f"*Kategori*: {found['category']}\n"
+        f"*Harga*: Rp {found['price']:,.0f}\n\n"
+        f"*Deskripsi:*\n{desc}\n\n"
+        f"Masukkan nomor tujuan (misal: 08xxxxxxxxxx):",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]),
+        parse_mode="Markdown"
+    )
     return ENTER_TUJUAN
 
 async def enter_tujuan(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -303,12 +262,7 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await menu_main(update, context)
     if update.callback_query and update.callback_query.data != "confirm_order":
         await update.callback_query.answer()
-        try:
-            await update.callback_query.edit_message_text("Order dibatalkan.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]))
-        except telegram.error.BadRequest as e:
-            if "Message is not modified" in str(e):
-                return MENU
-            raise
+        await safe_edit_message_text(update.callback_query, "Order dibatalkan.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]))
         return MENU
     user = getattr(update, 'effective_user', None)
     if user is None and hasattr(update, "callback_query"):
@@ -323,29 +277,21 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     saldo = database.get_user_saldo(user_id)
     harga = prod['price']
     if saldo < harga:
-        try:
-            await update.callback_query.edit_message_text(
-                f"❌ Saldo Anda kurang.\nSaldo: Rp {saldo:,.0f}\nHarga produk: Rp {harga:,.0f}",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
-            )
-        except telegram.error.BadRequest as e:
-            if "Message is not modified" in str(e):
-                return MENU
-            raise
+        await safe_edit_message_text(
+            update.callback_query,
+            f"❌ Saldo Anda kurang.\nSaldo: Rp {saldo:,.0f}\nHarga produk: Rp {harga:,.0f}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
+        )
         return MENU
 
     reff_id = f"akrab_{uuid.uuid4().hex[:10]}"
 
     if not database.increment_user_saldo(user_id, -harga):
-        try:
-            await update.callback_query.edit_message_text(
-                "❌ Gagal memotong saldo. Silakan coba lagi.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
-            )
-        except telegram.error.BadRequest as e:
-            if "Message is not modified" in str(e):
-                return MENU
-            raise
+        await safe_edit_message_text(
+            update.callback_query,
+            "❌ Gagal memotong saldo. Silakan coba lagi.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
+        )
         return MENU
 
     payload = {
@@ -391,29 +337,27 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error riwayat_pembelian: {e}")
 
-    try:
-        if status_api in ['SUKSES', 'SUCCESS']:
-            await update.callback_query.edit_message_text(
-                f"✅ Order berhasil!\n\nProduk: *{prod['name']}*\nKategori: *{prod['category']}*\nTujuan: *{tujuan}*\n\n{keterangan}",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]),
-                parse_mode="Markdown"
-            )
-        elif status_api in ['GAGAL', 'FAILED']:
-            await update.callback_query.edit_message_text(
-                f"❌ Order gagal!\n{keterangan}",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]),
-                parse_mode="Markdown"
-            )
-        else:
-            await update.callback_query.edit_message_text(
-                f"🕑 Order diproses.\n{keterangan}",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]),
-                parse_mode="Markdown"
-            )
-    except telegram.error.BadRequest as e:
-        if "Message is not modified" in str(e):
-            return MENU
-        raise
+    if status_api in ['SUKSES', 'SUCCESS']:
+        await safe_edit_message_text(
+            update.callback_query,
+            f"✅ Order berhasil!\n\nProduk: *{prod['name']}*\nKategori: *{prod['category']}*\nTujuan: *{tujuan}*\n\n{keterangan}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]),
+            parse_mode="Markdown"
+        )
+    elif status_api in ['GAGAL', 'FAILED']:
+        await safe_edit_message_text(
+            update.callback_query,
+            f"❌ Order gagal!\n{keterangan}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]),
+            parse_mode="Markdown"
+        )
+    else:
+        await safe_edit_message_text(
+            update.callback_query,
+            f"🕑 Order diproses.\n{keterangan}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]),
+            parse_mode="Markdown"
+        )
     return MENU
 
 def get_conversation_handler():
