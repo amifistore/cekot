@@ -25,6 +25,15 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = config.BOT_TOKEN
 ADMIN_IDS = set(str(i) for i in getattr(config, "ADMIN_TELEGRAM_IDS", []))
 
+# PATCH: Helper agar edit_message_text tidak error jika "Message is not modified"
+async def safe_edit_message_text(callback_query, *args, **kwargs):
+    try:
+        await callback_query.edit_message_text(*args, **kwargs)
+    except telegram.error.BadRequest as e:
+        if "Message is not modified" in str(e):
+            return
+        raise
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     saldo = 0
@@ -62,7 +71,8 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if data == "menu_order":
             return await order_handler.menu_main(update, context)
         elif data == "menu_saldo":
-            await query.edit_message_text(
+            await safe_edit_message_text(
+                query,
                 f"💳 SALDO ANDA\nSaldo: Rp {saldo:,.0f}\nGunakan menu untuk topup/order produk.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("💸 Top Up", callback_data="menu_topup")],
@@ -70,7 +80,8 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ])
             )
         elif data == "menu_help":
-            await query.edit_message_text(
+            await safe_edit_message_text(
+                query,
                 "📞 BANTUAN\n\n"
                 "Jika mengalami masalah, hubungi admin @username_admin.\n"
                 "Cara order: pilih BELI PRODUK, pilih produk, isi nomor tujuan, konfirmasi.\n"
@@ -81,7 +92,8 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ])
             )
         elif data == "menu_topup":
-            await query.edit_message_text(
+            await safe_edit_message_text(
+                query,
                 "💸 *TOP UP SALDO*\n\n"
                 "Untuk top up saldo, ketik perintah /topup di chat bot ini dan ikuti instruksi.\n"
                 "Nominal transfer akan diberi kode unik untuk verifikasi otomatis.",
@@ -95,7 +107,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data == "menu_main":
             await start(update, context)
         else:
-            await query.edit_message_text("Menu tidak dikenal.")
+            await safe_edit_message_text(query, "Menu tidak dikenal.")
     except telegram.error.BadRequest as e:
         if "Message is not modified" in str(e):
             return
