@@ -5,6 +5,7 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
     filters,
+    CallbackQueryHandler,
 )
 import config
 import database
@@ -66,9 +67,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         saldo = 0
     try:
-        if data == "menu_admin" and str(user.id) in ADMIN_IDS:
-            await admin_handler.admin_menu_from_query(query, context)
-        elif data == "menu_main":
+        if data == "menu_main":
             await start(update, context)
         elif data == "menu_topup":
             await safe_edit_message_text(
@@ -79,7 +78,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]),
                 parse_mode="Markdown"
             )
-        # Untuk menu lain, ConversationHandler menangani!
+        # Untuk menu_admin, Handler khusus di bawah!
     except telegram.error.BadRequest as e:
         if "Message is not modified" in str(e):
             return
@@ -121,18 +120,14 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
-    # ConversationHandler untuk menu utama & order
     application.add_handler(order_handler.get_conversation_handler())
-    # Topup
     application.add_handler(topup_conv_handler)
-    # Handler untuk menu admin dan fallback ke menu utama
     application.add_handler(CommandHandler("approve_topup", approve_topup_command))
     application.add_handler(CommandHandler("cancel_topup", cancel_topup_command))
-    application.add_handler(CommandHandler("admin", admin_handler.admin_menu))  # Command /admin
-    application.add_handler(CommandHandler("menu_admin", admin_handler.admin_menu))  # Command /menu_admin (opsional)
-    application.add_handler(CommandHandler("menu_main", start))  # Command /menu_main (opsional)
-    # Callback menu utama (menu_admin, menu_main, menu_topup)
-    application.add_handler(telegram.ext.CallbackQueryHandler(menu_callback, pattern=r'^(menu_admin|menu_main|menu_topup)$'))
+    # PATCH: CallbackQueryHandler menu_admin langsung ke admin_handler.admin_menu_from_query
+    application.add_handler(CallbackQueryHandler(admin_handler.admin_menu_from_query, pattern=r'^menu_admin$'))
+    # Callback untuk menu utama/menu_topup (Bukan menu_admin)
+    application.add_handler(CallbackQueryHandler(menu_callback, pattern=r'^(menu_main|menu_topup)$'))
     # Semua handler admin panel (edit produk, broadcast, cek user, jadikan admin, dsb)
     for handler in admin_handler.get_admin_handlers():
         application.add_handler(handler)
