@@ -54,26 +54,29 @@ def get_grouped_products():
     return groups
 
 async def menu_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    saldo = database.get_user_saldo(str(user.id))
+    # PATCH: Selalu ambil user dengan fallback dari callback_query jika message None
+    user = getattr(update, 'effective_user', None)
+    if user is None and hasattr(update, "callback_query"):
+        user = getattr(update.callback_query, "from_user", None)
+    saldo = database.get_user_saldo(str(user.id)) if user else 0
     keyboard = [
         [InlineKeyboardButton("🛒 Beli Produk", callback_data="menu_order")],
         [InlineKeyboardButton("💳 Cek Saldo", callback_data="menu_saldo")],
         [InlineKeyboardButton("📞 Bantuan", callback_data="menu_help")]
     ]
-    if str(user.id) in config.ADMIN_TELEGRAM_IDS:
+    if user and str(user.id) in config.ADMIN_TELEGRAM_IDS:
         keyboard.append([InlineKeyboardButton("👑 Admin Panel", callback_data="menu_admin")])
     reply_markup = InlineKeyboardMarkup(keyboard)
     text = (
         f"🤖 *Selamat Datang!*\n\n"
-        f"Halo, *{user.full_name or user.username or user.id}*!\n"
+        f"Halo, *{getattr(user, 'full_name', None) or getattr(user, 'username', None) or getattr(user, 'id', None)}*!\n"
         f"💰 Saldo Anda: *Rp {saldo:,.0f}*\n\n"
         f"Pilih menu di bawah:"
     )
     try:
-        if update.callback_query:
+        if hasattr(update, "callback_query") and update.callback_query:
             await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
-        else:
+        elif hasattr(update, "message") and update.message:
             await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
     except telegram.error.BadRequest as e:
         if "Message is not modified" in str(e):
@@ -307,7 +310,9 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return MENU
             raise
         return MENU
-    user = update.effective_user
+    user = getattr(update, 'effective_user', None)
+    if user is None and hasattr(update, "callback_query"):
+        user = getattr(update.callback_query, "from_user", None)
     user_id = str(user.id)
     username = user.username or f"user_{user_id}"
     full_name = user.full_name or ""
