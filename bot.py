@@ -55,7 +55,6 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         saldo = database.get_user_saldo(user_id)
     except Exception:
         saldo = 0
-    # PATCH: handle edit_message_text error
     try:
         if data == "menu_order":
             # Handover to order_handler ConversationHandler
