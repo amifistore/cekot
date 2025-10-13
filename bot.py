@@ -1,12 +1,10 @@
 import logging
-import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
     CallbackQueryHandler,
     ContextTypes,
-    filters
 )
 import config
 import database
@@ -56,10 +54,8 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         saldo = 0
     try:
-        if data == "menu_order":
-            # Handover to order_handler ConversationHandler
-            return await order_handler.menu_main(update, context)
-        elif data == "menu_saldo":
+        # Hanya handle menu utama, JANGAN handle menu_order di sini!
+        if data == "menu_saldo":
             await query.edit_message_text(
                 f"💳 SALDO ANDA\nSaldo: Rp {saldo:,.0f}\nGunakan menu untuk topup/order produk.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
@@ -87,7 +83,9 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(menu_callback, pattern=r'^menu_'))
+    # HANYA handle menu utama saja di CallbackQueryHandler ini!
+    application.add_handler(CallbackQueryHandler(menu_callback, pattern=r'^(menu_saldo|menu_help|menu_admin|menu_main)$'))
+    # Semua tombol order dikelola oleh ConversationHandler di order_handler.py
     application.add_handler(order_handler.get_conversation_handler())
     for handler in admin_handler.get_admin_handlers():
         application.add_handler(handler)
