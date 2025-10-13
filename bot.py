@@ -4,7 +4,6 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
-    CallbackQueryHandler,
     ContextTypes,
     filters
 )
@@ -55,63 +54,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup
     )
 
-async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    user = query.from_user
-    saldo = 0
-    try:
-        user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
-        saldo = database.get_user_saldo(user_id)
-    except Exception:
-        saldo = 0
-    try:
-        if data == "menu_order":
-            return await order_handler.menu_main(update, context)
-        elif data == "menu_saldo":
-            await safe_edit_message_text(
-                query,
-                f"💳 SALDO ANDA\nSaldo: Rp {saldo:,.0f}\nGunakan menu untuk topup/order produk.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("💸 Top Up", callback_data="menu_topup")],
-                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
-                ])
-            )
-        elif data == "menu_help":
-            await safe_edit_message_text(
-                query,
-                "📞 BANTUAN\n\n"
-                "Jika mengalami masalah, hubungi admin @username_admin.\n"
-                "Cara order: pilih BELI PRODUK, pilih produk, isi nomor tujuan, konfirmasi.\n"
-                "Untuk top up saldo, gunakan tombol Top Up di bawah atau ketik /topup.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("💸 Top Up", callback_data="menu_topup")],
-                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
-                ])
-            )
-        elif data == "menu_topup":
-            await safe_edit_message_text(
-                query,
-                "💸 *TOP UP SALDO*\n\n"
-                "Untuk top up saldo, ketik perintah /topup di chat bot ini dan ikuti instruksi.\n"
-                "Nominal transfer akan diberi kode unik untuk verifikasi otomatis.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
-                ]),
-                parse_mode="Markdown"
-            )
-        elif data == "menu_admin" and str(user.id) in ADMIN_IDS:
-            await admin_handler.admin_menu_from_query(query, context)
-        elif data == "menu_main":
-            await start(update, context)
-        else:
-            await safe_edit_message_text(query, "Menu tidak dikenal.")
-    except telegram.error.BadRequest as e:
-        if "Message is not modified" in str(e):
-            return
-        raise
-
 async def approve_topup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     if user_id not in [str(i) for i in config.ADMIN_TELEGRAM_IDS]:
@@ -148,7 +90,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(menu_callback, pattern=r'^menu_'))
+    # HANYA register ConversationHandler dari order_handler (untuk menu/menu order)
     application.add_handler(order_handler.get_conversation_handler())
     application.add_handler(topup_conv_handler)
     application.add_handler(CommandHandler("approve_topup", approve_topup_command))
