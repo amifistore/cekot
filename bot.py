@@ -12,7 +12,7 @@ import config
 import database
 import order_handler
 import admin_handler
-from topup_handler import topup_conv_handler  # pastikan file topup_handler.py sudah ada
+from topup_handler import topup_conv_handler
 
 import telegram
 
@@ -81,7 +81,6 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ])
             )
         elif data == "menu_topup":
-            # Kirim instruksi top up, atau arahkan user ke command /topup
             await query.edit_message_text(
                 "💸 *TOP UP SALDO*\n\n"
                 "Untuk top up saldo, ketik perintah /topup di chat bot ini dan ikuti instruksi.\n"
@@ -102,6 +101,36 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         raise
 
+async def approve_topup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    if user_id not in [str(i) for i in config.ADMIN_TELEGRAM_IDS]:
+        await update.message.reply_text("❌ Hanya admin yang boleh approve topup.")
+        return
+    if not context.args:
+        await update.message.reply_text("❌ Format: /approve_topup <id>")
+        return
+    request_id = context.args[0]
+    result = database.approve_topup_request(request_id, admin_id=user_id)
+    if result:
+        await update.message.reply_text(f"✅ Topup request #{request_id} berhasil diapprove dan saldo user sudah bertambah.")
+    else:
+        await update.message.reply_text(f"❌ Gagal approve request #{request_id}.")
+
+async def cancel_topup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    if user_id not in [str(i) for i in config.ADMIN_TELEGRAM_IDS]:
+        await update.message.reply_text("❌ Hanya admin yang boleh cancel/reject topup.")
+        return
+    if not context.args:
+        await update.message.reply_text("❌ Format: /cancel_topup <id>")
+        return
+    request_id = context.args[0]
+    result = database.reject_topup_request(request_id, admin_id=user_id)
+    if result:
+        await update.message.reply_text(f"✅ Topup request #{request_id} berhasil dibatalkan/reject.")
+    else:
+        await update.message.reply_text(f"❌ Gagal cancel/reject request #{request_id}.")
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Update {update} caused error {context.error}")
 
@@ -110,7 +139,9 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(menu_callback, pattern=r'^menu_'))
     application.add_handler(order_handler.get_conversation_handler())
-    application.add_handler(topup_conv_handler)  # handler topup modern!
+    application.add_handler(topup_conv_handler)
+    application.add_handler(CommandHandler("approve_topup", approve_topup_command))
+    application.add_handler(CommandHandler("cancel_topup", cancel_topup_command))
     for handler in admin_handler.get_admin_handlers():
         application.add_handler(handler)
     application.add_error_handler(error_handler)
