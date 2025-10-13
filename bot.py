@@ -54,6 +54,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup
     )
 
+# FITUR ADMIN PANEL
+async def admin_panel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("❌ Hanya admin yang bisa akses panel ini.")
+        return
+    await admin_handler.admin_menu_from_message(update, context)
+
 async def approve_topup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     if user_id not in [str(i) for i in config.ADMIN_TELEGRAM_IDS]:
@@ -90,7 +98,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
-    # HANYA register ConversationHandler dari order_handler (untuk menu/menu order)
+    application.add_handler(CommandHandler("admin", admin_panel_command))   # akses admin panel via /admin
     application.add_handler(order_handler.get_conversation_handler())
     application.add_handler(topup_conv_handler)
     application.add_handler(CommandHandler("approve_topup", approve_topup_command))
