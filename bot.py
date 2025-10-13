@@ -3,9 +3,9 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters,
-    CallbackQueryHandler,
 )
 import config
 import database
@@ -54,7 +54,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup
     )
 
-# Handler untuk menu utama yang tidak di-cover ConversationHandler
+# Handler untuk menu utama selain menu_admin
 async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -78,7 +78,6 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]),
                 parse_mode="Markdown"
             )
-        # Untuk menu_admin, Handler khusus di bawah!
     except telegram.error.BadRequest as e:
         if "Message is not modified" in str(e):
             return
@@ -124,11 +123,11 @@ def main():
     application.add_handler(topup_conv_handler)
     application.add_handler(CommandHandler("approve_topup", approve_topup_command))
     application.add_handler(CommandHandler("cancel_topup", cancel_topup_command))
-    # PATCH: CallbackQueryHandler menu_admin langsung ke admin_handler.admin_menu_from_query
+    # PATCH: CallbackQueryHandler menu_admin langsung ke admin_handler.admin_menu_from_query!
     application.add_handler(CallbackQueryHandler(admin_handler.admin_menu_from_query, pattern=r'^menu_admin$'))
     # Callback untuk menu utama/menu_topup (Bukan menu_admin)
     application.add_handler(CallbackQueryHandler(menu_callback, pattern=r'^(menu_main|menu_topup)$'))
-    # Semua handler admin panel (edit produk, broadcast, cek user, jadikan admin, dsb)
+    # Semua handler admin panel dari admin_handler.py
     for handler in admin_handler.get_admin_handlers():
         application.add_handler(handler)
     application.add_error_handler(error_handler)
