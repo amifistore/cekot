@@ -12,6 +12,7 @@ import config
 import database
 import order_handler
 import admin_handler
+import telegram
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -54,33 +55,44 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         saldo = database.get_user_saldo(user_id)
     except Exception:
         saldo = 0
-    if data == "menu_order":
-        await order_handler.menu_main(update, context)
-    elif data == "menu_saldo":
-        await query.edit_message_text(
-            f"💳 SALDO ANDA\nSaldo: Rp {saldo:,.0f}\nGunakan menu untuk topup/order produk.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
-        )
-    elif data == "menu_help":
-        await query.edit_message_text(
-            "📞 BANTUAN\n\nJika mengalami masalah, hubungi admin @username_admin.\n"
-            "Cara order: pilih BELI PRODUK, pilih produk, isi nomor tujuan, konfirmasi.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
-        )
-    elif data == "menu_admin" and str(user.id) in ADMIN_IDS:
-        await admin_handler.admin_menu_from_query(query, context)
-    elif data == "menu_main":
-        await start(update, context)
+    # PATCH: handle edit_message_text error
+    try:
+        if data == "menu_order":
+            # Handover to order_handler ConversationHandler
+            return await order_handler.menu_main(update, context)
+        elif data == "menu_saldo":
+            await query.edit_message_text(
+                f"💳 SALDO ANDA\nSaldo: Rp {saldo:,.0f}\nGunakan menu untuk topup/order produk.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
+            )
+        elif data == "menu_help":
+            await query.edit_message_text(
+                "📞 BANTUAN\n\nJika mengalami masalah, hubungi admin @username_admin.\n"
+                "Cara order: pilih BELI PRODUK, pilih produk, isi nomor tujuan, konfirmasi.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
+            )
+        elif data == "menu_admin" and str(user.id) in ADMIN_IDS:
+            await admin_handler.admin_menu_from_query(query, context)
+        elif data == "menu_main":
+            await start(update, context)
+        else:
+            await query.edit_message_text("Menu tidak dikenal.")
+    except telegram.error.BadRequest as e:
+        if "Message is not modified" in str(e):
+            return
+        raise
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    logger.error(f"Update {update} caused error {context.error}")
 
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(menu_callback, pattern=r'^menu_'))
-    # Order menu modern ConversationHandler
     application.add_handler(order_handler.get_conversation_handler())
-    # Admin handlers (menu, edit, broadcast, etc)
     for handler in admin_handler.get_admin_handlers():
         application.add_handler(handler)
+    application.add_error_handler(error_handler)
     logger.info("🤖 Bot is running...")
     application.run_polling()
 
