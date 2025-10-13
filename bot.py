@@ -113,7 +113,6 @@ def main():
     application.add_handler(topup_conv_handler)
     application.add_handler(CommandHandler("approve_topup", approve_topup_command))
     application.add_handler(CommandHandler("cancel_topup", cancel_topup_command))
-    # Hanya satu handler untuk menu_admin!
     application.add_handler(CallbackQueryHandler(admin_handler.admin_menu_from_query, pattern=r'^menu_admin$'))
     application.add_handler(CallbackQueryHandler(menu_callback, pattern=r'^(menu_main|menu_topup)$'))
     for handler in admin_handler.get_admin_handlers():
