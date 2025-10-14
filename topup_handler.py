@@ -19,7 +19,7 @@ def generate_unique_amount(base_amount):
         return unique_amount, unique_digits
     except ValueError as e:
         logger.error(f"❌ Error in generate_unique_amount: {str(e)}")
-        raise  # Lempar error agar bisa ditangani di atas
+        raise
 
 async def topup_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Mulai proses topup"""
@@ -67,7 +67,7 @@ async def topup_nominal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         logger.info(f"🔧 topup_nominal dipanggil dengan pesan: {update.message.text if update.message else 'No message'}")
         
-        if not update.message:  # Pengecekan tambahan untuk keamanan
+        if not update.message:
             logger.error("❌ No message found in update")
             await context.bot.send_message(chat_id=context.user_data.get('topup_chat_id'), text="❌ Error: Pesan tidak ditemukan.")
             return ConversationHandler.END
@@ -103,7 +103,6 @@ async def topup_nominal(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return ASK_TOPUP_NOMINAL
         
-        # Tambahkan batas maksimum, misalnya Rp 1.000.000 untuk keamanan
         if base_amount > 1000000:
             await update.message.reply_text(
                 "❌ **Nominal terlalu besar!**\n\n"
@@ -156,12 +155,10 @@ async def topup_nominal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     return ConversationHandler.END
 
-# Sisanya dari kode Anda sudah baik, jadi saya hanya copy-paste dengan sedikit penyesuaian jika diperlukan.
-
 async def send_admin_notification(context: ContextTypes.DEFAULT_TYPE, request_id, user, base_amount, unique_amount, unique_digits):
     """Kirim notifikasi ke admin"""
     try:
-        if not config.ADMIN_TELEGRAM_IDS:  # Pengecekan jika list admin kosong
+        if not config.ADMIN_TELEGRAM_IDS:
             logger.warning("❌ Daftar admin kosong, notifikasi tidak dikirim.")
             return
         
@@ -190,8 +187,86 @@ async def send_admin_notification(context: ContextTypes.DEFAULT_TYPE, request_id
     except Exception as e:
         logger.error(f"❌ Error in send_admin_notification: {str(e)}")
 
-# Fungsi lainnya (topup_cancel, show_topup_menu, dll.) sudah baik, jadi tidak saya ubah.
+async def topup_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Batalkan topup"""
+    try:
+        logger.info("🔧 topup_cancel dipanggil")
+        
+        if update.callback_query:
+            query = update.callback_query
+            await query.answer()
+            message_func = query.edit_message_text
+        else:
+            message_func = update.message.reply_text
+            
+        await message_func(
+            "❌ **Top Up Dibatalkan**\n\n"
+            "Ketik `/topup` atau gunakan menu untuk memulai kembali.",
+            parse_mode='Markdown'
+        )
+        
+        context.user_data.clear()
+        
+    except Exception as e:
+        logger.error(f"❌ Error in topup_cancel: {str(e)}")
+    
+    return ConversationHandler.END
 
+async def show_topup_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Tampilkan menu topup utama"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("💳 Topup Manual", callback_data="topup_manual")],
+            [InlineKeyboardButton("📋 Riwayat Topup", callback_data="topup_history")],
+            [InlineKeyboardButton("🔙 Kembali", callback_data="menu_main")]
+        ])
+        
+        await query.edit_message_text(
+            "💰 **Menu Topup**\n\n"
+            "Pilih jenis topup:\n\n"
+            "💳 **Topup Manual** - Transfer manual ke rekening\n"
+            "📋 **Riwayat** - Lihat history topup\n\n"
+            "Pilih opsi di bawah:",
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Error in show_topup_menu: {str(e)}")
+        await query.message.reply_text("❌ Terjadi error, silakan coba lagi.")
+
+async def show_manage_topup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Tampilkan menu kelola topup"""
+    try:
+        query = update.callback_query
+        await query.answer("Fitur kelola topup untuk admin akan segera hadir!")
+        
+    except Exception as e:
+        logger.error(f"❌ Error in show_manage_topup: {str(e)}")
+
+async def handle_topup_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler untuk memulai topup manual"""
+    try:
+        logger.info("🔧 handle_topup_manual dipanggil")
+        query = update.callback_query
+        await query.answer()
+        await topup_start(update, context)
+    except Exception as e:
+        logger.error(f"❌ Error in handle_topup_manual: {str(e)}")
+        await update.callback_query.message.reply_text("❌ Terjadi error, silakan coba lagi.")
+
+async def handle_topup_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler untuk riwayat topup"""
+    try:
+        query = update.callback_query
+        await query.answer("Fitur riwayat topup akan segera hadir!")
+    except Exception as e:
+        logger.error(f"❌ Error in handle_topup_history: {str(e)}")
+
+# Conversation handler untuk topup
 topup_conv_handler = ConversationHandler(
     entry_points=[
         CommandHandler('topup', topup_start),
