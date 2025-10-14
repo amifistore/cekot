@@ -196,14 +196,6 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 def main():
     """Main function untuk menjalankan bot"""
     try:
-        # Hentikan proses lama
-        logger.info("🔄 Menghentikan proses bot lama...")
-        os.system('pkill -f "python main.py"')
-        os.system('pkill -f "python bot.py"')
-        
-        import time
-        time.sleep(3)
-        
         application = Application.builder().token(BOT_TOKEN).build()
         
         logger.info("🤖 Starting bot dengan sistem menu terintegrasi...")
@@ -257,9 +249,6 @@ def main():
         
     except Exception as e:
         logger.error(f"Gagal memulai bot: {e}")
-        if "409" in str(e):
-            logger.error("❌ Bot sudah berjalan di instance lain!")
-            print("🔧 Solusi: Hentikan proses bot lain dengan: pkill -f python")
         sys.exit(1)
 
 if __name__ == '__main__':
