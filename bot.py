@@ -15,8 +15,9 @@ import order_handler
 import admin_handler
 from topup_handler import topup_conv_handler
 import telegram
-import aiohttp
 import requests
+import aiohttp
+import sqlite3
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -33,7 +34,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
         saldo = database.get_user_saldo(user_id)
-    except Exception:
+    except Exception as e:
+        logger.error(f"Error getting user saldo: {e}")
         saldo = 0
     
     keyboard = [
@@ -72,6 +74,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "menu_stock":
         await show_stock_menu(query)
     elif data == "menu_admin":
+        # Panggil admin_menu langsung dari admin_handler
         await admin_handler.admin_menu(update, context)
 
 async def show_main_menu(query):
@@ -80,7 +83,8 @@ async def show_main_menu(query):
     try:
         user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
         saldo = database.get_user_saldo(user_id)
-    except Exception:
+    except Exception as e:
+        logger.error(f"Error getting user saldo: {e}")
         saldo = 0
     
     keyboard = [
@@ -107,7 +111,8 @@ async def show_saldo_menu(query):
     try:
         user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
         saldo = database.get_user_saldo(user_id)
-    except Exception:
+    except Exception as e:
+        logger.error(f"Error getting user saldo: {e}")
         saldo = 0
     
     keyboard = [[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]
@@ -162,6 +167,7 @@ async def show_stock_menu(query):
             msg = "❌ Gagal mengambil data stok dari provider."
             
     except Exception as e:
+        logger.error(f"Error getting stock: {e}")
         msg = f"❌ Gagal mengambil data stok: {str(e)}"
 
     keyboard = [[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]
@@ -195,6 +201,7 @@ async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg = "❌ Gagal mengambil data stok dari provider."
             
     except Exception as e:
+        logger.error(f"Error getting stock: {e}")
         msg = f"❌ Gagal mengambil data stok: {str(e)}"
 
     keyboard = [[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]
@@ -241,6 +248,7 @@ def main():
     # Basic command handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("stock", stock_command))
+    application.add_handler(CommandHandler("admin", admin_handler.admin_menu))
     
     # Conversation handlers
     application.add_handler(order_handler.get_conversation_handler())
@@ -250,13 +258,21 @@ def main():
     application.add_handler(CommandHandler("approve_topup", approve_topup_command))
     application.add_handler(CommandHandler("cancel_topup", cancel_topup_command))
     
-    # Menu callback handler
+    # Menu callback handler - pattern yang lebih sederhana
     application.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
     
-    # Admin handlers
-    admin_handlers = admin_handler.get_admin_handlers()
-    for handler in admin_handlers:
-        application.add_handler(handler)
+    # Admin callback handlers - pastikan pattern tidak overlap
+    application.add_handler(CallbackQueryHandler(admin_handler.admin_callback_handler, pattern="^admin_"))
+    application.add_handler(CallbackQueryHandler(admin_handler.admin_back_handler, pattern="^admin_back$"))
+    
+    # Admin conversation handler
+    application.add_handler(admin_handler.edit_produk_conv_handler)
+    
+    # Other admin command handlers
+    application.add_handler(admin_handler.broadcast_handler)
+    application.add_handler(admin_handler.cek_user_handler)
+    application.add_handler(admin_handler.jadikan_admin_handler)
+    application.add_handler(admin_handler.topup_list_handler)
     
     application.add_error_handler(error_handler)
     logger.info("🤖 Bot is running...")
