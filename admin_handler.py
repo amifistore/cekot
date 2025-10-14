@@ -1039,4 +1039,83 @@ async def get_total_users_count():
             async with conn.execute("SELECT COUNT(*) FROM users") as cursor:
                 return (await cursor.fetchone())[0]
     except:
-        return 0
+        return 
+# ============================
+# FITUR APPROVE & CANCEL TOPUP
+# ============================
+
+async def approve_topup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler untuk command /approve_topup"""
+    user_id = str(update.effective_user.id)
+    if not is_admin(update.effective_user):
+        await update.message.reply_text("❌ Hanya admin yang boleh approve topup.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("❌ Format: /approve_topup <request_id>")
+        return
+    
+    request_id = context.args[0]
+    
+    try:
+        # Implementasi approve topup - sesuaikan dengan database Anda
+        await ensure_topup_requests_table()
+        async with aiosqlite.connect(DB_PATH) as conn:
+            # Update status topup request
+            await conn.execute(
+                "UPDATE topup_requests SET status = 'approved', processed_at = ?, processed_by = ? WHERE id = ?",
+                (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), user_id, request_id)
+            )
+            
+            # Dapatkan data topup
+            async with conn.execute(
+                "SELECT user_id, amount FROM topup_requests WHERE id = ?", 
+                (request_id,)
+            ) as cursor:
+                result = await cursor.fetchone()
+            
+            if result:
+                topup_user_id, amount = result
+                # Tambahkan saldo ke user
+                await conn.execute(
+                    "UPDATE users SET balance = balance + ? WHERE user_id = ?",
+                    (amount, topup_user_id)
+                )
+            
+            await conn.commit()
+        
+        await log_admin_action(user_id, "APPROVE_TOPUP", f"Request: {request_id}")
+        await update.message.reply_text(f"✅ Topup request #{request_id} berhasil diapprove dan saldo user sudah bertambah.")
+        
+    except Exception as e:
+        logger.error(f"Error approving topup: {e}")
+        await update.message.reply_text(f"❌ Gagal approve request #{request_id}: {str(e)}")
+
+async def cancel_topup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler untuk command /cancel_topup"""
+    user_id = str(update.effective_user.id)
+    if not is_admin(update.effective_user):
+        await update.message.reply_text("❌ Hanya admin yang boleh cancel topup.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("❌ Format: /cancel_topup <request_id>")
+        return
+    
+    request_id = context.args[0]
+    
+    try:
+        await ensure_topup_requests_table()
+        async with aiosqlite.connect(DB_PATH) as conn:
+            await conn.execute(
+                "UPDATE topup_requests SET status = 'rejected', processed_at = ?, processed_by = ? WHERE id = ?",
+                (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), user_id, request_id)
+            )
+            await conn.commit()
+        
+        await log_admin_action(user_id, "CANCEL_TOPUP", f"Request: {request_id}")
+        await update.message.reply_text(f"✅ Topup request #{request_id} berhasil dibatalkan/direject.")
+        
+    except Exception as e:
+        logger.error(f"Error canceling topup: {e}")
+        await update.message.reply_text(f"❌ Gagal cancel request #{request_id}: {str(e)}")
