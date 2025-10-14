@@ -1,4 +1,6 @@
 import logging
+import sys
+import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -13,7 +15,13 @@ import config
 import database
 import order_handler
 import admin_handler
-from topup_handler import topup_conv_handler, show_topup_menu, show_manage_topup
+from topup_handler import (
+    topup_conv_handler, 
+    show_topup_menu, 
+    show_manage_topup,
+    handle_topup_manual,
+    handle_topup_history
+)
 import stok_handler
 
 # Setup logging
@@ -65,33 +73,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in start command: {e}")
         await update.message.reply_text("❌ Terjadi error. Silakan coba lagi.")
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk command /help"""
-    await update.message.reply_text(
-        "📞 **BANTUAN**\n\n"
-        "Untuk bantuan, silakan hubungi admin.\n"
-        "Gunakan menu di bawah untuk navigasi.",
-        parse_mode='Markdown'
-    )
-
-async def saldo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk command /saldo"""
-    user = update.message.from_user
-    saldo = 0
-    try:
-        user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
-        saldo = database.get_user_saldo(user_id)
-    except Exception as e:
-        logger.error(f"Error getting user saldo: {e}")
-        saldo = 0
-    
-    await update.message.reply_text(
-        f"💰 **SALDO ANDA**\n\n"
-        f"Saldo saat ini: **Rp {saldo:,.0f}**\n\n"
-        f"Gunakan menu Top Up untuk menambah saldo.",
-        parse_mode='Markdown'
-    )
-
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler utama untuk menu callback"""
     query = update.callback_query
@@ -112,7 +93,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data == "menu_topup":
             await show_topup_menu(update, context)
         elif data == "menu_admin":
-            await admin_handler.admin_menu_callback(update, context)
+            await admin_handler.admin_menu(update, context)
         elif data == "menu_order":
             await order_handler.menu_handler(update, context)
         else:
@@ -211,70 +192,74 @@ async def show_help_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     """Global error handler"""
     logger.error(f"Update {update} caused error {context.error}", exc_info=True)
-    
-    # Coba kirim pesan error ke user
-    try:
-        if update and hasattr(update, 'effective_chat'):
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text="❌ Terjadi error sistem. Silakan coba lagi nanti."
-            )
-    except Exception as e:
-        logger.error(f"Error sending error message: {e}")
 
 def main():
     """Main function untuk menjalankan bot"""
     try:
+        # Hentikan proses lama
+        if os.name == 'nt':  # Windows
+            os.system('taskkill /f /im python.exe >nul 2>&1')
+        else:  # Linux/Mac
+            os.system('pkill -f python >/dev/null 2>&1')
+        
+        import time
+        time.sleep(2)
+        
         application = Application.builder().token(BOT_TOKEN).build()
         
         logger.info("🤖 Starting bot with integrated menu system...")
         
-        # Basic command handlers
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("help", help_command))
-        application.add_handler(CommandHandler("saldo", saldo_command))
-        application.add_handler(CommandHandler("stock", stok_handler.stock_command))
+        # ========== URUTAN PENTING: TAMBAHKAN HANDLER DENGAN URUTAN INI ==========
         
-        # Admin command handlers
-        if hasattr(admin_handler, 'admin_menu'):
-            application.add_handler(CommandHandler("admin", admin_handler.admin_menu))
-        
-        # Conversation handlers - IMPORTANT: Register order handler first
-        if hasattr(order_handler, 'get_conversation_handler'):
-            application.add_handler(order_handler.get_conversation_handler())
-        
-        # Topup conversation handler
+        # 1. Conversation handlers pertama (karena mereka butuh state)
         application.add_handler(topup_conv_handler)
         
-        # Admin command handlers
+        # 2. Command handlers
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("stock", stok_handler.stock_command))
+        application.add_handler(CommandHandler("saldo", show_saldo_menu))
+        application.add_handler(CommandHandler("help", show_help_menu))
+        
+        # 3. Admin command handlers
+        if hasattr(admin_handler, 'admin_menu'):
+            application.add_handler(CommandHandler("admin", admin_handler.admin_menu))
         if hasattr(admin_handler, 'approve_topup_command'):
             application.add_handler(CommandHandler("approve_topup", admin_handler.approve_topup_command))
         if hasattr(admin_handler, 'cancel_topup_command'):
             application.add_handler(CommandHandler("cancel_topup", admin_handler.cancel_topup_command))
         
-        # Menu callback handlers - URUTAN PENTING!
+        # 4. Menu callback handlers - URUTAN SANGAT PENTING!
         application.add_handler(CallbackQueryHandler(menu_handler, pattern="^menu_"))
         
-        # Admin callback handlers
-        application.add_handler(CallbackQueryHandler(admin_handler.admin_callback_handler, pattern="^admin_"))
-        application.add_handler(CallbackQueryHandler(admin_handler.edit_produk_menu_handler, pattern="^edit_"))
-        application.add_handler(CallbackQueryHandler(admin_handler.select_product_handler, pattern="^select_product:"))
-        
-        # Topup callback handlers - TAMBAHKAN INI
+        # 5. Topup callback handlers
         application.add_handler(CallbackQueryHandler(show_manage_topup, pattern="^manage_topup$"))
+        application.add_handler(CallbackQueryHandler(handle_topup_manual, pattern="^topup_manual$"))
+        application.add_handler(CallbackQueryHandler(handle_topup_history, pattern="^topup_history$"))
         
-        # Order callback handler (fallback untuk order)
-        application.add_handler(CallbackQueryHandler(order_handler.menu_handler, pattern="^order_"))
+        # 6. Admin callback handlers
+        application.add_handler(CallbackQueryHandler(admin_handler.admin_callback_handler, pattern="^admin_"))
         
-        # Global error handler
+        # 7. Order handler (fallback)
+        if hasattr(order_handler, 'get_conversation_handler'):
+            application.add_handler(order_handler.get_conversation_handler())
+        
+        # 8. Error handler
         application.add_error_handler(error_handler)
         
         logger.info("✅ Bot started successfully!")
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        
+        # Jalankan bot
+        application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True,  # Bersihkan update yang tertunda
+            close_loop=False
+        )
         
     except Exception as e:
         logger.error(f"Failed to start bot: {e}")
-        raise
+        if "409" in str(e):
+            logger.error("❌ Bot sudah berjalan di tempat lain!")
+            print("⚠️  Bot sudah berjalan di instance lain. Hentikan proses python terlebih dahulu.")
 
 if __name__ == '__main__':
     main()
