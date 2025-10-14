@@ -27,7 +27,7 @@ async def topup_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.callback_query:
             query = update.callback_query
             user = query.from_user
-            await query.answer()  # Penting: answer callback query
+            await query.answer()
             message_func = query.edit_message_text
         else:
             user = update.message.from_user
@@ -89,7 +89,7 @@ async def topup_nominal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Generate nominal unik
         unique_amount, unique_digits = generate_unique_amount(base_amount)
         
-        # Simpan data di context untuk notifikasi admin
+        # Simpan data di context
         context.user_data['topup_data'] = {
             'user_id': str(user.id),
             'user_name': user.full_name,
@@ -117,8 +117,12 @@ async def topup_nominal(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "qris_statis": config.QRIS_STATIS
         }
         
-        resp = requests.post("https://qrisku.my.id/api", json=payload, timeout=15)
+        logger.info(f"Mengirim request QRIS dengan payload: {payload}")
+        
+        resp = requests.post("https://qrisku.my.id/api", json=payload, timeout=30)
         result = resp.json()
+        
+        logger.info(f"Response QRIS: {result}")
         
         if result.get("status") == "success" and "qris_base64" in result:
             qris_base64 = result["qris_base64"]
@@ -136,7 +140,7 @@ async def topup_nominal(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 qris_base64
             )
             
-            # Simpan request_id di context untuk notifikasi admin
+            # Simpan request_id di context
             context.user_data['topup_data']['request_id'] = request_id
             
             # Kirim QRIS ke user
@@ -155,17 +159,27 @@ async def topup_nominal(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_admin_notification(context, request_id)
             
         else:
+            error_msg = result.get('message', 'Unknown error')
+            logger.error(f"QRIS generation failed: {error_msg}")
             await update.message.reply_text(
                 f"❌ **Gagal generate QRIS**\n\n"
-                f"Error: {result.get('message', 'Unknown error')}\n\n"
+                f"Error: {error_msg}\n\n"
                 f"Silakan coba lagi atau hubungi admin.",
                 parse_mode='Markdown'
             )
             
     except requests.exceptions.Timeout:
+        logger.error("QRIS request timeout")
         await update.message.reply_text(
             "❌ **Timeout**\n\n"
             "Server QRIS sedang sibuk. Silakan coba lagi dalam beberapa menit.",
+            parse_mode='Markdown'
+        )
+    except requests.exceptions.RequestException as e:
+        logger.error(f"QRIS request error: {e}")
+        await update.message.reply_text(
+            "❌ **Error Koneksi**\n\n"
+            "Gagal terhubung ke server QRIS. Silakan coba lagi.",
             parse_mode='Markdown'
         )
     except Exception as e:
@@ -185,6 +199,7 @@ async def send_admin_notification(context: ContextTypes.DEFAULT_TYPE, request_id
         topup_data = context.user_data.get('topup_data', {})
         
         if not topup_data:
+            logger.error("No topup_data found for admin notification")
             return
         
         user_name = topup_data.get('user_name', 'Unknown')
@@ -213,6 +228,7 @@ async def send_admin_notification(context: ContextTypes.DEFAULT_TYPE, request_id
                     text=notification_text,
                     parse_mode='Markdown'
                 )
+                logger.info(f"Notifikasi terkirim ke admin {admin_id}")
             except Exception as e:
                 logger.error(f"Gagal kirim notifikasi ke admin {admin_id}: {e}")
                 
@@ -242,7 +258,7 @@ async def topup_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     return ConversationHandler.END
 
-# Handler untuk menu topup (bukan conversation)
+# Handler untuk menu topup
 async def show_topup_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Tampilkan menu topup utama"""
     try:
@@ -251,7 +267,6 @@ async def show_topup_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("💳 Topup Manual", callback_data="topup_manual")],
-            [InlineKeyboardButton("🤖 Topup Otomatis", callback_data="topup_auto")],
             [InlineKeyboardButton("📋 Riwayat Topup", callback_data="topup_history")],
             [InlineKeyboardButton("⚙️ Kelola Topup", callback_data="manage_topup")],
             [InlineKeyboardButton("🔙 Kembali", callback_data="menu_main")]
@@ -272,56 +287,35 @@ async def show_manage_topup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Tampilkan menu kelola topup"""
     try:
         query = update.callback_query
-        await query.answer()
+        await query.answer("Fitur kelola topup akan segera hadir!")
         
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("➕ Tambah Metode", callback_data="add_topup_method")],
-            [InlineKeyboardButton("✏️ Edit Metode", callback_data="edit_topup_method")],
-            [InlineKeyboardButton("🗑️ Hapus Metode", callback_data="delete_topup_method")],
-            [InlineKeyboardButton("🔙 Kembali", callback_data="menu_topup")]
-        ])
-        
-        await query.edit_message_text(
-            "⚙️ **Kelola Topup**\n\n"
-            "Kelola metode pembayaran untuk topup:",
-            reply_markup=keyboard,
-            parse_mode='Markdown'
-        )
+        # Untuk sementara, kembali ke menu topup
+        await show_topup_menu(update, context)
         
     except Exception as e:
         logger.error(f"Error in show_manage_topup: {str(e)}")
         await query.message.reply_text("❌ Terjadi error, silakan coba lagi.")
 
-# Placeholder untuk fungsi lainnya
+# Handler untuk sub-menu topup
 async def handle_topup_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer("Fitur topup manual akan segera hadir!")
-    
-async def handle_topup_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer("Fitur topup otomatis akan segera hadir!")
+    """Handler untuk memulai topup manual"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        await topup_start(update, context)
+    except Exception as e:
+        logger.error(f"Error in handle_topup_manual: {str(e)}")
+        await query.message.reply_text("❌ Terjadi error, silakan coba lagi.")
 
 async def handle_topup_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer("Fitur riwayat topup akan segera hadir!")
 
-async def handle_add_method(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer("Fitur tambah metode akan segera hadir!")
-
-async def handle_edit_method(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer("Fitur edit metode akan segera hadir!")
-
-async def handle_delete_method(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer("Fitur hapus metode akan segera hadir!")
-
 # Conversation handler untuk topup
 topup_conv_handler = ConversationHandler(
     entry_points=[
         CommandHandler('topup', topup_start),
-        CallbackQueryHandler(topup_start, pattern='^topup_manual$')  # Pastikan pattern sesuai
+        CallbackQueryHandler(handle_topup_manual, pattern='^topup_manual$')
     ],
     states={
         ASK_TOPUP_NOMINAL: [
@@ -330,4 +324,4 @@ topup_conv_handler = ConversationHandler(
     },
     fallbacks=[CommandHandler('cancel', topup_cancel)],
     allow_reentry=True
-        )
+)
