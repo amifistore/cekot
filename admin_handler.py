@@ -714,6 +714,10 @@ async def cleanup_data_from_query(query, context):
 # HANDLER UNTUK KEMBALI KE MENU ADMIN
 # ============================
 
+# ============================
+# FIX UNTUK INTEGRASI DENGAN BOT.PY
+# ============================
+
 async def admin_back_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -721,10 +725,7 @@ async def admin_back_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await admin_menu(update, context)
     return ConversationHandler.END
 
-# ============================
-# BROADCAST START HANDLER
-# ============================
-
+# Handler untuk broadcast start
 async def broadcast_start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_check(update, context):
         return
@@ -738,7 +739,7 @@ async def broadcast_start_handler(update: Update, context: ContextTypes.DEFAULT_
     )
 
 # ============================
-# REGISTER HANDLERS & EXPORTS
+# REGISTER HANDLERS & EXPORTS - YANG DIPERBAIKI
 # ============================
 
 admin_menu_handler = CommandHandler("admin", admin_menu)
