@@ -19,6 +19,7 @@ from topup_handler import (
     topup_conv_handler, 
     show_topup_menu, 
     show_manage_topup,
+    handle_topup_manual,
     handle_topup_history
 )
 import stok_handler
@@ -84,7 +85,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if data == "menu_main":
             await show_main_menu(update, context)
         elif data == "menu_saldo":
-            await show_saldo_menu(update, context)
+            await show_saldo_menu(update, context)  # Fungsi ini ada di sini
         elif data == "menu_help":
             await show_help_menu(update, context)
         elif data == "menu_stock":
@@ -199,11 +200,10 @@ def main():
         
         logger.info("🤖 Starting bot dengan sistem menu terintegrasi...")
         
-        # PENTING: Topup ConversationHandler harus di atas!
         application.add_handler(topup_conv_handler)
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("stock", stok_handler.stock_command))
-        application.add_handler(CommandHandler("saldo", show_saldo_menu))
+        application.add_handler(CommandHandler("saldo", show_saldo_menu))  # Pastikan ini ada
         application.add_handler(CommandHandler("help", show_help_menu))
         
         if hasattr(admin_handler, 'admin_menu'):
@@ -215,7 +215,7 @@ def main():
         
         application.add_handler(CallbackQueryHandler(menu_handler, pattern="^menu_"))
         application.add_handler(CallbackQueryHandler(show_manage_topup, pattern="^manage_topup$"))
-        # Jangan tambahkan CallbackQueryHandler(handle_topup_manual, pattern="^topup_manual$") di sini!!
+        application.add_handler(CallbackQueryHandler(handle_topup_manual, pattern="^topup_manual$"))
         application.add_handler(CallbackQueryHandler(handle_topup_history, pattern="^topup_history$"))
         application.add_handler(CallbackQueryHandler(admin_handler.admin_callback_handler, pattern="^admin_"))
         
