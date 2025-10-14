@@ -69,6 +69,7 @@ async def menu_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("🛒 Beli Produk", callback_data="menu_order")],
         [InlineKeyboardButton("💳 Cek Saldo", callback_data="menu_saldo")],
+        [InlineKeyboardButton("💸 Top Up Saldo", callback_data="menu_topup")],  # TAMBAH INI
         [InlineKeyboardButton("📞 Bantuan", callback_data="menu_help")]
     ]
     if user and str(user.id) in config.ADMIN_TELEGRAM_IDS:
@@ -85,63 +86,6 @@ async def menu_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif hasattr(update, "message") and update.message:
         await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
     return MENU
-
-async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    data = query.data
-    if data == "menu_order":
-        return await show_group_menu(update, context)
-    elif data == "menu_saldo":
-        saldo = database.get_user_saldo(str(query.from_user.id))
-        await safe_edit_message_text(
-            query,
-            f"💳 *SALDO ANDA*\n\nSaldo: *Rp {saldo:,.0f}*\n\nGunakan menu untuk topup atau order produk.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]),
-            parse_mode="Markdown"
-        )
-        return MENU
-    elif data == "menu_help":
-        await safe_edit_message_text(
-            query,
-            "📞 *BANTUAN*\n\n"
-            "Jika mengalami masalah, hubungi admin @username_admin.\n\n"
-            "Cara order: pilih *Beli Produk*, pilih produk, isi nomor tujuan, konfirmasi.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]),
-            parse_mode="Markdown"
-        )
-        return MENU
-    elif data == "menu_admin" and str(query.from_user.id) in config.ADMIN_TELEGRAM_IDS:
-        # PERBAIKAN: Redirect ke admin_handler yang sebenarnya
-        try:
-            from admin_handler import admin_menu
-            await admin_menu(update, context)
-            return ConversationHandler.END
-        except Exception as e:
-            logger.error(f"Error loading admin panel: {e}")
-            # Fallback ke menu admin sederhana jika admin_handler tidak tersedia
-            keyboard = [
-                [InlineKeyboardButton("🔄 Update Produk", callback_data="admin_update")],
-                [InlineKeyboardButton("📋 List Produk", callback_data="admin_list_produk")],
-                [InlineKeyboardButton("✏️ Edit Produk", callback_data="admin_edit_produk")],
-                [InlineKeyboardButton("💳 Kelola Topup", callback_data="admin_topup")],
-                [InlineKeyboardButton("👥 Kelola User", callback_data="admin_users")],
-                [InlineKeyboardButton("📊 Statistik", callback_data="admin_stats")],
-                [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await safe_edit_message_text(
-                query,
-                "👑 **ADMIN PANEL**\n\nPilih fitur admin yang ingin digunakan:",
-                reply_markup=reply_markup,
-                parse_mode="Markdown"
-            )
-            return MENU
-    elif data == "menu_main":
-        return await menu_main(update, context)
-    else:
-        await query.answer()
-        await safe_edit_message_text(query, "Menu tidak dikenal.")
-        return MENU
 
 async def show_group_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     groups = get_grouped_products()
