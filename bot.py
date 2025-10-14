@@ -13,6 +13,7 @@ import config
 import database
 import order_handler
 import admin_handler
+import stock_handler
 from topup_handler import topup_conv_handler
 import telegram
 
@@ -45,6 +46,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("🛒 BELI PRODUK", callback_data="menu_order")],
         [InlineKeyboardButton("💳 CEK SALDO", callback_data="menu_saldo")],
+        [InlineKeyboardButton("📊 CEK STOK", callback_data="menu_stock")],
         [InlineKeyboardButton("📞 BANTUAN", callback_data="menu_help")],
         [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="menu_topup")]
     ]
@@ -75,6 +77,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [
             [InlineKeyboardButton("🛒 BELI PRODUK", callback_data="menu_order")],
             [InlineKeyboardButton("💳 CEK SALDO", callback_data="menu_saldo")],
+            [InlineKeyboardButton("📊 CEK STOK", callback_data="menu_stock")],
             [InlineKeyboardButton("📞 BANTUAN", callback_data="menu_help")],
             [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="menu_topup")]
         ]
@@ -127,6 +130,13 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Handle order menu - panggil order handler
         from order_handler import order_start
         await order_start(update, context)
+    elif data == "menu_stock":
+        # Handle stock menu - panggil stock handler
+        await stock_handler.stock_akrab_callback(update, context)
+
+# Handler untuk perintah /stock
+async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await stock_handler.stock_akrab_callback(update, context)
 
 async def approve_topup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -166,6 +176,7 @@ def main():
     
     # Add basic command handlers
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("stock", stock_command))
     
     # Add conversation handlers
     application.add_handler(order_handler.get_conversation_handler())
@@ -176,7 +187,7 @@ def main():
     application.add_handler(CommandHandler("cancel_topup", cancel_topup_command))
     
     # Add callback query handlers untuk menu user
-    application.add_handler(CallbackQueryHandler(menu_callback, pattern=r'^menu_(main|topup|saldo|help|order)$'))
+    application.add_handler(CallbackQueryHandler(menu_callback, pattern=r'^menu_(main|topup|saldo|help|order|stock)$'))
     
     # Add semua admin handlers dari admin_handler module
     admin_handlers = admin_handler.get_admin_handlers()
