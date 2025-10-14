@@ -105,9 +105,11 @@ def main():
     application.add_handler(order_handler.get_conversation_handler())  # ORDER HANDLER FIRST
     application.add_handler(topup_conv_handler)
     
-    # Admin command handlers
-    application.add_handler(CommandHandler("approve_topup", admin_handler.approve_topup_command))
-    application.add_handler(CommandHandler("cancel_topup", admin_handler.cancel_topup_command))
+    # Admin command handlers - GUNAKAN FUNGSI YANG SUDAH DIPERBAIKI
+    if hasattr(admin_handler, 'approve_topup_command'):
+        application.add_handler(CommandHandler("approve_topup", admin_handler.approve_topup_command))
+    if hasattr(admin_handler, 'cancel_topup_command'):
+        application.add_handler(CommandHandler("cancel_topup", admin_handler.cancel_topup_command))
     
     # Admin callback handlers
     application.add_handler(CallbackQueryHandler(admin_handler.admin_callback_handler, pattern="^admin_"))
