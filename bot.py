@@ -73,11 +73,11 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "menu_stock":
         await show_stock_menu(query)
     elif data == "menu_admin":
-        # Panggil admin_menu langsung dari admin_handler
+        # Langsung panggil admin_menu dari admin_handler
         await admin_handler.admin_menu(update, context)
     else:
-        # Jika tidak ada yang match, coba handle dengan admin handler
-        await admin_handler.admin_callback_handler(update, context)
+        # Fallback untuk callback data lain
+        await query.edit_message_text("Menu tidak dikenal.")
 
 async def show_main_menu(query):
     user = query.from_user
@@ -223,17 +223,15 @@ def main():
     application.add_handler(order_handler.get_conversation_handler())
     application.add_handler(topup_conv_handler)
     
-    # Menu callback handler - HARUS DITAMBAHKAN SEBELUM admin handlers
+    # Menu callback handler
     application.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
     
-    # ADMIN HANDLERS - Pattern yang lebih general
+    # Admin callback handlers - SEDERHANA dan EFEKTIF
     application.add_handler(CallbackQueryHandler(admin_handler.admin_callback_handler, pattern="^admin_"))
     application.add_handler(CallbackQueryHandler(admin_handler.edit_produk_menu_handler, pattern="^edit_"))
     application.add_handler(CallbackQueryHandler(admin_handler.select_product_handler, pattern="^select_product:"))
-    application.add_handler(CallbackQueryHandler(admin_handler.broadcast_confirm_handler, pattern="^(confirm_broadcast|cancel_broadcast)$"))
-    application.add_handler(CallbackQueryHandler(admin_handler.edit_produk_menu_handler, pattern="^back_to_edit_menu$"))
     
-    # Fallback handler untuk callback data yang tidak dikenal
+    # Fallback untuk callback yang tidak ditangani
     application.add_handler(CallbackQueryHandler(menu_callback, pattern=".*"))
     
     application.add_error_handler(error_handler)
