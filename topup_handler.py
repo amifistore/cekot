@@ -2,6 +2,7 @@ import config
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ConversationHandler, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
 import database
+import random
 import logging
 
 logger = logging.getLogger(__name__)
@@ -9,20 +10,35 @@ logger = logging.getLogger(__name__)
 # States untuk conversation
 ASK_TOPUP_NOMINAL = 1
 
+def generate_unique_amount(base_amount):
+    """Generate nominal unik dengan menambahkan 3 digit random"""
+    base_amount = int(base_amount)
+    unique_digits = random.randint(1, 999)
+    unique_amount = base_amount + unique_digits
+    return unique_amount, unique_digits
+
 async def topup_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Mulai proses topup"""
+    """Mulai proses topup - FIXED VERSION"""
     try:
+        logger.info("🔧 topup_start dipanggil")
+        
         # Handle both command and callback
         if update.callback_query:
             query = update.callback_query
             user = query.from_user
             await query.answer()
             message_func = query.edit_message_text
+            chat_id = query.message.chat_id
         else:
             user = update.message.from_user
             message_func = update.message.reply_text
+            chat_id = update.message.chat_id
         
         user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
+        
+        # Simpan chat_id di context untuk tracking
+        context.user_data['topup_chat_id'] = chat_id
+        context.user_data['topup_user_id'] = str(user.id)
         
         await message_func(
             "💳 **TOP UP SALDO**\n\n"
@@ -32,10 +48,12 @@ async def topup_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "❌ Ketik /cancel untuk membatalkan",
             parse_mode='Markdown'
         )
+        
+        logger.info(f"✅ topup_start selesai, menunggu input nominal dari user {user.id}")
         return ASK_TOPUP_NOMINAL
         
     except Exception as e:
-        logger.error(f"Error in topup_start: {str(e)}")
+        logger.error(f"❌ Error in topup_start: {str(e)}")
         if update.callback_query:
             await update.callback_query.message.reply_text("❌ Terjadi error, silakan coba lagi.")
         else:
@@ -43,10 +61,16 @@ async def topup_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
 async def topup_nominal(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Process nominal topup"""
+    """Process nominal topup - FIXED VERSION"""
     try:
+        logger.info(f"🔧 topup_nominal dipanggil dengan pesan: {update.message.text}")
+        
         user = update.message.from_user
         nominal_input = update.message.text.strip()
+        
+        # Debug info
+        logger.info(f"📥 User {user.id} mengirim: {nominal_input}")
+        logger.info(f"📊 Context user_data: {context.user_data}")
         
         # Cek jika user ingin cancel
         if nominal_input.lower() == '/cancel':
@@ -76,8 +100,7 @@ async def topup_nominal(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return ASK_TOPUP_NOMINAL
         
-        # Generate nominal unik (sederhana dulu)
-        import random
+        # Generate nominal unik
         unique_digits = random.randint(1, 999)
         unique_amount = base_amount + unique_digits
         
@@ -88,8 +111,10 @@ async def topup_nominal(update: Update, context: ContextTypes.DEFAULT_TYPE):
             base_amount,
             unique_amount,
             unique_digits,
-            "MANUAL"  # Untuk sementara tanpa QRIS
+            "MANUAL"
         )
+        
+        logger.info(f"✅ Topup request dibuat: ID {request_id} untuk user {user.id}")
         
         # Kirim konfirmasi ke user
         await update.message.reply_text(
@@ -111,8 +136,11 @@ async def topup_nominal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Kirim notifikasi ke admin
         await send_admin_notification(context, request_id, user, base_amount, unique_amount, unique_digits)
         
+        # Clear user data setelah selesai
+        context.user_data.clear()
+        
     except Exception as e:
-        logger.error(f"Error in topup_nominal: {str(e)}")
+        logger.error(f"❌ Error in topup_nominal: {str(e)}")
         await update.message.reply_text(
             f"❌ **Error System**\n\n"
             f"Terjadi kesalahan: {str(e)}\n\n"
@@ -144,15 +172,18 @@ async def send_admin_notification(context: ContextTypes.DEFAULT_TYPE, request_id
                     text=notification_text,
                     parse_mode='Markdown'
                 )
+                logger.info(f"✅ Notifikasi terkirim ke admin {admin_id}")
             except Exception as e:
-                logger.error(f"Gagal kirim notifikasi ke admin {admin_id}: {e}")
+                logger.error(f"❌ Gagal kirim notifikasi ke admin {admin_id}: {e}")
                 
     except Exception as e:
-        logger.error(f"Error in send_admin_notification: {str(e)}")
+        logger.error(f"❌ Error in send_admin_notification: {str(e)}")
 
 async def topup_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Batalkan topup"""
     try:
+        logger.info("🔧 topup_cancel dipanggil")
+        
         if update.callback_query:
             query = update.callback_query
             await query.answer()
@@ -166,8 +197,11 @@ async def topup_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
         
+        # Clear user data
+        context.user_data.clear()
+        
     except Exception as e:
-        logger.error(f"Error in topup_cancel: {str(e)}")
+        logger.error(f"❌ Error in topup_cancel: {str(e)}")
     
     return ConversationHandler.END
 
@@ -195,7 +229,7 @@ async def show_topup_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
     except Exception as e:
-        logger.error(f"Error in show_topup_menu: {str(e)}")
+        logger.error(f"❌ Error in show_topup_menu: {str(e)}")
         await query.message.reply_text("❌ Terjadi error, silakan coba lagi.")
 
 async def show_manage_topup(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -205,16 +239,18 @@ async def show_manage_topup(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("Fitur kelola topup untuk admin akan segera hadir!")
         
     except Exception as e:
-        logger.error(f"Error in show_manage_topup: {str(e)}")
+        logger.error(f"❌ Error in show_manage_topup: {str(e)}")
 
 async def handle_topup_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk memulai topup manual"""
     try:
+        logger.info("🔧 handle_topup_manual dipanggil")
         query = update.callback_query
         await query.answer()
         await topup_start(update, context)
     except Exception as e:
-        logger.error(f"Error in handle_topup_manual: {str(e)}")
+        logger.error(f"❌ Error in handle_topup_manual: {str(e)}")
+        await update.callback_query.message.reply_text("❌ Terjadi error, silakan coba lagi.")
 
 async def handle_topup_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk riwayat topup"""
@@ -222,9 +258,9 @@ async def handle_topup_history(update: Update, context: ContextTypes.DEFAULT_TYP
         query = update.callback_query
         await query.answer("Fitur riwayat topup akan segera hadir!")
     except Exception as e:
-        logger.error(f"Error in handle_topup_history: {str(e)}")
+        logger.error(f"❌ Error in handle_topup_history: {str(e)}")
 
-# Conversation handler untuk topup
+# Conversation handler untuk topup - FIXED VERSION
 topup_conv_handler = ConversationHandler(
     entry_points=[
         CommandHandler('topup', topup_start),
@@ -236,5 +272,6 @@ topup_conv_handler = ConversationHandler(
         ]
     },
     fallbacks=[CommandHandler('cancel', topup_cancel)],
-    allow_reentry=True
-)
+    allow_reentry=True,
+    per_message=False
+    )
