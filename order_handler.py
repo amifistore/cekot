@@ -69,6 +69,8 @@ async def menu_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("🛒 Beli Produk", callback_data="menu_order")],
         [InlineKeyboardButton("💳 Cek Saldo", callback_data="menu_saldo")],
+        [InlineKeyboardButton("💸 Top Up Saldo", callback_data="menu_topup")],
+        [InlineKeyboardButton("📊 Cek Stok", callback_data="menu_stock")],
         [InlineKeyboardButton("📞 Bantuan", callback_data="menu_help")]
     ]
     if user and str(user.id) in config.ADMIN_TELEGRAM_IDS:
@@ -88,7 +90,11 @@ async def menu_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    await query.answer()
     data = query.data
+    
+    logger.info(f"Menu callback received: {data}")
+    
     if data == "menu_order":
         return await show_group_menu(update, context)
     elif data == "menu_saldo":
@@ -110,30 +116,42 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
         return MENU
+    elif data == "menu_topup":
+        # Redirect ke topup handler
+        try:
+            from topup_handler import topup_start
+            await topup_start(update, context)
+            return ConversationHandler.END
+        except Exception as e:
+            logger.error(f"Error loading topup: {e}")
+            await safe_edit_message_text(
+                query,
+                "❌ Error memulai topup. Silakan gunakan command /topup",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
+            )
+            return MENU
+    elif data == "menu_stock":
+        # Redirect ke stock handler atau tampilkan stok langsung
+        try:
+            # Coba import stok_handler jika ada
+            import stok_handler
+            await stok_handler.stock_akrab_callback(update, context)
+        except ImportError:
+            # Fallback ke fungsi stok lokal
+            await show_stock_menu(update, context)
+        return MENU
     elif data == "menu_admin" and str(query.from_user.id) in config.ADMIN_TELEGRAM_IDS:
-        # PERBAIKAN: Redirect ke admin_handler yang sebenarnya
+        # Redirect ke admin handler
         try:
             from admin_handler import admin_menu
             await admin_menu(update, context)
             return ConversationHandler.END
         except Exception as e:
             logger.error(f"Error loading admin panel: {e}")
-            # Fallback ke menu admin sederhana jika admin_handler tidak tersedia
-            keyboard = [
-                [InlineKeyboardButton("🔄 Update Produk", callback_data="admin_update")],
-                [InlineKeyboardButton("📋 List Produk", callback_data="admin_list_produk")],
-                [InlineKeyboardButton("✏️ Edit Produk", callback_data="admin_edit_produk")],
-                [InlineKeyboardButton("💳 Kelola Topup", callback_data="admin_topup")],
-                [InlineKeyboardButton("👥 Kelola User", callback_data="admin_users")],
-                [InlineKeyboardButton("📊 Statistik", callback_data="admin_stats")],
-                [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
             await safe_edit_message_text(
                 query,
-                "👑 **ADMIN PANEL**\n\nPilih fitur admin yang ingin digunakan:",
-                reply_markup=reply_markup,
-                parse_mode="Markdown"
+                "❌ Error memuat panel admin. Silakan gunakan command /admin",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
             )
             return MENU
     elif data == "menu_main":
@@ -143,6 +161,50 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit_message_text(query, "Menu tidak dikenal.")
         return MENU
 
+# Tambahkan fungsi show_stock_menu untuk fallback
+async def show_stock_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    try:
+        import aiohttp
+        api_key = getattr(config, 'API_KEY_PROVIDER', '')
+        url = "https://panel.khfy-store.com/api_v3/cek_stock_akrab"
+        params = {'api_key': api_key} if api_key else {}
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params, timeout=10) as response:
+                response.raise_for_status()
+                data = await response.json()
+        
+        if data.get("ok", False):
+            stocks = data.get("data", {})
+            if stocks:
+                msg = "📊 **STOK PRODUK AKRAB**\n\n"
+                for product_name, stock_info in stocks.items():
+                    stock = stock_info.get("stock", 0)
+                    status = "✅ TERSEDIA" if stock > 0 else "❌ HABIS"
+                    msg += f"• **{product_name}**: {stock} pcs - {status}\n"
+                msg += f"\n⏰ **Update**: {data.get('timestamp', 'N/A')}"
+            else:
+                msg = "📭 Tidak ada data stok yang tersedia."
+        else:
+            msg = "❌ Gagal mengambil data stok dari provider."
+            
+    except Exception as e:
+        logger.error(f"Error getting stock: {e}")
+        msg = f"❌ **Gagal mengambil data stok:**\n{str(e)}"
+
+    keyboard = [
+        [InlineKeyboardButton("🔄 Refresh Stok", callback_data="menu_stock")],
+        [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await safe_edit_message_text(query, msg, parse_mode='Markdown', reply_markup=reply_markup)
+
+# ... (fungsi-fungsi lainnya tetap sama: show_group_menu, choose_group, show_product_in_group, 
+# choose_product, enter_tujuan, confirm_order, dan get_conversation_handler)
 async def show_group_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     groups = get_grouped_products()
     keyboard = [
@@ -407,4 +469,4 @@ def get_conversation_handler():
         },
         fallbacks=[CallbackQueryHandler(menu_main, pattern=r'^menu_main$')],
         allow_reentry=True
-    )
+        )
