@@ -85,7 +85,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if data == "menu_main":
             await show_main_menu(update, context)
         elif data == "menu_saldo":
-            await show_saldo_menu(update, context)  # Fungsi ini ada di sini
+            await show_saldo_menu(update, context)
         elif data == "menu_help":
             await show_help_menu(update, context)
         elif data == "menu_stock":
@@ -200,12 +200,18 @@ def main():
         
         logger.info("🤖 Starting bot dengan sistem menu terintegrasi...")
         
+        # ========== URUTAN HANDLER YANG BENAR ==========
+        
+        # 1. Conversation handlers pertama
         application.add_handler(topup_conv_handler)
+        
+        # 2. Command handlers
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("stock", stok_handler.stock_command))
-        application.add_handler(CommandHandler("saldo", show_saldo_menu))  # Pastikan ini ada
+        application.add_handler(CommandHandler("saldo", show_saldo_menu))
         application.add_handler(CommandHandler("help", show_help_menu))
         
+        # 3. Admin command handlers
         if hasattr(admin_handler, 'admin_menu'):
             application.add_handler(CommandHandler("admin", admin_handler.admin_menu))
         if hasattr(admin_handler, 'approve_topup_command'):
@@ -213,19 +219,33 @@ def main():
         if hasattr(admin_handler, 'cancel_topup_command'):
             application.add_handler(CommandHandler("cancel_topup", admin_handler.cancel_topup_command))
         
+        # 4. Menu callback handlers - URUTAN PENTING!
         application.add_handler(CallbackQueryHandler(menu_handler, pattern="^menu_"))
+        
+        # 5. Topup callback handlers
         application.add_handler(CallbackQueryHandler(show_manage_topup, pattern="^manage_topup$"))
         application.add_handler(CallbackQueryHandler(handle_topup_manual, pattern="^topup_manual$"))
         application.add_handler(CallbackQueryHandler(handle_topup_history, pattern="^topup_history$"))
+        
+        # 6. Admin callback handlers
         application.add_handler(CallbackQueryHandler(admin_handler.admin_callback_handler, pattern="^admin_"))
         
+        # 7. Order handler
         if hasattr(order_handler, 'get_conversation_handler'):
             application.add_handler(order_handler.get_conversation_handler())
         
+        # 8. Error handler
         application.add_error_handler(error_handler)
         
         logger.info("✅ Bot berhasil dimulai!")
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        logger.info("📱 Bot siap menerima pesan...")
+        
+        # Jalankan bot
+        application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True,
+            close_loop=False
+        )
         
     except Exception as e:
         logger.error(f"Gagal memulai bot: {e}")
