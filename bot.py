@@ -13,8 +13,8 @@ import config
 import database
 import order_handler
 import admin_handler
+import stok_handler  # IMPORT STOK_HANDLER
 from topup_handler import topup_conv_handler
-import aiohttp
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -71,7 +71,8 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from order_handler import order_start
         await order_start(update, context)
     elif data == "menu_stock":
-        await show_stock_menu(query)
+        # GUNAKAN stok_handler YANG SUDAH ADA
+        await stok_handler.stock_akrab_callback(update, context)
     elif data == "menu_admin":
         # Langsung panggil admin_menu dari admin_handler
         await admin_handler.admin_menu(update, context)
@@ -143,70 +144,11 @@ async def show_topup_menu(query):
         reply_markup=reply_markup
     )
 
-async def show_stock_menu(query):
-    try:
-        api_key = getattr(config, 'API_KEY_PROVIDER', '')
-        url = "https://panel.khfy-store.com/api_v3/cek_stock_akrab"
-        params = {'api_key': api_key} if api_key else {}
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params, timeout=10) as response:
-                response.raise_for_status()
-                data = await response.json()
-        
-        if data.get("ok", False):
-            stocks = data.get("data", {})
-            if stocks:
-                msg = "📊 **STOK PRODUK AKRAB**\n\n"
-                for product_name, stock_info in stocks.items():
-                    stock = stock_info.get("stock", 0)
-                    status = "✅ TERSEDIA" if stock > 0 else "❌ HABIS"
-                    msg += f"• **{product_name}**: {stock} pcs - {status}\n"
-                msg += f"\n⏰ **Update**: {data.get('timestamp', 'N/A')}"
-            else:
-                msg = "📭 Tidak ada data stok yang tersedia."
-        else:
-            msg = "❌ Gagal mengambil data stok dari provider."
-            
-    except Exception as e:
-        logger.error(f"Error getting stock: {e}")
-        msg = f"❌ **Gagal mengambil data stok:**\n{str(e)}"
+# HAPUS FUNGSI show_stock_menu YANG LAMA KARENA SUDAH ADA DI stok_handler.py
 
-    keyboard = [[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(msg, parse_mode='Markdown', reply_markup=reply_markup)
-
+# GUNAKAN stok_handler.stock_command UNTUK COMMAND /stock
 async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        api_key = getattr(config, 'API_KEY_PROVIDER', '')
-        url = "https://panel.khfy-store.com/api_v3/cek_stock_akrab"
-        params = {'api_key': api_key} if api_key else {}
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params, timeout=10) as response:
-                response.raise_for_status()
-                data = await response.json()
-        
-        if data.get("ok", False):
-            stocks = data.get("data", {})
-            if stocks:
-                msg = "📊 **STOK PRODUK AKRAB**\n\n"
-                for product_name, stock_info in stocks.items():
-                    stock = stock_info.get("stock", 0)
-                    status = "✅ TERSEDIA" if stock > 0 else "❌ HABIS"
-                    msg += f"• **{product_name}**: {stock} pcs - {status}\n"
-                msg += f"\n⏰ **Update**: {data.get('timestamp', 'N/A')}"
-            else:
-                msg = "📭 Tidak ada data stok yang tersedia."
-        else:
-            msg = "❌ Gagal mengambil data stok dari provider."
-            
-    except Exception as e:
-        logger.error(f"Error getting stock: {e}")
-        msg = f"❌ **Gagal mengambil data stok:**\n{str(e)}"
-
-    await update.message.reply_text(msg, parse_mode='Markdown')
+    await stok_handler.stock_command(update, context)
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Update {update} caused error {context.error}")
@@ -216,7 +158,7 @@ def main():
     
     # Basic command handlers
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("stock", stock_command))
+    application.add_handler(CommandHandler("stock", stock_command))  # GUNAKAN stok_handler
     application.add_handler(CommandHandler("admin", admin_handler.admin_menu))
     
     # Conversation handlers
@@ -226,7 +168,10 @@ def main():
     # Menu callback handler
     application.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
     
-    # Admin callback handlers - SEDERHANA dan EFEKTIF
+    # Stock handler - TAMBAHKAN INI
+    application.add_handler(CallbackQueryHandler(stok_handler.stock_akrab_callback, pattern="^menu_stock$"))
+    
+    # Admin callback handlers
     application.add_handler(CallbackQueryHandler(admin_handler.admin_callback_handler, pattern="^admin_"))
     application.add_handler(CallbackQueryHandler(admin_handler.edit_produk_menu_handler, pattern="^edit_"))
     application.add_handler(CallbackQueryHandler(admin_handler.select_product_handler, pattern="^select_product:"))
@@ -236,7 +181,7 @@ def main():
     
     application.add_error_handler(error_handler)
     
-    logger.info("🤖 Bot starting...")
+    logger.info("🤖 Bot starting with integrated stock handler...")
     application.run_polling()
 
 if __name__ == '__main__':
