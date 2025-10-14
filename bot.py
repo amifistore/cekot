@@ -13,9 +13,9 @@ import config
 import database
 import order_handler
 import admin_handler
-import stock_handler
 from topup_handler import topup_conv_handler
 import telegram
+import requests
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -131,12 +131,61 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from order_handler import order_start
         await order_start(update, context)
     elif data == "menu_stock":
-        # Handle stock menu - panggil stock handler
-        await stock_handler.stock_akrab_callback(update, context)
+        # Handle stock menu - langsung di sini tanpa file terpisah
+        await stock_callback(update, context)
+
+# Handler untuk cek stok
+async def stock_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query:
+        await query.answer()
+        msg_func = query.edit_message_text
+    else:
+        msg_func = update.message.reply_text
+
+    try:
+        # Cek stok dari provider
+        api_key = getattr(config, 'API_KEY_PROVIDER', '')
+        url = f"https://panel.khfy-store.com/api_v3/cek_stock_akrab"
+        params = {}
+        if api_key:
+            params['api_key'] = api_key
+            
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params, timeout=10) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+        
+        if not data.get("ok", False):
+            msg = "❌ Gagal mengambil data stok dari provider."
+        else:
+            stocks = data.get("data", {})
+            if not stocks:
+                msg = "📭 Tidak ada data stok yang tersedia."
+            else:
+                msg = "📊 **STOK PRODUK AKRAB**\n\n"
+                for product_name, stock_info in stocks.items():
+                    stock = stock_info.get("stock", 0)
+                    status = "✅ TERSEDIA" if stock > 0 else "❌ HABIS"
+                    msg += f"• **{product_name}**: {stock} pcs - {status}\n"
+                msg += f"\n⏰ Terakhir diperbarui: {data.get('timestamp', 'N/A')}"
+                
+    except Exception as e:
+        msg = f"❌ **Gagal mengambil data stok:**\n{str(e)}"
+
+    # Keyboard untuk kembali ke menu utama
+    keyboard = [[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await msg_func(
+        msg,
+        parse_mode="Markdown",
+        reply_markup=reply_markup
+    )
 
 # Handler untuk perintah /stock
 async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await stock_handler.stock_akrab_callback(update, context)
+    await stock_callback(update, context)
 
 async def approve_topup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
