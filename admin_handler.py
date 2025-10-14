@@ -90,6 +90,12 @@ async def admin_menu_from_query(query, context):
             self.message = None
     await admin_menu(FakeUpdate(query), context)
 
+# Handler khusus untuk menu_admin callback
+async def admin_menu_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await admin_menu(update, context)
+
 async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -705,12 +711,42 @@ async def cleanup_data_from_query(query, context):
         await query.edit_message_text(f"❌ Gagal cleanup: {str(e)}")
 
 # ============================
+# HANDLER UNTUK KEMBALI KE MENU ADMIN
+# ============================
+
+async def admin_back_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "admin_back":
+        await admin_menu(update, context)
+    return ConversationHandler.END
+
+# ============================
+# BROADCAST START HANDLER
+# ============================
+
+async def broadcast_start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_check(update, context):
+        return
+    await update.message.reply_text(
+        "📢 **BROADCAST MESSAGE**\n\n"
+        "Kirim pesan broadcast dalam format:\n"
+        "`/broadcast <pesan anda>`\n\n"
+        "Contoh:\n"
+        "`/broadcast Hai semua! Ini pesan broadcast dari admin.`",
+        parse_mode='Markdown'
+    )
+
+# ============================
 # REGISTER HANDLERS & EXPORTS
 # ============================
 
 admin_menu_handler = CommandHandler("admin", admin_menu)
 admin_callback_query_handler = CallbackQueryHandler(admin_callback_handler, pattern=r'^admin_')
+admin_menu_callback_handler = CallbackQueryHandler(admin_menu_callback_handler, pattern=r'^menu_admin$')
+admin_back_handler_callback = CallbackQueryHandler(admin_back_handler, pattern=r'^admin_back$')
 broadcast_handler = CommandHandler("broadcast", broadcast)
+broadcast_start_handler_cmd = CommandHandler("broadcast_start", broadcast_start_handler)
 cek_user_handler = CommandHandler("cek_user", cek_user)
 jadikan_admin_handler = CommandHandler("jadikan_admin", jadikan_admin)
 edit_produk_conv_handler = ConversationHandler(
@@ -730,12 +766,14 @@ def get_admin_handlers():
     return [
         admin_menu_handler,
         admin_callback_query_handler,
+        admin_menu_callback_handler,
+        admin_back_handler_callback,
         edit_produk_conv_handler,
         broadcast_handler,
+        broadcast_start_handler_cmd,
         cek_user_handler,
         jadikan_admin_handler,
         topup_list_handler,
-        # tambahkan handler admin lain di sini
     ]
 
 # ============================
