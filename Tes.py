@@ -8,29 +8,41 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN = config.BOT_TOKEN
 
-async def test_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
-        [InlineKeyboardButton("🔄 Update Produk", callback_data="admin_update")],
-        [InlineKeyboardButton("📋 List Produk", callback_data="admin_list_produk")],
-        [InlineKeyboardButton("✏️ Edit Produk", callback_data="admin_edit_produk")],
+        [InlineKeyboardButton("👑 ADMIN PANEL", callback_data="menu_admin")],
+        [InlineKeyboardButton("🛒 BELI PRODUK", callback_data="menu_order")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        "👑 **TEST ADMIN MENU**\n\nIni test menu admin:",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
+    await update.message.reply_text("Test Bot - Pilih menu:", reply_markup=reply_markup)
 
-async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text(f"Callback received: {query.data}")
+    
+    if query.data == "menu_admin":
+        # Test langsung membuat menu admin
+        keyboard = [
+            [InlineKeyboardButton("🔄 Update Produk", callback_data="admin_update")],
+            [InlineKeyboardButton("📋 List Produk", callback_data="admin_list_produk")],
+            [InlineKeyboardButton("✏️ Edit Produk", callback_data="admin_edit_produk")],
+            [InlineKeyboardButton("💳 Kelola Topup", callback_data="admin_topup")],
+            [InlineKeyboardButton("⬅️ Kembali", callback_data="menu_main")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "👑 **MENU ADMIN**\n\nPilih fitur admin:",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+    elif query.data == "menu_main":
+        await start(update, context)
 
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
-    application.add_handler(CommandHandler("testadmin", test_admin))
-    application.add_handler(CallbackQueryHandler(handle_admin_callback, pattern="^admin_"))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(handle_callback))
     application.run_polling()
 
 if __name__ == '__main__':
