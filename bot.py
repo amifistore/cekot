@@ -15,7 +15,6 @@ import order_handler
 import admin_handler
 from topup_handler import topup_conv_handler
 import aiohttp
-import sqlite3
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -76,6 +75,9 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "menu_admin":
         # Panggil admin_menu langsung dari admin_handler
         await admin_handler.admin_menu(update, context)
+    else:
+        # Jika tidak ada yang match, coba handle dengan admin handler
+        await admin_handler.admin_callback_handler(update, context)
 
 async def show_main_menu(query):
     user = query.from_user
@@ -175,7 +177,6 @@ async def show_stock_menu(query):
     
     await query.edit_message_text(msg, parse_mode='Markdown', reply_markup=reply_markup)
 
-# Handler untuk perintah /stock
 async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         api_key = getattr(config, 'API_KEY_PROVIDER', '')
@@ -207,36 +208,6 @@ async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(msg, parse_mode='Markdown')
 
-async def approve_topup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    if user_id not in ADMIN_IDS:
-        await update.message.reply_text("❌ Hanya admin yang boleh approve topup.")
-        return
-    if not context.args:
-        await update.message.reply_text("❌ Format: /approve_topup <id>")
-        return
-    request_id = context.args[0]
-    result = database.approve_topup_request(request_id, admin_id=user_id)
-    if result:
-        await update.message.reply_text(f"✅ Topup request #{request_id} berhasil diapprove dan saldo user sudah bertambah.")
-    else:
-        await update.message.reply_text(f"❌ Gagal approve request #{request_id}.")
-
-async def cancel_topup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    if user_id not in ADMIN_IDS:
-        await update.message.reply_text("❌ Hanya admin yang boleh cancel/reject topup.")
-        return
-    if not context.args:
-        await update.message.reply_text("❌ Format: /cancel_topup <id>")
-        return
-    request_id = context.args[0]
-    result = database.reject_topup_request(request_id, admin_id=user_id)
-    if result:
-        await update.message.reply_text(f"✅ Topup request #{request_id} berhasil dibatalkan/reject.")
-    else:
-        await update.message.reply_text(f"❌ Gagal cancel/reject request #{request_id}.")
-
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Update {update} caused error {context.error}")
 
@@ -252,54 +223,18 @@ def main():
     application.add_handler(order_handler.get_conversation_handler())
     application.add_handler(topup_conv_handler)
     
-    # Admin command handlers
-    application.add_handler(CommandHandler("approve_topup", approve_topup_command))
-    application.add_handler(CommandHandler("cancel_topup", cancel_topup_command))
-    
-    # Menu callback handler
+    # Menu callback handler - HARUS DITAMBAHKAN SEBELUM admin handlers
     application.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
     
-    # ADMIN CALLBACK HANDLERS - INI YANG PERLU DIPERBAIKI
+    # ADMIN HANDLERS - Pattern yang lebih general
     application.add_handler(CallbackQueryHandler(admin_handler.admin_callback_handler, pattern="^admin_"))
     application.add_handler(CallbackQueryHandler(admin_handler.edit_produk_menu_handler, pattern="^edit_"))
     application.add_handler(CallbackQueryHandler(admin_handler.select_product_handler, pattern="^select_product:"))
-    application.add_handler(CallbackQueryHandler(admin_handler.topup_list, pattern="^admin_topup$"))
-    application.add_handler(CallbackQueryHandler(admin_handler.show_users_menu, pattern="^admin_users$"))
-    application.add_handler(CallbackQueryHandler(admin_handler.show_stats_menu, pattern="^admin_stats$"))
-    application.add_handler(CallbackQueryHandler(admin_handler.backup_database_from_query, pattern="^admin_backup$"))
-    application.add_handler(CallbackQueryHandler(admin_handler.broadcast_start, pattern="^admin_broadcast$"))
-    application.add_handler(CallbackQueryHandler(admin_handler.system_health_from_query, pattern="^admin_health$"))
-    application.add_handler(CallbackQueryHandler(admin_handler.cleanup_data_from_query, pattern="^admin_cleanup$"))
-    application.add_handler(CallbackQueryHandler(admin_handler.admin_menu_from_query, pattern="^admin_back$"))
-    
-    # Broadcast confirmation handlers
     application.add_handler(CallbackQueryHandler(admin_handler.broadcast_confirm_handler, pattern="^(confirm_broadcast|cancel_broadcast)$"))
-    
-    # Edit product handlers
     application.add_handler(CallbackQueryHandler(admin_handler.edit_produk_menu_handler, pattern="^back_to_edit_menu$"))
     
-    # Conversation handlers untuk admin
-    edit_conv_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(admin_handler.edit_produk_menu_handler, pattern="^edit_")],
-        states={
-            admin_handler.EDIT_MENU: [CallbackQueryHandler(admin_handler.edit_produk_menu_handler)],
-            admin_handler.CHOOSE_PRODUCT: [CallbackQueryHandler(admin_handler.select_product_handler)],
-            admin_handler.EDIT_HARGA: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_handler.edit_harga_handler)],
-            admin_handler.EDIT_DESKRIPSI: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_handler.edit_deskripsi_handler)]
-        },
-        fallbacks=[CommandHandler('cancel', admin_handler.edit_produk_cancel)]
-    )
-    application.add_handler(edit_conv_handler)
-    
-    # Broadcast conversation handler
-    broadcast_conv_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(admin_handler.broadcast_start, pattern="^admin_broadcast$")],
-        states={
-            admin_handler.BROADCAST_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_handler.broadcast_message_handler)]
-        },
-        fallbacks=[CommandHandler('cancel', admin_handler.edit_produk_cancel)]
-    )
-    application.add_handler(broadcast_conv_handler)
+    # Fallback handler untuk callback data yang tidak dikenal
+    application.add_handler(CallbackQueryHandler(menu_callback, pattern=".*"))
     
     application.add_error_handler(error_handler)
     
