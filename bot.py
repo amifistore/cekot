@@ -197,21 +197,20 @@ def main():
     """Main function untuk menjalankan bot"""
     try:
         # Hentikan proses lama
-        if os.name == 'nt':  # Windows
-            os.system('taskkill /f /im python.exe >nul 2>&1')
-        else:  # Linux/Mac
-            os.system('pkill -f python >/dev/null 2>&1')
+        logger.info("🔄 Menghentikan proses bot lama...")
+        os.system('pkill -f "python main.py"')
+        os.system('pkill -f "python bot.py"')
         
         import time
-        time.sleep(2)
+        time.sleep(3)
         
         application = Application.builder().token(BOT_TOKEN).build()
         
-        logger.info("🤖 Starting bot with integrated menu system...")
+        logger.info("🤖 Starting bot dengan sistem menu terintegrasi...")
         
-        # ========== URUTAN PENTING: TAMBAHKAN HANDLER DENGAN URUTAN INI ==========
+        # ========== URUTAN HANDLER YANG BENAR ==========
         
-        # 1. Conversation handlers pertama (karena mereka butuh state)
+        # 1. Conversation handlers pertama
         application.add_handler(topup_conv_handler)
         
         # 2. Command handlers
@@ -228,7 +227,7 @@ def main():
         if hasattr(admin_handler, 'cancel_topup_command'):
             application.add_handler(CommandHandler("cancel_topup", admin_handler.cancel_topup_command))
         
-        # 4. Menu callback handlers - URUTAN SANGAT PENTING!
+        # 4. Menu callback handlers - URUTAN PENTING!
         application.add_handler(CallbackQueryHandler(menu_handler, pattern="^menu_"))
         
         # 5. Topup callback handlers
@@ -239,27 +238,29 @@ def main():
         # 6. Admin callback handlers
         application.add_handler(CallbackQueryHandler(admin_handler.admin_callback_handler, pattern="^admin_"))
         
-        # 7. Order handler (fallback)
+        # 7. Order handler
         if hasattr(order_handler, 'get_conversation_handler'):
             application.add_handler(order_handler.get_conversation_handler())
         
         # 8. Error handler
         application.add_error_handler(error_handler)
         
-        logger.info("✅ Bot started successfully!")
+        logger.info("✅ Bot berhasil dimulai!")
+        logger.info("📱 Bot siap menerima pesan...")
         
         # Jalankan bot
         application.run_polling(
             allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True,  # Bersihkan update yang tertunda
+            drop_pending_updates=True,
             close_loop=False
         )
         
     except Exception as e:
-        logger.error(f"Failed to start bot: {e}")
+        logger.error(f"Gagal memulai bot: {e}")
         if "409" in str(e):
-            logger.error("❌ Bot sudah berjalan di tempat lain!")
-            print("⚠️  Bot sudah berjalan di instance lain. Hentikan proses python terlebih dahulu.")
+            logger.error("❌ Bot sudah berjalan di instance lain!")
+            print("🔧 Solusi: Hentikan proses bot lain dengan: pkill -f python")
+        sys.exit(1)
 
 if __name__ == '__main__':
     main()
