@@ -370,7 +370,9 @@ async def handle_topup_history(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception as e:
         logger.error(f"❌ Error in handle_topup_history: {str(e)}")
 
-# Conversation handler untuk topup
+# ... (import statements dan kode lainnya) ...
+
+# Conversation handler untuk topup - INI HARUS DI AKHIR FILE
 topup_conv_handler = ConversationHandler(
     entry_points=[
         CommandHandler('topup', topup_start),
@@ -383,7 +385,5 @@ topup_conv_handler = ConversationHandler(
     },
     fallbacks=[CommandHandler('cancel', topup_cancel)],
     allow_reentry=True,
-    per_message=False
-    ),
     per_message=False
 )
