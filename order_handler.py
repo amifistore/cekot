@@ -111,13 +111,31 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return MENU
     elif data == "menu_admin" and str(query.from_user.id) in config.ADMIN_TELEGRAM_IDS:
-        await safe_edit_message_text(
-            query,
-            "👑 *ADMIN PANEL*\n\nFitur admin bisa dikembangkan di sini.\nContoh: tambah produk, cek riwayat, dsb.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]),
-            parse_mode="Markdown"
-        )
-        return MENU
+        # PERBAIKAN: Redirect ke admin_handler yang sebenarnya
+        try:
+            from admin_handler import admin_menu
+            await admin_menu(update, context)
+            return ConversationHandler.END
+        except Exception as e:
+            logger.error(f"Error loading admin panel: {e}")
+            # Fallback ke menu admin sederhana jika admin_handler tidak tersedia
+            keyboard = [
+                [InlineKeyboardButton("🔄 Update Produk", callback_data="admin_update")],
+                [InlineKeyboardButton("📋 List Produk", callback_data="admin_list_produk")],
+                [InlineKeyboardButton("✏️ Edit Produk", callback_data="admin_edit_produk")],
+                [InlineKeyboardButton("💳 Kelola Topup", callback_data="admin_topup")],
+                [InlineKeyboardButton("👥 Kelola User", callback_data="admin_users")],
+                [InlineKeyboardButton("📊 Statistik", callback_data="admin_stats")],
+                [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await safe_edit_message_text(
+                query,
+                "👑 **ADMIN PANEL**\n\nPilih fitur admin yang ingin digunakan:",
+                reply_markup=reply_markup,
+                parse_mode="Markdown"
+            )
+            return MENU
     elif data == "menu_main":
         return await menu_main(update, context)
     else:
