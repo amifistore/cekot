@@ -128,14 +128,6 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from order_handler import order_start
         await order_start(update, context)
 
-# Handler khusus untuk menu admin
-async def admin_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    # Panggil fungsi admin_menu langsung dari admin_handler
-    await admin_handler.admin_menu(update, context)
-
 async def approve_topup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     if user_id not in ADMIN_IDS:
@@ -174,7 +166,6 @@ def main():
     
     # Add basic command handlers
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("admin", admin_handler.admin_menu))
     
     # Add conversation handlers
     application.add_handler(order_handler.get_conversation_handler())
@@ -184,9 +175,8 @@ def main():
     application.add_handler(CommandHandler("approve_topup", approve_topup_command))
     application.add_handler(CommandHandler("cancel_topup", cancel_topup_command))
     
-    # Add callback query handlers dengan pattern yang tepat
+    # Add callback query handlers untuk menu user
     application.add_handler(CallbackQueryHandler(menu_callback, pattern=r'^menu_(main|topup|saldo|help|order)$'))
-    application.add_handler(CallbackQueryHandler(admin_menu_handler, pattern=r'^menu_admin$'))
     
     # Add semua admin handlers dari admin_handler module
     admin_handlers = admin_handler.get_admin_handlers()
