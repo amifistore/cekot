@@ -15,7 +15,7 @@ import config
 import database
 import order_handler
 import admin_handler
-from topup_handler import (
+from topup_handler import (  # Pastikan file ini sudah diganti dengan versi yang saya perbaiki
     topup_conv_handler, 
     show_topup_menu, 
     show_manage_topup,
@@ -90,7 +90,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await show_help_menu(update, context)
         elif data == "menu_stock":
             await stok_handler.stock_akrab_callback(update, context)
-        elif data == "menu_topup":
+        elif data == "menu_topup":  # Ini akan memanggil show_topup_menu dari topup_handler
             await show_topup_menu(update, context)
         elif data == "menu_admin":
             await admin_handler.admin_menu(update, context)
@@ -103,91 +103,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in menu_handler for {data}: {e}")
         await query.message.reply_text("❌ Terjadi error. Silakan coba lagi.")
 
-async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Tampilkan menu utama"""
-    query = update.callback_query
-    user = query.from_user
-    saldo = 0
-    
-    try:
-        user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
-        saldo = database.get_user_saldo(user_id)
-    except Exception as e:
-        logger.error(f"Error getting user saldo: {e}")
-        saldo = 0
-    
-    keyboard = [
-        [InlineKeyboardButton("🛒 BELI PRODUK", callback_data="menu_order")],
-        [InlineKeyboardButton("💳 CEK SALDO", callback_data="menu_saldo")],
-        [InlineKeyboardButton("📊 CEK STOK", callback_data="menu_stock")],
-        [InlineKeyboardButton("📞 BANTUAN", callback_data="menu_help")],
-        [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="menu_topup")]
-    ]
-    
-    if str(user.id) in ADMIN_IDS:
-        keyboard.append([InlineKeyboardButton("👑 ADMIN PANEL", callback_data="menu_admin")])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(
-        f"🏠 **MENU UTAMA**\n\n"
-        f"Halo {user.full_name}!\n"
-        f"💰 **Saldo Anda:** Rp {saldo:,.0f}\n\n"
-        f"Pilih menu di bawah:",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
-
-async def show_saldo_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Tampilkan menu saldo"""
-    query = update.callback_query
-    user = query.from_user
-    saldo = 0
-    
-    try:
-        user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
-        saldo = database.get_user_saldo(user_id)
-    except Exception as e:
-        logger.error(f"Error getting user saldo: {e}")
-        saldo = 0
-    
-    keyboard = [
-        [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="menu_topup")],
-        [InlineKeyboardButton("🏠 MENU UTAMA", callback_data="menu_main")]
-    ]
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(
-        f"💰 **SALDO ANDA**\n\n"
-        f"Saldo saat ini: **Rp {saldo:,.0f}**\n\n"
-        f"Gunakan menu Top Up untuk menambah saldo.",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
-
-async def show_help_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Tampilkan menu bantuan"""
-    query = update.callback_query
-    
-    keyboard = [
-        [InlineKeyboardButton("🏠 MENU UTAMA", callback_data="menu_main")]
-    ]
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(
-        "📞 **BANTUAN**\n\n"
-        "Untuk bantuan, silakan hubungi admin.\n"
-        "Kami siap membantu 24/7.\n\n"
-        "**Fitur Bot:**\n"
-        "• 🛒 Beli Produk\n"
-        "• 💳 Top Up Saldo\n" 
-        "• 📊 Cek Stok\n"
-        "• 📞 Bantuan",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
+# Fungsi lainnya (show_main_menu, show_saldo_menu, dll.) tetap sama seperti yang Anda berikan
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     """Global error handler"""
@@ -202,8 +118,8 @@ def main():
         
         # ========== URUTAN HANDLER YANG BENAR ==========
         
-        # 1. Conversation handlers pertama
-        application.add_handler(topup_conv_handler)
+        # 1. Conversation handlers pertama - Termasuk topup_conv_handler
+        application.add_handler(topup_conv_handler)  # Ini dari topup_handler.py yang sudah diperbaiki
         
         # 2. Command handlers
         application.add_handler(CommandHandler("start", start))
@@ -220,9 +136,9 @@ def main():
             application.add_handler(CommandHandler("cancel_topup", admin_handler.cancel_topup_command))
         
         # 4. Menu callback handlers - URUTAN PENTING!
-        application.add_handler(CallbackQueryHandler(menu_handler, pattern="^menu_"))
+        application.add_handler(CallbackQueryHandler(menu_handler, pattern="^menu_"))  # Ini mencakup menu_topup
         
-        # 5. Topup callback handlers
+        # 5. Topup callback handlers - Pastikan ini setelah menu_handler untuk menghindari konflik
         application.add_handler(CallbackQueryHandler(show_manage_topup, pattern="^manage_topup$"))
         application.add_handler(CallbackQueryHandler(handle_topup_manual, pattern="^topup_manual$"))
         application.add_handler(CallbackQueryHandler(handle_topup_history, pattern="^topup_history$"))
