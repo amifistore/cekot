@@ -1,6 +1,6 @@
 import config
-from telegram import Update
-from telegram.ext import ConversationHandler, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ConversationHandler, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
 import requests
 import base64
 from io import BytesIO
@@ -18,10 +18,17 @@ def generate_unique_amount(base_amount):
     return unique_amount, unique_digits
 
 async def topup_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.message.from_user
+    # Handle both command and callback
+    if hasattr(update, 'callback_query') and update.callback_query:
+        user = update.callback_query.from_user
+        message_func = update.callback_query.edit_message_text
+    else:
+        user = update.message.from_user
+        message_func = update.message.reply_text
+    
     user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
     
-    await update.message.reply_text(
+    await message_func(
         "💳 **TOP UP SALDO**\n\n"
         "Masukkan nominal top up (angka saja):\n"
         "Contoh: `10000` untuk Rp 10.000\n\n"
@@ -156,7 +163,7 @@ async def send_admin_notification(update: Update, context: ContextTypes.DEFAULT_
         f"💵 **Total Transfer:** Rp {unique_amount:,}\n"
         f"📋 **ID Request:** `{request_id}`\n"
         f"⏰ **Waktu:** {datetime.now().strftime('%d-%m-%Y %H:%M')}\n\n"
-        f"Gunakan `/topup_list` untuk melihat daftar permintaan."
+        f"Gunakan `/approve_topup {request_id}` untuk approve atau `/cancel_topup {request_id}` untuk cancel."
     )
     
     # Kirim ke semua admin
@@ -171,15 +178,24 @@ async def send_admin_notification(update: Update, context: ContextTypes.DEFAULT_
             print(f"Gagal kirim notifikasi ke admin {admin_id}: {e}")
 
 async def topup_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+    if hasattr(update, 'callback_query') and update.callback_query:
+        message_func = update.callback_query.edit_message_text
+    else:
+        message_func = update.message.reply_text
+        
+    await message_func(
         "❌ **Top Up Dibatalkan**\n\n"
-        "Gunakan `/topup` untuk memulai kembali.",
+        "Ketik `/topup` atau gunakan menu untuk memulai kembali.",
         parse_mode='Markdown'
     )
     return ConversationHandler.END
 
+# Conversation handler untuk topup
 topup_conv_handler = ConversationHandler(
-    entry_points=[CommandHandler('topup', topup_start)],
+    entry_points=[
+        CommandHandler('topup', topup_start),
+        CallbackQueryHandler(topup_start, pattern='^menu_topup$')
+    ],
     states={
         ASK_TOPUP_NOMINAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, topup_nominal)]
     },
