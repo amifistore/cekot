@@ -274,7 +274,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk command yang tidak dikenal"""
+    """Handler untuk command yang tidak dikenal - IMPROVED"""
+    # Cek jika user sedang dalam conversation
+    if context.user_data.get('in_conversation'):
+        # Jika sedang dalam conversation, abaikan pesan unknown
+        return
+    
     await update.message.reply_text(
         "❌ Perintah tidak dikenali. Gunakan /start untuk melihat menu.",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
@@ -342,30 +347,11 @@ def main():
         if hasattr(stok_handler, 'callback_handler'):
             application.add_handler(CallbackQueryHandler(stok_handler.callback_handler, pattern="^stock_"))
         
-        # 10. Fallback handler untuk pesan teks yang tidak dikenali
+        # 10. Fallback handler untuk pesan teks yang tidak dikenali - HARUS TERAKHIR
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_command))
         
         # 11. Error handler
         application.add_error_handler(error_handler)
-        
-        # Debug: Log semua handler yang terdaftar
-        def log_handlers(app):
-            logger.info("=== REGISTERED HANDLERS ===")
-            for i, handler in enumerate(app.handlers[0]):  # Group 0
-                handler_name = type(handler).__name__
-                logger.info(f"Handler {i}: {handler_name}")
-                
-                # Log additional info for ConversationHandler
-                if isinstance(handler, ConversationHandler):
-                    logger.info(f"  - Entry points: {len(handler.entry_points)}")
-                    for ep in handler.entry_points:
-                        logger.info(f"    * {ep}")
-                    logger.info(f"  - States: {len(handler.states)}")
-                    for state, handlers in handler.states.items():
-                        logger.info(f"    * State {state}: {len(handlers)} handlers")
-            logger.info("=== END HANDLERS ===")
-        
-        log_handlers(application)
         
         logger.info("✅ Bot berhasil dimulai!")
         logger.info("📱 Bot siap menerima pesan...")
