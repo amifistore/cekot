@@ -91,7 +91,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data == "menu_stock":
             await stok_handler.stock_akrab_callback(update, context)
         elif data == "menu_topup":
-            await show_topup_menu(update, context)
+            await show_topup_menu(update, context)  # Langsung ke menu topup
         elif data == "menu_admin":
             await admin_handler.admin_menu(update, context)
         elif data == "menu_order":
@@ -274,8 +274,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk pesan yang tidak dikenal - FIXED"""
-    # JANGAN kirim pesan apapun, biarkan conversation handler yang menangani
+    """Handler untuk pesan yang tidak dikenal"""
     logger.debug(f"Ignoring unknown message: {update.message.text}")
     return
 
@@ -290,15 +289,15 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
             await update.callback_query.message.reply_text("❌ Terjadi error. Silakan coba lagi.")
 
 def main():
-    """Main function dengan urutan handler yang BENAR"""
+    """Main function dengan urutan handler yang benar"""
     try:
         application = Application.builder().token(BOT_TOKEN).build()
         
         logger.info("🤖 Starting bot dengan urutan handler yang benar...")
         
-        # ========== URUTAN HANDLER YANG BERHASIL ==========
+        # ========== URUTAN HANDLER YANG BENAR ==========
         
-        # 1. Conversation handlers PERTAMA (yang paling penting)
+        # 1. Conversation handlers PERTAMA
         logger.info("1. Registering conversation handlers...")
         application.add_handler(topup_conv_handler)
         
@@ -314,6 +313,7 @@ def main():
         application.add_handler(CommandHandler("stock", stok_handler.stock_command))
         application.add_handler(CommandHandler("saldo", saldo_command))
         application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(CommandHandler("topup", show_topup_menu))
         
         # 4. Admin command handlers
         if hasattr(admin_handler, 'admin_menu'):
@@ -330,9 +330,8 @@ def main():
         # 6. Admin callback handlers
         application.add_handler(CallbackQueryHandler(admin_handler.admin_callback_handler, pattern="^admin_"))
         
-        # 7. Fallback handler untuk pesan teks - TERAKHIR dan SPECIFIC
+        # 7. Fallback handler untuk pesan teks - TERAKHIR
         logger.info("4. Registering fallback handler...")
-        # HANYA tangkap pesan yang BUKAN angka (untuk menghindari conflict dengan nominal topup)
         application.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND & ~filters.Regex(r'^\d+$'),
             unknown_message
