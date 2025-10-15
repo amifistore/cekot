@@ -113,9 +113,6 @@ async def topup_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = database.get_or_create_user(str(user.id), user.username or "", user.full_name or "")
         logger.info(f"🔧 [TOPUP_START] User: {user.id}, User ID: {user_id}")
         
-        # Set flag bahwa user sedang dalam conversation
-        context.user_data['in_conversation'] = True
-        
         logger.info(f"✅ [TOPUP_START] Conversation state ASK_TOPUP_NOMINAL dimulai untuk user {user.id}")
         return ASK_TOPUP_NOMINAL
         
@@ -139,7 +136,7 @@ async def topup_nominal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Cek jika user ingin cancel
         if nominal_input.lower() == '/cancel':
             logger.info(f"🔧 [TOPUP_NOMINAL] User {user.id} membatalkan")
-            await topup_cancel(update, context)
+            await update.message.reply_text("❌ **Top Up Dibatalkan**")
             return ConversationHandler.END
             
         # Validasi input
@@ -273,9 +270,6 @@ async def topup_nominal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Kirim notifikasi ke admin
         await send_admin_notification(context, request_id, user, base_amount, unique_amount, unique_digits, qris_base64 is not None)
         
-        # Clear conversation flag
-        context.user_data.pop('in_conversation', None)
-        
         logger.info(f"✅ [TOPUP_NOMINAL] Proses selesai untuk user {user.id}")
         
         return ConversationHandler.END
@@ -357,9 +351,6 @@ async def topup_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Batalkan topup"""
     try:
         logger.info("🔧 [TOPUP_CANCEL] Dipanggil")
-        
-        # Clear conversation flag
-        context.user_data.pop('in_conversation', None)
         
         if update.callback_query:
             query = update.callback_query
@@ -444,4 +435,4 @@ topup_conv_handler = ConversationHandler(
     },
     fallbacks=[CommandHandler('cancel', topup_cancel)],
     allow_reentry=True
-)
+        )
