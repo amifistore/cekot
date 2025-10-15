@@ -273,13 +273,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown'
     )
 
-async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk command yang tidak dikenal"""
-    logger.info(f"Unknown command received: {update.message.text}")
-    await update.message.reply_text(
-        "❌ Perintah tidak dikenali. Gunakan /start untuk melihat menu.",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
-    )
+async def unknown_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler untuk pesan teks yang tidak dikenali - FIXED"""
+    logger.info(f"Unknown text received but ignoring: {update.message.text}")
+    # JANGAN kirim pesan apapun, biarkan conversation handler yang menangani
+    return
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     """Global error handler"""
@@ -293,30 +291,27 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
             await update.callback_query.message.reply_text("❌ Terjadi error. Silakan coba lagi.")
 
 def main():
-    """Main function untuk menjalankan bot - DEBUG VERSION"""
+    """Main function untuk menjalankan bot - FIXED HANDLER ORDER"""
     try:
         application = Application.builder().token(BOT_TOKEN).build()
         
         logger.info("🤖 Starting bot dengan sistem menu terintegrasi...")
         
-        # Debug: Print handler information
-        logger.info("=== HANDLER REGISTRATION DEBUG ===")
-        
         # ========== URUTAN HANDLER YANG BENAR ==========
         
         # 1. Conversation handlers PERTAMA (yang paling penting)
-        logger.info("Registering topup_conv_handler...")
+        logger.info("🔧 Registering conversation handlers FIRST...")
         application.add_handler(topup_conv_handler)
         
         # 2. Order conversation handler jika ada
         if hasattr(order_handler, 'get_conversation_handler'):
             order_conv_handler = order_handler.get_conversation_handler()
             if order_conv_handler:
-                logger.info("Registering order_conv_handler...")
+                logger.info("🔧 Registering order conversation handler...")
                 application.add_handler(order_conv_handler)
         
-        # 3. Command handlers
-        logger.info("Registering command handlers...")
+        # 3. Command handlers - spesifik
+        logger.info("🔧 Registering command handlers...")
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("stock", stok_handler.stock_command))
         application.add_handler(CommandHandler("saldo", saldo_command))
@@ -330,47 +325,50 @@ def main():
         if hasattr(admin_handler, 'cancel_topup_command'):
             application.add_handler(CommandHandler("cancel_topup", admin_handler.cancel_topup_command))
         
-        # 5. Menu callback handlers - pattern spesifik
-        logger.info("Registering menu callback handlers...")
+        # 5. Callback handlers dengan pattern spesifik
+        logger.info("🔧 Registering callback handlers with specific patterns...")
+        
+        # Menu handlers
         application.add_handler(CallbackQueryHandler(menu_handler, pattern="^menu_"))
         
-        # 6. Topup callback handlers untuk menu
+        # Topup menu handlers
         application.add_handler(CallbackQueryHandler(show_topup_menu, pattern="^menu_topup$"))
         application.add_handler(CallbackQueryHandler(show_manage_topup, pattern="^manage_topup$"))
         application.add_handler(CallbackQueryHandler(handle_topup_history, pattern="^topup_history$"))
         
-        # 7. Admin callback handlers
+        # Admin handlers
         application.add_handler(CallbackQueryHandler(admin_handler.admin_callback_handler, pattern="^admin_"))
         
-        # 8. Order callback handler jika ada
+        # Order handlers jika ada
         if hasattr(order_handler, 'callback_handler'):
             application.add_handler(CallbackQueryHandler(order_handler.callback_handler, pattern="^order_"))
         
-        # 9. Stock callback handler jika ada
+        # Stock handlers jika ada
         if hasattr(stok_handler, 'callback_handler'):
             application.add_handler(CallbackQueryHandler(stok_handler.callback_handler, pattern="^stock_"))
         
-        # 10. Fallback handler untuk pesan teks yang tidak dikenali - HARUS TERAKHIR
-        logger.info("Registering unknown command handler...")
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_command))
+        # 6. Fallback handler untuk pesan teks - HARUS TERAKHIR dan SANGAT SPECIFIC
+        logger.info("🔧 Registering fallback handler LAST...")
+        # Hanya tangkap pesan yang benar-benar tidak dikenali
+        application.add_handler(MessageHandler(
+            filters.TEXT & ~filters.COMMAND & ~filters.Regex(r'^\d+$'),  # Jangan tangkap angka (nominal topup)
+            unknown_text
+        ))
         
-        # 11. Error handler
+        # 7. Error handler
         application.add_error_handler(error_handler)
         
-        # Print all registered handlers for debugging
-        logger.info("=== REGISTERED HANDLERS ===")
+        # Debug: Print semua handler yang terdaftar
+        logger.info("=== REGISTERED HANDLERS DEBUG ===")
         for i, handler in enumerate(application.handlers[0]):
             handler_type = type(handler).__name__
             logger.info(f"Handler {i}: {handler_type}")
             
-            # Additional info for ConversationHandler
             if isinstance(handler, ConversationHandler):
-                logger.info(f"  - Entry points: {len(handler.entry_points)}")
+                logger.info(f"  - ConversationHandler with {len(handler.entry_points)} entry points")
                 for ep in handler.entry_points:
                     logger.info(f"    * {ep}")
                 logger.info(f"  - States: {len(handler.states)}")
-                for state, handlers in handler.states.items():
-                    logger.info(f"    * State {state}: {len(handlers)} handlers")
         
         logger.info("=== END HANDLERS DEBUG ===")
         
