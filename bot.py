@@ -24,10 +24,10 @@ from topup_handler import (
 )
 import stok_handler
 
-# Setup logging
+# Setup logging dengan level DEBUG
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.DEBUG  # Ubah ke DEBUG untuk detail lebih
 )
 logger = logging.getLogger(__name__)
 
@@ -79,7 +79,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     
     data = query.data
-    logger.info(f"Menu callback received: {data}")
+    logger.info(f"🔧 [MENU_HANDLER] Menu callback received: {data}")
     
     try:
         if data == "menu_main":
@@ -273,15 +273,17 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown'
     )
 
-async def unknown_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk pesan teks yang tidak dikenali - FIXED"""
-    logger.info(f"Unknown text received but ignoring: {update.message.text}")
-    # JANGAN kirim pesan apapun, biarkan conversation handler yang menangani
+async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler untuk pesan yang tidak dikenal - FIXED VERSION"""
+    logger.debug(f"🔧 [UNKNOWN_MESSAGE] Received unknown text: '{update.message.text}'")
+    
+    # JANGAN lakukan apa-apa, biarkan conversation handler yang menangani
+    # Pesan ini akan diabaikan dan conversation handler akan menangkapnya
     return
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     """Global error handler"""
-    logger.error(f"Update {update} caused error {context.error}", exc_info=True)
+    logger.error(f"❌ [ERROR_HANDLER] Update {update} caused error {context.error}", exc_info=True)
     
     # Coba untuk memberi tahu user tentang error
     if isinstance(update, Update):
@@ -291,7 +293,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
             await update.callback_query.message.reply_text("❌ Terjadi error. Silakan coba lagi.")
 
 def main():
-    """Main function untuk menjalankan bot - FIXED HANDLER ORDER"""
+    """Main function untuk menjalankan bot - DEBUG VERSION"""
     try:
         application = Application.builder().token(BOT_TOKEN).build()
         
@@ -300,22 +302,25 @@ def main():
         # ========== URUTAN HANDLER YANG BENAR ==========
         
         # 1. Conversation handlers PERTAMA (yang paling penting)
-        logger.info("🔧 Registering conversation handlers FIRST...")
+        logger.info("🔧 [MAIN] Registering conversation handlers FIRST...")
         application.add_handler(topup_conv_handler)
+        logger.info("✅ [MAIN] topup_conv_handler registered")
         
         # 2. Order conversation handler jika ada
         if hasattr(order_handler, 'get_conversation_handler'):
             order_conv_handler = order_handler.get_conversation_handler()
             if order_conv_handler:
-                logger.info("🔧 Registering order conversation handler...")
+                logger.info("🔧 [MAIN] Registering order conversation handler...")
                 application.add_handler(order_conv_handler)
+                logger.info("✅ [MAIN] order_conv_handler registered")
         
-        # 3. Command handlers - spesifik
-        logger.info("🔧 Registering command handlers...")
+        # 3. Command handlers
+        logger.info("🔧 [MAIN] Registering command handlers...")
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("stock", stok_handler.stock_command))
         application.add_handler(CommandHandler("saldo", saldo_command))
         application.add_handler(CommandHandler("help", help_command))
+        logger.info("✅ [MAIN] Command handlers registered")
         
         # 4. Admin command handlers
         if hasattr(admin_handler, 'admin_menu'):
@@ -325,41 +330,42 @@ def main():
         if hasattr(admin_handler, 'cancel_topup_command'):
             application.add_handler(CommandHandler("cancel_topup", admin_handler.cancel_topup_command))
         
-        # 5. Callback handlers dengan pattern spesifik
-        logger.info("🔧 Registering callback handlers with specific patterns...")
-        
-        # Menu handlers
+        # 5. Menu callback handlers - pattern spesifik
+        logger.info("🔧 [MAIN] Registering menu callback handlers...")
         application.add_handler(CallbackQueryHandler(menu_handler, pattern="^menu_"))
+        logger.info("✅ [MAIN] menu_ callback handler registered")
         
-        # Topup menu handlers
+        # 6. Topup callback handlers untuk menu
         application.add_handler(CallbackQueryHandler(show_topup_menu, pattern="^menu_topup$"))
         application.add_handler(CallbackQueryHandler(show_manage_topup, pattern="^manage_topup$"))
         application.add_handler(CallbackQueryHandler(handle_topup_history, pattern="^topup_history$"))
+        logger.info("✅ [MAIN] Topup menu callback handlers registered")
         
-        # Admin handlers
+        # 7. Admin callback handlers
         application.add_handler(CallbackQueryHandler(admin_handler.admin_callback_handler, pattern="^admin_"))
         
-        # Order handlers jika ada
+        # 8. Order callback handler jika ada
         if hasattr(order_handler, 'callback_handler'):
             application.add_handler(CallbackQueryHandler(order_handler.callback_handler, pattern="^order_"))
         
-        # Stock handlers jika ada
+        # 9. Stock callback handler jika ada
         if hasattr(stok_handler, 'callback_handler'):
             application.add_handler(CallbackQueryHandler(stok_handler.callback_handler, pattern="^stock_"))
         
-        # 6. Fallback handler untuk pesan teks - HARUS TERAKHIR dan SANGAT SPECIFIC
-        logger.info("🔧 Registering fallback handler LAST...")
-        # Hanya tangkap pesan yang benar-benar tidak dikenali
+        # 10. Fallback handler untuk pesan teks yang tidak dikenali - HARUS TERAKHIR
+        logger.info("🔧 [MAIN] Registering fallback handler LAST...")
+        # HANYA tangkap pesan yang BUKAN angka (untuk menghindari conflict dengan nominal topup)
         application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND & ~filters.Regex(r'^\d+$'),  # Jangan tangkap angka (nominal topup)
-            unknown_text
+            filters.TEXT & ~filters.COMMAND & ~filters.Regex(r'^\d+$'),
+            unknown_message
         ))
+        logger.info("✅ [MAIN] Fallback handler registered")
         
-        # 7. Error handler
+        # 11. Error handler
         application.add_error_handler(error_handler)
         
         # Debug: Print semua handler yang terdaftar
-        logger.info("=== REGISTERED HANDLERS DEBUG ===")
+        logger.info("=== 🔍 REGISTERED HANDLERS DEBUG ===")
         for i, handler in enumerate(application.handlers[0]):
             handler_type = type(handler).__name__
             logger.info(f"Handler {i}: {handler_type}")
@@ -369,8 +375,10 @@ def main():
                 for ep in handler.entry_points:
                     logger.info(f"    * {ep}")
                 logger.info(f"  - States: {len(handler.states)}")
+                for state, handlers in handler.states.items():
+                    logger.info(f"    * State {state}: {len(handlers)} handlers")
         
-        logger.info("=== END HANDLERS DEBUG ===")
+        logger.info("=== ✅ END HANDLERS DEBUG ===")
         
         logger.info("✅ Bot berhasil dimulai!")
         logger.info("📱 Bot siap menerima pesan...")
