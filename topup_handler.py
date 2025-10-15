@@ -9,6 +9,8 @@ import random
 import logging
 import sqlite3
 from datetime import datetime
+import aiohttp
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +29,7 @@ def generate_unique_amount(base_amount):
         return base_amount, 0
 
 async def generate_qris(unique_amount):
-    """Generate QRIS menggunakan API dengan format yang benar"""
+    """Generate QRIS menggunakan API dengan aiohttp (async)"""
     try:
         logger.info(f"🔧 [QRIS] Generating QRIS untuk amount: {unique_amount}")
         
@@ -39,55 +41,48 @@ async def generate_qris(unique_amount):
         
         logger.info(f"🔧 [QRIS] Payload: {payload}")
         
-        # Kirim request ke API QRIS dengan timeout yang lebih lama
-        response = requests.post(
-            "https://qrisku.my.id/api",
-            json=payload,  # Gunakan json parameter, bukan data
-            headers={
-                'Content-Type': 'application/json',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            },
-            timeout=60  # Timeout lebih lama untuk QRIS generation
-        )
-        
-        logger.info(f"🔧 [QRIS] Response status: {response.status_code}")
-        logger.info(f"🔧 [QRIS] Response headers: {response.headers}")
-        
-        if response.status_code == 200:
-            try:
-                result = response.json()
-                logger.info(f"🔧 [QRIS] API Response: {result}")
+        # Gunakan aiohttp untuk async request
+        timeout = aiohttp.ClientTimeout(total=60)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                "https://qrisku.my.id/api",
+                json=payload,
+                headers={
+                    'Content-Type': 'application/json',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+            ) as response:
                 
-                if result.get("status") == "success" and "qris_base64" in result:
-                    qris_base64 = result["qris_base64"]
-                    # Validasi base64
-                    if qris_base64 and len(qris_base64) > 100:  # Base64 yang valid biasanya panjang
-                        logger.info("✅ [QRIS] QRIS berhasil digenerate")
-                        return qris_base64, None
+                logger.info(f"🔧 [QRIS] Response status: {response.status}")
+                
+                if response.status == 200:
+                    result = await response.json()
+                    logger.info(f"🔧 [QRIS] API Response: {result}")
+                    
+                    if result.get("status") == "success" and "qris_base64" in result:
+                        qris_base64 = result["qris_base64"]
+                        # Validasi base64
+                        if qris_base64 and len(qris_base64) > 100:
+                            logger.info("✅ [QRIS] QRIS berhasil digenerate")
+                            return qris_base64, None
+                        else:
+                            error_msg = "QRIS base64 tidak valid"
+                            logger.error(f"❌ [QRIS] {error_msg}")
+                            return None, error_msg
                     else:
-                        error_msg = "QRIS base64 tidak valid"
-                        logger.error(f"❌ [QRIS] {error_msg}")
+                        error_msg = result.get('message', 'Unknown error from QRIS API')
+                        logger.error(f"❌ [QRIS] API Error: {error_msg}")
                         return None, error_msg
                 else:
-                    error_msg = result.get('message', 'Unknown error from QRIS API')
-                    logger.error(f"❌ [QRIS] API Error: {error_msg}")
+                    error_msg = f"HTTP {response.status}: {await response.text()}"
+                    logger.error(f"❌ [QRIS] HTTP Error: {error_msg}")
                     return None, error_msg
                     
-            except ValueError as e:
-                error_msg = f"Invalid JSON response: {e}"
-                logger.error(f"❌ [QRIS] {error_msg}")
-                return None, error_msg
-                
-        else:
-            error_msg = f"HTTP {response.status_code}: {response.text}"
-            logger.error(f"❌ [QRIS] HTTP Error: {error_msg}")
-            return None, error_msg
-            
-    except requests.exceptions.Timeout:
+    except asyncio.TimeoutError:
         error_msg = "Timeout: Server QRIS tidak merespons dalam 60 detik"
         logger.error(f"❌ [QRIS] {error_msg}")
         return None, error_msg
-    except requests.exceptions.ConnectionError:
+    except aiohttp.ClientConnectionError:
         error_msg = "Connection Error: Tidak dapat terhubung ke server QRIS"
         logger.error(f"❌ [QRIS] {error_msg}")
         return None, error_msg
@@ -206,22 +201,13 @@ async def topup_nominal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = str(user.id)
         logger.info(f"🔧 [TOPUP_NOMINAL] User ID: {user_id}")
         
-        if qris_base64:
-            request_id = create_topup_request_compatible(
-                user_id, 
-                base_amount,
-                unique_amount,
-                unique_digits,
-                qris_base64
-            )
-        else:
-            request_id = create_topup_request_compatible(
-                user_id, 
-                base_amount,
-                unique_amount,
-                unique_digits,
-                None
-            )
+        request_id = create_topup_request_compatible(
+            user_id, 
+            base_amount,
+            unique_amount,
+            unique_digits,
+            qris_base64
+        )
         
         if request_id is None:
             logger.error("❌ [TOPUP_NOMINAL] Gagal membuat topup request di database")
@@ -236,12 +222,13 @@ async def topup_nominal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await processing_msg.delete()
         
         if qris_base64:
+            bio = None
             try:
                 # Decode base64 ke bytes
                 qris_bytes = base64.b64decode(qris_base64)
                 
                 # Validasi bahwa ini adalah gambar yang valid
-                if len(qris_bytes) < 100:  # Gambar QRIS biasanya > 100 bytes
+                if len(qris_bytes) < 100:
                     raise ValueError("QRIS image terlalu kecil, mungkin tidak valid")
                 
                 bio = BytesIO(qris_bytes)
@@ -282,6 +269,9 @@ async def topup_nominal(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"❌ **Peringatan:** QRIS gagal ditampilkan, silakan hubungi admin.",
                     parse_mode='Markdown'
                 )
+            finally:
+                if bio:
+                    bio.close()
         else:
             # Fallback ke transfer manual
             await update.message.reply_text(
@@ -316,8 +306,10 @@ async def topup_nominal(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def create_topup_request_compatible(user_id, base_amount, unique_amount, unique_digits, qris_base64):
     """Fungsi kompatibilitas untuk membuat topup request sesuai struktur database"""
+    conn = None
     try:
         conn = sqlite3.connect(database.DB_PATH)
+        conn.execute("BEGIN TRANSACTION")
         c = conn.cursor()
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
@@ -336,12 +328,16 @@ def create_topup_request_compatible(user_id, base_amount, unique_amount, unique_
         
         request_id = c.lastrowid
         conn.commit()
-        conn.close()
         logger.info(f"✅ Topup request created: ID {request_id}")
         return request_id
     except Exception as e:
         logger.error(f"❌ Error create_topup_request_compatible: {e}")
+        if conn:
+            conn.rollback()
         return None
+    finally:
+        if conn:
+            conn.close()
 
 async def send_admin_notification(context: ContextTypes.DEFAULT_TYPE, request_id, user, base_amount, unique_amount, unique_digits, has_qris=True):
     """Kirim notifikasi ke admin"""
@@ -468,4 +464,4 @@ topup_conv_handler = ConversationHandler(
         CommandHandler('cancel', topup_cancel)
     ],
     allow_reentry=True
-        )
+                            )
