@@ -170,7 +170,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_edit_message_text(
                 query,
                 f"💳 *SALDO ANDA*\n\nSaldo: *Rp {saldo:,.0f}*\n\nGunakan menu Top Up untuk menambah saldo.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]),
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💸 Top Up Saldo", callback_data="menu_topup")], [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]),
                 parse_mode="Markdown"
             )
             return MENU
@@ -194,15 +194,16 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return MENU
         elif data == "menu_topup":
+            # Langsung arahkan ke topup_handler
             try:
-                from topup_handler import topup_start
-                await topup_start(update, context)
+                from topup_handler import show_topup_menu
+                await show_topup_menu(update, context)
                 return ConversationHandler.END
             except Exception as e:
-                logger.error(f"Error loading topup: {e}")
+                logger.error(f"Error loading topup menu: {e}")
                 await safe_edit_message_text(
                     query,
-                    "❌ Error memulai topup. Silakan gunakan command /topup",
+                    "❌ Error memuat menu topup. Silakan gunakan command /topup",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
                 )
                 return MENU
@@ -503,8 +504,4 @@ async def choose_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
         return ENTER_TUJUAN
-        
-    except Exception as e:
-        logger.error(f"Error in choose_product: {e}")
-        await safe_edit_message_text(
-           
+   
