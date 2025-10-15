@@ -504,4 +504,206 @@ async def choose_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
         return ENTER_TUJUAN
-   
+        
+    except Exception as e:
+        logger.error(f"Error in choose_product: {e}")
+        await safe_edit_message_text(
+            query,
+            "❌ Terjadi error. Silakan coba lagi.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
+        )
+        return MENU
+
+async def enter_tujuan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle nomor tujuan input"""
+    try:
+        nomor_tujuan = update.message.text.strip()
+        
+        # Validasi nomor tujuan
+        if not nomor_tujuan.isdigit() or len(nomor_tujuan) < 10 or len(nomor_tujuan) > 15:
+            await update.message.reply_text(
+                "❌ **Format nomor tidak valid!**\n\n"
+                "Masukkan nomor HP yang valid (10-15 digit angka).\n"
+                "Contoh: 081234567890\n\n"
+                "Silakan masukkan lagi:",
+                parse_mode='Markdown'
+            )
+            return ENTER_TUJUAN
+        
+        # Simpan nomor tujuan
+        context.user_data['nomor_tujuan'] = nomor_tujuan
+        
+        # Ambil produk yang dipilih
+        product = context.user_data.get('selected_product')
+        if not product:
+            await update.message.reply_text(
+                "❌ Produk tidak ditemukan. Silakan mulai ulang.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
+            )
+            return MENU
+        
+        # Tampilkan konfirmasi
+        keyboard = [
+            [InlineKeyboardButton("✅ Konfirmasi Order", callback_data="confirm_order")],
+            [InlineKeyboardButton("❌ Batalkan", callback_data="menu_main")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            f"📋 **KONFIRMASI ORDER**\n\n"
+            f"📦 *Produk*: {product['name']}\n"
+            f"📱 *Nomor Tujuan*: {nomor_tujuan}\n"
+            f"💰 *Harga*: Rp {product['price']:,.0f}\n\n"
+            f"Apakah Anda yakin ingin memesan?",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+        
+        return CONFIRM_ORDER
+        
+    except Exception as e:
+        logger.error(f"Error in enter_tujuan: {e}")
+        await update.message.reply_text(
+            "❌ Terjadi error. Silakan coba lagi.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
+        )
+        return MENU
+
+async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle order confirmation"""
+    query = update.callback_query
+    await query.answer()
+    
+    try:
+        product = context.user_data.get('selected_product')
+        nomor_tujuan = context.user_data.get('nomor_tujuan')
+        user = query.from_user
+        
+        if not product or not nomor_tujuan:
+            await safe_edit_message_text(
+                query,
+                "❌ Data order tidak lengkap. Silakan mulai ulang.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
+            )
+            return MENU
+        
+        # Cek saldo user
+        user_id = str(user.id)
+        saldo = database.get_user_saldo(user_id)
+        
+        if saldo < product['price']:
+            await safe_edit_message_text(
+                query,
+                f"❌ **Saldo tidak cukup!**\n\n"
+                f"Saldo Anda: Rp {saldo:,.0f}\n"
+                f"Total order: Rp {product['price']:,.0f}\n\n"
+                f"Silakan top up saldo terlebih dahulu.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("💸 Top Up Saldo", callback_data="menu_topup")],
+                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
+                ]),
+                parse_mode='Markdown'
+            )
+            return MENU
+        
+        # Proses order (simulasi)
+        # Di sini Anda bisa menambahkan logika untuk memproses order ke provider
+        
+        # Kurangi saldo
+        new_saldo = saldo - product['price']
+        # database.update_user_saldo(user_id, new_saldo)  # Uncomment jika sudah implement
+        
+        # Simpan order ke database
+        order_id = str(uuid.uuid4())[:8].upper()
+        
+        await safe_edit_message_text(
+            query,
+            f"✅ **ORDER BERHASIL!**\n\n"
+            f"📦 *Produk*: {product['name']}\n"
+            f"📱 *Nomor Tujuan*: {nomor_tujuan}\n"
+            f"💰 *Harga*: Rp {product['price']:,.0f}\n"
+            f"🆔 *Order ID*: {order_id}\n\n"
+            f"Saldo tersisa: Rp {new_saldo:,.0f}\n\n"
+            f"Terima kasih telah berbelanja!",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]]),
+            parse_mode='Markdown'
+        )
+        
+        # Reset user data
+        context.user_data.clear()
+        
+        return MENU
+        
+    except Exception as e:
+        logger.error(f"Error in confirm_order: {e}")
+        await safe_edit_message_text(
+            query,
+            "❌ Gagal memproses order. Silakan coba lagi.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
+        )
+        return MENU
+
+async def cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel order process"""
+    try:
+        context.user_data.clear()
+        
+        if update.callback_query:
+            query = update.callback_query
+            await query.answer()
+            await safe_edit_message_text(
+                query,
+                "❌ Order dibatalkan.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
+            )
+        else:
+            await update.message.reply_text(
+                "❌ Order dibatalkan.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
+            )
+        
+        return MENU
+    except Exception as e:
+        logger.error(f"Error in cancel_order: {e}")
+        return MENU
+
+def get_conversation_handler():
+    """Return conversation handler for order process"""
+    return ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(menu_handler, pattern="^menu_"),
+            CallbackQueryHandler(choose_group, pattern="^group_"),
+            CallbackQueryHandler(choose_product, pattern="^prod_"),
+            CallbackQueryHandler(confirm_order, pattern="^confirm_order$")
+        ],
+        states={
+            MENU: [
+                CallbackQueryHandler(menu_handler, pattern="^menu_"),
+                CallbackQueryHandler(choose_group, pattern="^group_"),
+                CallbackQueryHandler(choose_product, pattern="^prod_"),
+                CallbackQueryHandler(confirm_order, pattern="^confirm_order$")
+            ],
+            CHOOSING_GROUP: [
+                CallbackQueryHandler(choose_group, pattern="^group_"),
+                CallbackQueryHandler(menu_handler, pattern="^menu_")
+            ],
+            CHOOSING_PRODUCT: [
+                CallbackQueryHandler(choose_product, pattern="^prod_"),
+                CallbackQueryHandler(choose_product, pattern="^page_"),
+                CallbackQueryHandler(menu_handler, pattern="^menu_")
+            ],
+            ENTER_TUJUAN: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, enter_tujuan),
+                CommandHandler('cancel', cancel_order)
+            ],
+            CONFIRM_ORDER: [
+                CallbackQueryHandler(confirm_order, pattern="^confirm_order$"),
+                CallbackQueryHandler(cancel_order, pattern="^menu_main$")
+            ]
+        },
+        fallbacks=[
+            CommandHandler('cancel', cancel_order),
+            CallbackQueryHandler(cancel_order, pattern="^menu_main$")
+        ],
+        allow_reentry=True
+    )
