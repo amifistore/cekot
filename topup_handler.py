@@ -184,13 +184,13 @@ async def topup_nominal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Generate QRIS
         qris_base64, qris_error = await generate_qris(unique_amount)
         
-        # Simpan ke database
-        user_id = database.get_or_create_user(str(user.id), user.username or "", user.full_name or "")
-        logger.info(f"🔧 [TOPUP_NOMINAL] User ID dari database: {user_id}")
+        # Simpan ke database - SESUAIKAN DENGAN STRUKTUR DATABASE ANDA
+        user_id = str(user.id)  # Langsung gunakan telegram_id sebagai user_id
+        logger.info(f"🔧 [TOPUP_NOMINAL] User ID: {user_id}")
         
         if qris_base64:
             # Jika QRIS berhasil digenerate
-            request_id = database.create_topup_request(
+            request_id = create_topup_request_compatible(
                 user_id, 
                 base_amount,
                 unique_amount,
@@ -247,7 +247,7 @@ async def topup_nominal(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         else:
             # Fallback ke transfer manual jika QRIS gagal
-            request_id = database.create_topup_request(
+            request_id = create_topup_request_compatible(
                 user_id, 
                 base_amount,
                 unique_amount,
@@ -303,6 +303,34 @@ async def topup_nominal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     
     return ConversationHandler.END
+
+def create_topup_request_compatible(user_id, base_amount, unique_amount, unique_digits, qris_base64):
+    """Fungsi kompatibilitas untuk membuat topup request sesuai struktur database"""
+    try:
+        conn = sqlite3.connect(database.DB_PATH)
+        c = conn.cursor()
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Get user info
+        c.execute("SELECT username, full_name FROM users WHERE user_id = ?", (user_id,))
+        row = c.fetchone()
+        username = row[0] if row else ""
+        full_name = row[1] if row else ""
+        
+        # Insert dengan struktur yang sesuai
+        c.execute("""
+            INSERT INTO topup_requests (
+                user_id, username, full_name, amount, status, proof_image, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)
+        """, (user_id, username, full_name, unique_amount, qris_base64, now, now))
+        
+        request_id = c.lastrowid
+        conn.commit()
+        conn.close()
+        return request_id
+    except Exception as e:
+        logger.error(f"Error create_topup_request_compatible: {e}")
+        return None
 
 async def send_admin_notification(context: ContextTypes.DEFAULT_TYPE, request_id, user, base_amount, unique_amount, unique_digits, has_qris=True):
     """Kirim notifikasi ke admin"""
@@ -408,10 +436,9 @@ async def show_manage_topup(update: Update, context: ContextTypes.DEFAULT_TYPE):
             conn = sqlite3.connect(database.DB_PATH)
             c = conn.cursor()
             c.execute('''
-                SELECT tr.id, tr.user_id, u.username, tr.base_amount, tr.unique_amount, 
-                       tr.unique_digits, tr.status, tr.created_at 
+                SELECT tr.id, tr.user_id, u.username, tr.amount, tr.status, tr.created_at 
                 FROM topup_requests tr
-                JOIN users u ON tr.user_id = u.id
+                JOIN users u ON tr.user_id = u.user_id
                 WHERE tr.status = 'pending'
                 ORDER BY tr.created_at DESC
                 LIMIT 10
@@ -425,10 +452,10 @@ async def show_manage_topup(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if pending_requests:
             message = "⏳ **TOPUP MENUNGGU VERIFIKASI**\n\n"
             for req in pending_requests:
-                req_id, user_id, username, base_amount, unique_amount, unique_digits, status, created_at = req
+                req_id, user_id, username, amount, status, created_at = req
                 message += f"📋 **ID:** `{req_id}`\n"
                 message += f"👤 **User:** {username or 'N/A'}\n"
-                message += f"💰 **Amount:** Rp {unique_amount:,}\n"
+                message += f"💰 **Amount:** Rp {amount:,}\n"
                 message += f"⏰ **Waktu:** {created_at}\n"
                 message += f"✅ **Approve:** `/approve_topup {req_id}`\n"
                 message += f"❌ **Tolak:** `/cancel_topup {req_id}`\n\n"
@@ -477,9 +504,9 @@ async def handle_topup_history(update: Update, context: ContextTypes.DEFAULT_TYP
             conn = sqlite3.connect(database.DB_PATH)
             c = conn.cursor()
             c.execute('''
-                SELECT base_amount, unique_amount, status, created_at 
+                SELECT amount, status, created_at 
                 FROM topup_requests 
-                WHERE user_id = (SELECT id FROM users WHERE telegram_id = ?)
+                WHERE user_id = ?
                 ORDER BY created_at DESC 
                 LIMIT 10
             ''', (user_id,))
@@ -491,10 +518,10 @@ async def handle_topup_history(update: Update, context: ContextTypes.DEFAULT_TYP
         
         if history:
             message = "📋 **RIWAYAT TOP UP**\n\n"
-            for base_amount, unique_amount, status, created_at in history:
+            for amount, status, created_at in history:
                 status_icon = "✅" if status == "approved" else "⏳" if status == "pending" else "❌"
                 status_text = "DITERIMA" if status == "approved" else "MENUNGGU" if status == "pending" else "DITOLAK"
-                message += f"{status_icon} **Rp {base_amount:,}** → **Rp {unique_amount:,}**\n"
+                message += f"{status_icon} **Rp {amount:,}**\n"
                 message += f"📅 {created_at} - {status_text}\n\n"
         else:
             message = "📭 **Belum ada riwayat top up**\n\n"
