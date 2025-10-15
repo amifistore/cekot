@@ -265,7 +265,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Untuk bantuan, silakan hubungi admin.\n"
         "Kami siap membantu 24/7.\n\n"
         "**Fitur Bot:**\n"
-        "• 🛒 Beli Producak\n"
+        "• 🛒 Beli Produk\n"
         "• 💳 Top Up Saldo\n" 
         "• 📊 Cek Stok\n"
         "• 📞 Bantuan",
@@ -273,13 +273,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown'
     )
 
-async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk pesan yang tidak dikenal"""
-    # Jika ini adalah pesan teks (bukan command), abaikan saja
-    if update.message and update.message.text:
-        logger.info(f"Ignoring unknown text message: {update.message.text}")
-        return
-    
+async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler untuk command yang tidak dikenal"""
+    logger.info(f"Unknown command received: {update.message.text}")
     await update.message.reply_text(
         "❌ Perintah tidak dikenali. Gunakan /start untuk melihat menu.",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
@@ -297,24 +293,30 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
             await update.callback_query.message.reply_text("❌ Terjadi error. Silakan coba lagi.")
 
 def main():
-    """Main function untuk menjalankan bot - FIXED VERSION"""
+    """Main function untuk menjalankan bot - DEBUG VERSION"""
     try:
         application = Application.builder().token(BOT_TOKEN).build()
         
         logger.info("🤖 Starting bot dengan sistem menu terintegrasi...")
         
+        # Debug: Print handler information
+        logger.info("=== HANDLER REGISTRATION DEBUG ===")
+        
         # ========== URUTAN HANDLER YANG BENAR ==========
         
         # 1. Conversation handlers PERTAMA (yang paling penting)
+        logger.info("Registering topup_conv_handler...")
         application.add_handler(topup_conv_handler)
         
         # 2. Order conversation handler jika ada
         if hasattr(order_handler, 'get_conversation_handler'):
             order_conv_handler = order_handler.get_conversation_handler()
             if order_conv_handler:
+                logger.info("Registering order_conv_handler...")
                 application.add_handler(order_conv_handler)
         
         # 3. Command handlers
+        logger.info("Registering command handlers...")
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("stock", stok_handler.stock_command))
         application.add_handler(CommandHandler("saldo", saldo_command))
@@ -329,6 +331,7 @@ def main():
             application.add_handler(CommandHandler("cancel_topup", admin_handler.cancel_topup_command))
         
         # 5. Menu callback handlers - pattern spesifik
+        logger.info("Registering menu callback handlers...")
         application.add_handler(CallbackQueryHandler(menu_handler, pattern="^menu_"))
         
         # 6. Topup callback handlers untuk menu
@@ -347,11 +350,29 @@ def main():
         if hasattr(stok_handler, 'callback_handler'):
             application.add_handler(CallbackQueryHandler(stok_handler.callback_handler, pattern="^stock_"))
         
-        # 10. Fallback handler untuk pesan yang tidak dikenali - HARUS TERAKHIR
-        application.add_handler(MessageHandler(filters.ALL, unknown_message))
+        # 10. Fallback handler untuk pesan teks yang tidak dikenali - HARUS TERAKHIR
+        logger.info("Registering unknown command handler...")
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_command))
         
         # 11. Error handler
         application.add_error_handler(error_handler)
+        
+        # Print all registered handlers for debugging
+        logger.info("=== REGISTERED HANDLERS ===")
+        for i, handler in enumerate(application.handlers[0]):
+            handler_type = type(handler).__name__
+            logger.info(f"Handler {i}: {handler_type}")
+            
+            # Additional info for ConversationHandler
+            if isinstance(handler, ConversationHandler):
+                logger.info(f"  - Entry points: {len(handler.entry_points)}")
+                for ep in handler.entry_points:
+                    logger.info(f"    * {ep}")
+                logger.info(f"  - States: {len(handler.states)}")
+                for state, handlers in handler.states.items():
+                    logger.info(f"    * State {state}: {len(handlers)} handlers")
+        
+        logger.info("=== END HANDLERS DEBUG ===")
         
         logger.info("✅ Bot berhasil dimulai!")
         logger.info("📱 Bot siap menerima pesan...")
