@@ -129,7 +129,6 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    # Gunakan edit_message_text jika memungkinkan, fallback ke reply baru
     try:
         await query.edit_message_text(
             f"🏠 **MENU UTAMA**\n\n"
@@ -274,6 +273,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown'
     )
 
+async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler untuk command yang tidak dikenal"""
+    await update.message.reply_text(
+        "❌ Perintah tidak dikenali. Gunakan /start untuk melihat menu.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
+    )
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     """Global error handler"""
     logger.error(f"Update {update} caused error {context.error}", exc_info=True)
@@ -286,7 +292,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
             await update.callback_query.message.reply_text("❌ Terjadi error. Silakan coba lagi.")
 
 def main():
-    """Main function untuk menjalankan bot"""
+    """Main function untuk menjalankan bot - FIXED VERSION"""
     try:
         application = Application.builder().token(BOT_TOKEN).build()
         
@@ -294,7 +300,7 @@ def main():
         
         # ========== URUTAN HANDLER YANG BENAR ==========
         
-        # 1. Conversation handlers pertama (yang memiliki state)
+        # 1. Conversation handlers PERTAMA (yang paling penting)
         application.add_handler(topup_conv_handler)
         
         # 2. Order conversation handler jika ada
@@ -320,9 +326,9 @@ def main():
         # 5. Menu callback handlers - pattern spesifik
         application.add_handler(CallbackQueryHandler(menu_handler, pattern="^menu_"))
         
-        # 6. Topup callback handlers
+        # 6. Topup callback handlers untuk menu
+        application.add_handler(CallbackQueryHandler(show_topup_menu, pattern="^menu_topup$"))
         application.add_handler(CallbackQueryHandler(show_manage_topup, pattern="^manage_topup$"))
-        application.add_handler(CallbackQueryHandler(handle_topup_manual, pattern="^topup_manual$"))
         application.add_handler(CallbackQueryHandler(handle_topup_history, pattern="^topup_history$"))
         
         # 7. Admin callback handlers
@@ -336,11 +342,30 @@ def main():
         if hasattr(stok_handler, 'callback_handler'):
             application.add_handler(CallbackQueryHandler(stok_handler.callback_handler, pattern="^stock_"))
         
-        # 10. Error handler
+        # 10. Fallback handler untuk pesan teks yang tidak dikenali
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_command))
+        
+        # 11. Error handler
         application.add_error_handler(error_handler)
         
-        # 11. Fallback handler untuk pesan teks
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, start))
+        # Debug: Log semua handler yang terdaftar
+        def log_handlers(app):
+            logger.info("=== REGISTERED HANDLERS ===")
+            for i, handler in enumerate(app.handlers[0]):  # Group 0
+                handler_name = type(handler).__name__
+                logger.info(f"Handler {i}: {handler_name}")
+                
+                # Log additional info for ConversationHandler
+                if isinstance(handler, ConversationHandler):
+                    logger.info(f"  - Entry points: {len(handler.entry_points)}")
+                    for ep in handler.entry_points:
+                        logger.info(f"    * {ep}")
+                    logger.info(f"  - States: {len(handler.states)}")
+                    for state, handlers in handler.states.items():
+                        logger.info(f"    * State {state}: {len(handlers)} handlers")
+            logger.info("=== END HANDLERS ===")
+        
+        log_handlers(application)
         
         logger.info("✅ Bot berhasil dimulai!")
         logger.info("📱 Bot siap menerima pesan...")
