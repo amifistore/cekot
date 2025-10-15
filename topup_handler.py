@@ -7,6 +7,8 @@ from io import BytesIO
 import database
 import random
 import logging
+import sqlite3
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -15,20 +17,24 @@ ASK_TOPUP_NOMINAL = 1
 
 def generate_unique_amount(base_amount):
     """Generate nominal unik dengan menambahkan 3 digit random"""
-    base_amount = int(base_amount)
-    unique_digits = random.randint(1, 999)
-    unique_amount = base_amount + unique_digits
-    return unique_amount, unique_digits
+    try:
+        base_amount = int(base_amount)
+        unique_digits = random.randint(1, 999)
+        unique_amount = base_amount + unique_digits
+        return unique_amount, unique_digits
+    except Exception as e:
+        logger.error(f"Error generating unique amount: {e}")
+        return base_amount, 0
 
 async def generate_qris(unique_amount):
-    """Generate QRIS menggunakan API"""
+    """Generate QRIS menggunakan API dengan error handling"""
     try:
         logger.info(f"🔧 [QRIS] Generating QRIS untuk amount: {unique_amount}")
         
         # Payload untuk API QRIS
         payload = {
             "amount": str(unique_amount),
-            "qris_statis": config.QRIS_STATIS
+            "qris_statis": getattr(config, 'QRIS_STATIS', '')
         }
         
         logger.info(f"🔧 [QRIS] Payload: {payload}")
@@ -88,7 +94,8 @@ async def topup_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user = update.message.from_user
             message_func = update.message.reply_text
         
-        user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
+        # Create or get user
+        user_id = database.get_or_create_user(str(user.id), user.username or "", user.full_name or "")
         logger.info(f"🔧 [TOPUP_START] User: {user.id}, User ID: {user_id}")
         
         await message_func(
@@ -105,10 +112,11 @@ async def topup_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         logger.error(f"❌ [TOPUP_START] Error: {str(e)}")
+        error_message = "❌ Terjadi error, silakan coba lagi."
         if update.callback_query:
-            await update.callback_query.message.reply_text("❌ Terjadi error, silakan coba lagi.")
+            await update.callback_query.message.reply_text(error_message)
         else:
-            await update.message.reply_text("❌ Terjadi error, silakan coba lagi.")
+            await update.message.reply_text(error_message)
         return ConversationHandler.END
 
 async def topup_nominal(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -150,9 +158,19 @@ async def topup_nominal(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return ASK_TOPUP_NOMINAL
         
+        # Validasi maksimum amount (opsional)
+        if base_amount > 10000000:  # 10 juta
+            logger.warning(f"🔧 [TOPUP_NOMINAL] Nominal terlalu besar: {base_amount}")
+            await update.message.reply_text(
+                "❌ **Nominal terlalu besar!**\n\n"
+                "Maksimum top up adalah Rp 10.000.000\n\n"
+                "Silakan masukkan nominal yang lebih kecil:",
+                parse_mode='Markdown'
+            )
+            return ASK_TOPUP_NOMINAL
+        
         # Generate nominal unik
-        unique_digits = random.randint(1, 999)
-        unique_amount = base_amount + unique_digits
+        unique_amount, unique_digits = generate_unique_amount(base_amount)
         
         logger.info(f"🔧 [TOPUP_NOMINAL] Generated: Base={base_amount}, Unique={unique_amount}, Digits={unique_digits}")
         
@@ -167,7 +185,7 @@ async def topup_nominal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         qris_base64, qris_error = await generate_qris(unique_amount)
         
         # Simpan ke database
-        user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
+        user_id = database.get_or_create_user(str(user.id), user.username or "", user.full_name or "")
         logger.info(f"🔧 [TOPUP_NOMINAL] User ID dari database: {user_id}")
         
         if qris_base64:
@@ -182,7 +200,12 @@ async def topup_nominal(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             if request_id is None:
                 logger.error("❌ [TOPUP_NOMINAL] Gagal membuat topup request di database")
-                raise Exception("Gagal membuat request topup di database")
+                await processing_msg.delete()
+                await update.message.reply_text(
+                    "❌ **Gagal membuat request topup.**\n\nSilakan coba lagi nanti.",
+                    parse_mode='Markdown'
+                )
+                return ConversationHandler.END
             
             logger.info(f"✅ [TOPUP_NOMINAL] Topup request dengan QRIS dibuat: ID {request_id}")
             
@@ -190,22 +213,37 @@ async def topup_nominal(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await processing_msg.delete()
             
             # Convert base64 to image
-            qris_bytes = base64.b64decode(qris_base64)
-            bio = BytesIO(qris_bytes)
-            bio.name = 'qris.png'
-            
-            # Kirim QRIS ke user
-            await update.message.reply_photo(
-                photo=bio,
-                caption=f"📱 **QRIS TOP UP**\n\n"
-                       f"💰 **Total Transfer:** Rp {unique_amount:,}\n"
-                       f"🔢 **Kode Unik:** {unique_digits:03d}\n"
-                       f"📋 **ID Request:** `{request_id}`\n\n"
-                       f"⚠️ **Transfer tepat Rp {unique_amount:,}**\n"
-                       f"Saldo akan otomatis bertambah setelah admin verifikasi.\n\n"
-                       f"⏰ **QRIS berlaku 24 jam**",
-                parse_mode='Markdown'
-            )
+            try:
+                qris_bytes = base64.b64decode(qris_base64)
+                bio = BytesIO(qris_bytes)
+                bio.name = 'qris.png'
+                
+                # Kirim QRIS ke user
+                await update.message.reply_photo(
+                    photo=bio,
+                    caption=f"📱 **QRIS TOP UP**\n\n"
+                           f"💰 **Total Transfer:** Rp {unique_amount:,}\n"
+                           f"🔢 **Kode Unik:** {unique_digits:03d}\n"
+                           f"📋 **ID Request:** `{request_id}`\n\n"
+                           f"⚠️ **Transfer tepat Rp {unique_amount:,}**\n"
+                           f"Saldo akan otomatis bertambah setelah admin verifikasi.\n\n"
+                           f"⏰ **QRIS berlaku 24 jam**\n\n"
+                           f"❌ Ketik /cancel untuk membatalkan",
+                    parse_mode='Markdown'
+                )
+                
+            except Exception as e:
+                logger.error(f"❌ [TOPUP_NOMINAL] Error processing QRIS image: {e}")
+                await update.message.reply_text(
+                    f"📱 **TOP UP DITERIMA**\n\n"
+                    f"💰 **Total Transfer:** Rp {unique_amount:,}\n"
+                    f"🔢 **Kode Unik:** {unique_digits:03d}\n"
+                    f"📋 **ID Request:** `{request_id}`\n\n"
+                    f"⚠️ **Transfer tepat Rp {unique_amount:,}**\n"
+                    f"Saldo akan otomatis bertambah setelah admin verifikasi.\n\n"
+                    f"❌ QRIS gagal ditampilkan, silakan hubungi admin.",
+                    parse_mode='Markdown'
+                )
             
         else:
             # Fallback ke transfer manual jika QRIS gagal
@@ -219,7 +257,12 @@ async def topup_nominal(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             if request_id is None:
                 logger.error("❌ [TOPUP_NOMINAL] Gagal membuat topup request di database")
-                raise Exception("Gagal membuat request topup di database")
+                await processing_msg.delete()
+                await update.message.reply_text(
+                    "❌ **Gagal membuat request topup.**\n\nSilakan coba lagi nanti.",
+                    parse_mode='Markdown'
+                )
+                return ConversationHandler.END
             
             logger.info(f"✅ [TOPUP_NOMINAL] Topup request manual dibuat: ID {request_id}")
             
@@ -229,7 +272,7 @@ async def topup_nominal(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Kirim instruksi transfer manual
             await update.message.reply_text(
                 f"💰 **TOP UP DITERIMA**\n\n"
-                f"👤 **User:** {user.full_name}\n"
+                f"👤 **User:** {user.full_name or 'User'}\n"
                 f"📊 **Nominal Dasar:** Rp {base_amount:,}\n"
                 f"🔢 **Kode Unik:** {unique_digits:03d}\n"
                 f"💵 **Total Transfer:** Rp {unique_amount:,}\n"
@@ -240,7 +283,8 @@ async def topup_nominal(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"📛 Nama: AMIFI STORE\n"
                 f"🔢 Rekening: 1234567890\n"
                 f"💵 **Jumlah:** Rp {unique_amount:,}\n\n"
-                f"Saldo akan ditambahkan setelah admin verifikasi.",
+                f"Saldo akan ditambahkan setelah admin verifikasi.\n\n"
+                f"❌ Ketik /cancel untuk membatalkan",
                 parse_mode='Markdown'
             )
         
@@ -267,8 +311,9 @@ async def send_admin_notification(context: ContextTypes.DEFAULT_TYPE, request_id
         
         notification_text = (
             f"🔔 **PERMINTAAN TOP UP BARU**\n\n"
-            f"👤 **User:** {user.full_name}\n"
+            f"👤 **User:** {user.full_name or 'User'}\n"
             f"📛 **Username:** @{user.username if user.username else 'N/A'}\n"
+            f"🆔 **User ID:** {user.id}\n"
             f"💰 **Nominal Dasar:** Rp {base_amount:,}\n"
             f"🔢 **Kode Unik:** {unique_digits:03d}\n"
             f"💵 **Total Transfer:** Rp {unique_amount:,}\n"
@@ -278,7 +323,8 @@ async def send_admin_notification(context: ContextTypes.DEFAULT_TYPE, request_id
         )
         
         # Kirim ke semua admin
-        for admin_id in config.ADMIN_TELEGRAM_IDS:
+        admin_ids = getattr(config, 'ADMIN_TELEGRAM_IDS', [])
+        for admin_id in admin_ids:
             try:
                 await context.bot.send_message(
                     chat_id=admin_id,
@@ -315,18 +361,19 @@ async def topup_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     return ConversationHandler.END
 
-# Handler untuk menu topup
 async def show_topup_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Tampilkan menu topup utama"""
     try:
         query = update.callback_query
         await query.answer()
         
-        keyboard = InlineKeyboardMarkup([
+        keyboard = [
             [InlineKeyboardButton("💳 Topup QRIS", callback_data="topup_manual")],
             [InlineKeyboardButton("📋 Riwayat Topup", callback_data="topup_history")],
             [InlineKeyboardButton("🔙 Kembali", callback_data="menu_main")]
-        ])
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
         
         await query.edit_message_text(
             "💰 **Menu Topup**\n\n"
@@ -334,22 +381,76 @@ async def show_topup_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "💳 **Topup QRIS** - Bayar dengan scan QRIS\n"
             "📋 **Riwayat** - Lihat history topup\n\n"
             "Pilih opsi di bawah:",
-            reply_markup=keyboard,
+            reply_markup=reply_markup,
             parse_mode='Markdown'
         )
         
     except Exception as e:
         logger.error(f"❌ Error in show_topup_menu: {str(e)}")
-        await query.message.reply_text("❌ Terjadi error, silakan coba lagi.")
+        if update.callback_query:
+            await update.callback_query.message.reply_text("❌ Terjadi error, silakan coba lagi.")
 
 async def show_manage_topup(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Tampilkan menu kelola topup"""
+    """Tampilkan menu kelola topup (untuk admin)"""
     try:
         query = update.callback_query
-        await query.answer("Fitur kelola topup untuk admin akan segera hadir!")
+        await query.answer()
+        
+        user_id = str(query.from_user.id)
+        admin_ids = getattr(config, 'ADMIN_TELEGRAM_IDS', [])
+        
+        if user_id not in admin_ids:
+            await query.message.reply_text("❌ Anda tidak memiliki akses ke menu ini.")
+            return
+        
+        # Ambil pending topup requests
+        try:
+            conn = sqlite3.connect(database.DB_PATH)
+            c = conn.cursor()
+            c.execute('''
+                SELECT tr.id, tr.user_id, u.username, tr.base_amount, tr.unique_amount, 
+                       tr.unique_digits, tr.status, tr.created_at 
+                FROM topup_requests tr
+                JOIN users u ON tr.user_id = u.id
+                WHERE tr.status = 'pending'
+                ORDER BY tr.created_at DESC
+                LIMIT 10
+            ''')
+            pending_requests = c.fetchall()
+            conn.close()
+        except Exception as e:
+            logger.error(f"Error getting pending requests: {e}")
+            pending_requests = []
+        
+        if pending_requests:
+            message = "⏳ **TOPUP MENUNGGU VERIFIKASI**\n\n"
+            for req in pending_requests:
+                req_id, user_id, username, base_amount, unique_amount, unique_digits, status, created_at = req
+                message += f"📋 **ID:** `{req_id}`\n"
+                message += f"👤 **User:** {username or 'N/A'}\n"
+                message += f"💰 **Amount:** Rp {unique_amount:,}\n"
+                message += f"⏰ **Waktu:** {created_at}\n"
+                message += f"✅ **Approve:** `/approve_topup {req_id}`\n"
+                message += f"❌ **Tolak:** `/cancel_topup {req_id}`\n\n"
+        else:
+            message = "✅ **Tidak ada topup yang menunggu verifikasi**\n\n"
+        
+        message += "**Perintah Admin:**\n"
+        message += "• `/approve_topup <id>` - Approve topup\n"
+        message += "• `/cancel_topup <id>` - Batalkan topup\n"
+        message += "• `/topup_history` - Lihat riwayat semua user"
+        
+        keyboard = [
+            [InlineKeyboardButton("🔄 Refresh", callback_data="manage_topup")],
+            [InlineKeyboardButton("🔙 Kembali", callback_data="menu_admin")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(message, reply_markup=reply_markup, parse_mode='Markdown')
         
     except Exception as e:
         logger.error(f"❌ Error in show_manage_topup: {str(e)}")
+        await query.message.reply_text("❌ Terjadi error, silakan coba lagi.")
 
 async def handle_topup_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk memulai topup QRIS"""
@@ -357,22 +458,63 @@ async def handle_topup_manual(update: Update, context: ContextTypes.DEFAULT_TYPE
         logger.info("🔧 [HANDLE_TOPUP_MANUAL] Dipanggil")
         query = update.callback_query
         await query.answer()
-        await topup_start(update, context)
+        return await topup_start(update, context)
     except Exception as e:
         logger.error(f"❌ [HANDLE_TOPUP_MANUAL] Error: {str(e)}")
         await update.callback_query.message.reply_text("❌ Terjadi error, silakan coba lagi.")
+        return ConversationHandler.END
 
 async def handle_topup_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk riwayat topup"""
+    """Handler untuk riwayat topup user"""
     try:
         query = update.callback_query
-        await query.answer("Fitur riwayat topup akan segera hadir!")
+        await query.answer()
+        
+        user_id = str(query.from_user.id)
+        
+        # Ambil riwayat topup user
+        try:
+            conn = sqlite3.connect(database.DB_PATH)
+            c = conn.cursor()
+            c.execute('''
+                SELECT base_amount, unique_amount, status, created_at 
+                FROM topup_requests 
+                WHERE user_id = (SELECT id FROM users WHERE telegram_id = ?)
+                ORDER BY created_at DESC 
+                LIMIT 10
+            ''', (user_id,))
+            history = c.fetchall()
+            conn.close()
+        except Exception as e:
+            logger.error(f"Error getting topup history: {e}")
+            history = []
+        
+        if history:
+            message = "📋 **RIWAYAT TOP UP**\n\n"
+            for base_amount, unique_amount, status, created_at in history:
+                status_icon = "✅" if status == "approved" else "⏳" if status == "pending" else "❌"
+                status_text = "DITERIMA" if status == "approved" else "MENUNGGU" if status == "pending" else "DITOLAK"
+                message += f"{status_icon} **Rp {base_amount:,}** → **Rp {unique_amount:,}**\n"
+                message += f"📅 {created_at} - {status_text}\n\n"
+        else:
+            message = "📭 **Belum ada riwayat top up**\n\n"
+        
+        message += "Gunakan menu Top Up untuk menambah saldo."
+        
+        keyboard = [
+            [InlineKeyboardButton("💳 Top Up Sekarang", callback_data="topup_manual")],
+            [InlineKeyboardButton("🔄 Refresh", callback_data="topup_history")],
+            [InlineKeyboardButton("🔙 Kembali", callback_data="menu_main")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(message, reply_markup=reply_markup, parse_mode='Markdown')
+        
     except Exception as e:
         logger.error(f"❌ Error in handle_topup_history: {str(e)}")
+        await query.message.reply_text("❌ Terjadi error, silakan coba lagi.")
 
-# ... (import statements dan kode lainnya) ...
-
-# Conversation handler untuk topup - INI HARUS DI AKHIR FILE
+# Conversation handler untuk topup
 topup_conv_handler = ConversationHandler(
     entry_points=[
         CommandHandler('topup', topup_start),
@@ -384,6 +526,5 @@ topup_conv_handler = ConversationHandler(
         ]
     },
     fallbacks=[CommandHandler('cancel', topup_cancel)],
-    allow_reentry=True,
-    per_message=False
+    allow_reentry=True
 )
