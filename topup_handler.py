@@ -80,7 +80,7 @@ async def generate_qris(unique_amount):
         return None, error_msg
 
 async def topup_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Mulai proses topup - FIXED VERSION"""
+    """Mulai proses topup - IMPROVED VERSION"""
     try:
         logger.info("🔧 [TOPUP_START] Dipanggil")
         
@@ -89,29 +89,23 @@ async def topup_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             query = update.callback_query
             user = query.from_user
             await query.answer()
-            # Use reply_text instead of edit_message_text to avoid issues
-            await query.message.reply_text(
-                "💳 **TOP UP SALDO**\n\n"
-                "Masukkan nominal top up (angka saja):\n"
-                "✅ Contoh: `100000` untuk Rp 100.000\n\n"
-                "💰 **PENTING:** Nominal akan ditambahkan kode unik untuk memudahkan verifikasi.\n\n"
-                "❌ Ketik /cancel untuk membatalkan",
-                parse_mode='Markdown'
-            )
+            message_func = query.edit_message_text
         else:
             user = update.message.from_user
-            await update.message.reply_text(
-                "💳 **TOP UP SALDO**\n\n"
-                "Masukkan nominal top up (angka saja):\n"
-                "✅ Contoh: `100000` untuk Rp 100.000\n\n"
-                "💰 **PENTING:** Nominal akan ditambahkan kode unik untuk memudahkan verifikasi.\n\n"
-                "❌ Ketik /cancel untuk membatalkan",
-                parse_mode='Markdown'
-            )
+            message_func = update.message.reply_text
         
         # Create or get user
         user_id = database.get_or_create_user(str(user.id), user.username or "", user.full_name or "")
         logger.info(f"🔧 [TOPUP_START] User: {user.id}, User ID: {user_id}")
+        
+        await message_func(
+            "💳 **TOP UP SALDO**\n\n"
+            "Masukkan nominal top up (angka saja):\n"
+            "✅ Contoh: `100000` untuk Rp 100.000\n\n"
+            "💰 **PENTING:** Nominal akan ditambahkan kode unik untuk memudahkan verifikasi.\n\n"
+            "❌ Ketik /cancel untuk membatalkan",
+            parse_mode='Markdown'
+        )
         
         logger.info(f"✅ [TOPUP_START] Conversation state ASK_TOPUP_NOMINAL dimulai untuk user {user.id}")
         return ASK_TOPUP_NOMINAL
@@ -126,7 +120,7 @@ async def topup_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
 async def topup_nominal(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Process nominal topup dengan QRIS - FIXED VERSION"""
+    """Process nominal topup dengan QRIS - IMPROVED VERSION"""
     try:
         user = update.message.from_user
         nominal_input = update.message.text.strip()
@@ -422,7 +416,7 @@ async def handle_topup_history(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception as e:
         logger.error(f"❌ Error in handle_topup_history: {str(e)}")
 
-# Conversation handler untuk topup - FIXED VERSION
+# Conversation handler untuk topup - IMPROVED VERSION
 topup_conv_handler = ConversationHandler(
     entry_points=[
         CommandHandler('topup', topup_start),
@@ -430,9 +424,15 @@ topup_conv_handler = ConversationHandler(
     ],
     states={
         ASK_TOPUP_NOMINAL: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, topup_nominal)
+            MessageHandler(filters.TEXT & ~filters.COMMAND, topup_nominal),
+            CommandHandler('cancel', topup_cancel)
         ]
     },
-    fallbacks=[CommandHandler('cancel', topup_cancel)],
-    allow_reentry=True
+    fallbacks=[
+        CommandHandler('cancel', topup_cancel),
+        CommandHandler('start', lambda update, context: ConversationHandler.END)
+    ],
+    allow_reentry=True,
+    per_user=True,
+    per_chat=True
         )
