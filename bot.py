@@ -506,5 +506,5 @@ async def choose_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         logger.error(f"Error in choose_product: {e}")
-        await safe_edit_message_text(
+        await safe_edit_message_text()
            
