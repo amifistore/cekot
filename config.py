@@ -1,25 +1,21 @@
 # config.py
-import os
+BOT_TOKEN = "7381707221:AAFcOwFzHCSg8gTxzRVtv3takopJQoA8BW8"
 
-# Bot Configuration
-BOT_TOKEN = os.getenv('BOT_TOKEN', '7381707221:AAFcOwFzHCSg8gTxzRVtv3takopJQoA8BW8')
+# GANTI DENGAN ID TELEGRAM ANDA YANG BENAR
+ADMIN_TELEGRAM_IDS = [6738243352]  # Ganti dengan ID Telegram Anda
 
-# Admin Configuration
-ADMIN_TELEGRAM_IDS = [191234567]  # Ganti dengan ID Telegram admin yang sebenarnya
+# Topup Configuration
+MIN_TOPUP_AMOUNT = 10000
+MAX_TOPUP_AMOUNT = 1000000
+
+# QRIS Configuration - SESUAIKAN DENGAN DATA ANDA
+QRIS_API_URL = "https://qrisku.my.id/api"
+QRIS_STATIS = "00020101021126650014COM.GO-JEK.WWW01189360091436031234567890215ID.OR.GPNQR.WWW020899990303UME51440014ID.CO.QRIS.WWW0215ID1020041354880303UME5204581253033605404100005802ID5913MERCHANT NAME6007JAKARTA61051234062380124https://merchant.com6304E7A0"
 
 # API Configuration
-API_KEY_PROVIDER = os.getenv('API_KEY_PROVIDER', '369594EC-A601-402D-8B60-256FF8A75C54')
-PRODUCT_API_URL = os.getenv('PRODUCT_API_URL', 'https://panel.khfy-store.com/api_v2/list_product')
+API_KEY_PROVIDER = "your_api_key_here"
+PRODUCT_API_URL = "https://panel.khfy-store.com/api_v2/list_product"
 
 # System Configuration
 REQUEST_TIMEOUT = 30
 MAX_MESSAGE_LENGTH = 4096
-
-# Database Configuration
-DB_PATH = 'bot_database.db'
-
-# Feature Flags
-ENABLE_TOPUP = True
-ENABLE_ORDERS = True
-ENABLE_ADMIN = True
-ENABLE_STOCK = True
