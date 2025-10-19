@@ -81,7 +81,7 @@ except Exception as e:
 
 # Order Handler  
 try:
-    from order_handler import menu_handler as order_menu_handler
+    from order_handler import get_conversation_handler as get_order_conversation_handler
     ORDER_AVAILABLE = True
     print("✅ Order handler loaded successfully")
 except Exception as e:
@@ -89,11 +89,8 @@ except Exception as e:
     traceback.print_exc()
     ORDER_AVAILABLE = False
     
-    async def order_menu_handler(update, context):
-        if hasattr(update, 'callback_query'):
-            await update.callback_query.message.reply_text("❌ Sistem order sedang dalam perbaikan.")
-        else:
-            await update.message.reply_text("❌ Sistem order sedang dalam perbaikan.")
+    def get_order_conversation_handler():
+        return None
 
 # Topup Handler
 try:
@@ -211,11 +208,9 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await query.answer("❌ Anda bukan admin!", show_alert=True)
         elif data == "menu_order":
-            try:
-                await order_menu_handler(update, context)
-            except Exception as e:
-                logger.error(f"Error in order handler: {e}")
-                await query.message.reply_text("❌ Sistem order sedang tidak tersedia.")
+            # Handle order through conversation handler
+            from order_handler import menu_handler as order_menu_handler
+            await order_menu_handler(update, context)
         else:
             await query.message.reply_text("❌ Menu tidak dikenali.")
             
@@ -405,13 +400,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown'
     )
 
-async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def stock_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /stock"""
     await stock_command(update, context)
 
 async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /order"""
     try:
+        from order_handler import menu_handler as order_menu_handler
         await order_menu_handler(update, context)
     except Exception as e:
         logger.error(f"Error in order command: {e}")
@@ -420,6 +416,13 @@ async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def topup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /topup"""
     await show_topup_menu(update, context)
+
+async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler untuk command /admin"""
+    if str(update.message.from_user.id) in ADMIN_IDS:
+        await admin_menu(update, context)
+    else:
+        await update.message.reply_text("❌ Anda bukan admin!")
 
 # ==================== UTILITY HANDLERS ====================
 async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -547,60 +550,67 @@ def main():
             application.add_handler(edit_produk_conv_handler)
             logger.info("✅ Admin edit produk conversation handler registered")
         
+        # Add order conversation handler
+        if ORDER_AVAILABLE:
+            order_conv_handler = get_order_conversation_handler()
+            if order_conv_handler:
+                application.add_handler(order_conv_handler)
+                logger.info("✅ Order conversation handler registered")
+        
         # 2. Command Handlers - Basic
         basic_handlers = [
             CommandHandler("start", start),
             CommandHandler("help", help_command),
             CommandHandler("saldo", saldo_command),
             CommandHandler("topup", topup_command),
-            CommandHandler("stock", stock_command),
+            CommandHandler("stock", stock_command_handler),
             CommandHandler("order", order_command),
+            CommandHandler("admin", admin_command),
         ]
         
         for handler in basic_handlers:
             application.add_handler(handler)
         
-        # 3. Admin Handlers
+        logger.info("✅ Basic command handlers registered")
+        
+        # 3. Callback Query Handlers
+        application.add_handler(CallbackQueryHandler(menu_handler, pattern="^menu_"))
+        logger.info("✅ Menu callback handler registered")
+        
+        # Add admin callback handlers if available
         if ADMIN_AVAILABLE:
             admin_handlers = get_admin_handlers()
             for handler in admin_handlers:
                 application.add_handler(handler)
-            logger.info("✅ Admin handlers registered")
+            logger.info("✅ Admin callback handlers registered")
         
-        # 4. Callback Query Handlers
-        callback_handlers = [
-            CallbackQueryHandler(menu_handler, pattern="^menu_"),
-        ]
+        # 4. Message Handlers
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_message))
+        logger.info("✅ Unknown message handler registered")
         
-        if ADMIN_AVAILABLE:
-            callback_handlers.append(
-                CallbackQueryHandler(admin_callback_handler, pattern="^admin_")
-            )
-        
-        for handler in callback_handlers:
-            application.add_handler(handler)
-        
-        # 5. Message Handlers
-        application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            unknown_message
-        ))
-        
-        # 6. Error Handler
+        # 5. Error Handler
         application.add_error_handler(error_handler)
+        logger.info("✅ Error handler registered")
         
-        logger.info("🎉 All handlers registered successfully!")
+        # ==================== START BOT ====================
         
-        # Start Bot
-        logger.info("🤖 Bot is starting polling...")
+        logger.info("🚀 Bot starting...")
+        print("=" * 50)
+        print("🤖 BOT TELEGRAM STARTED SUCCESSFULLY!")
+        print("📍 Status: Running")
+        print("⏰ Started at:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        print("=" * 50)
+        
+        # Start polling
         application.run_polling(
             allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=True
         )
         
     except Exception as e:
-        logger.critical(f"💥 Failed to start bot: {e}")
+        logger.critical(f"❌ Failed to start bot: {e}")
+        print(f"❌ CRITICAL ERROR: {e}")
         sys.exit(1)
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
