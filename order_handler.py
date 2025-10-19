@@ -731,3 +731,43 @@ if __name__ == "__main__":
     print("  - get_order_conv_handler()")
     print("  - get_order_handlers()")
     print("  - register_order_handlers()")
+    def get_conversation_handler():
+    """Return conversation handler for order process"""
+    return ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(menu_handler, pattern="^menu_"),
+            CallbackQueryHandler(choose_group, pattern="^group_"),
+            CallbackQueryHandler(choose_product, pattern="^prod_"),
+            CallbackQueryHandler(confirm_order, pattern="^confirm_order$")
+        ],
+        states={
+            MENU: [
+                CallbackQueryHandler(menu_handler, pattern="^menu_"),
+                CallbackQueryHandler(choose_group, pattern="^group_"),
+                CallbackQueryHandler(choose_product, pattern="^prod_"),
+                CallbackQueryHandler(confirm_order, pattern="^confirm_order$")
+            ],
+            CHOOSING_GROUP: [
+                CallbackQueryHandler(choose_group, pattern="^group_"),
+                CallbackQueryHandler(menu_handler, pattern="^menu_")
+            ],
+            CHOOSING_PRODUCT: [
+                CallbackQueryHandler(choose_product, pattern="^prod_"),
+                CallbackQueryHandler(choose_product, pattern="^page_"),
+                CallbackQueryHandler(menu_handler, pattern="^menu_")
+            ],
+            ENTER_TUJUAN: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, enter_tujuan),
+                CommandHandler('cancel', cancel_order)
+            ],
+            CONFIRM_ORDER: [
+                CallbackQueryHandler(confirm_order, pattern="^confirm_order$"),
+                CallbackQueryHandler(cancel_order, pattern="^menu_main$")
+            ]
+        },
+        fallbacks=[
+            CommandHandler('cancel', cancel_order),
+            CallbackQueryHandler(cancel_order, pattern="^menu_main$")
+        ],
+        allow_reentry=True
+    )
