@@ -783,9 +783,20 @@ async def back_to_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await show_group_menu(update, context)
 
 async def enter_tujuan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle destination input"""
+    """Handle destination input - FIXED: Handle both message and callback query"""
     try:
-        tujuan = update.message.text.strip()
+        # Check if this is a message (text input) or callback query
+        if update.message:
+            tujuan = update.message.text.strip()
+            user_message = update.message
+        elif update.callback_query:
+            await update.callback_query.answer()
+            return ENTER_TUJUAN
+        else:
+            await safe_reply_message(update, "❌ Format input tidak valid.")
+            return ENTER_TUJUAN
+        
+        logger.info(f"ENTER_TUJUAN: User input received: {tujuan}")
         
         # Basic validation
         if not tujuan:
@@ -831,6 +842,7 @@ async def enter_tujuan(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return ENTER_TUJUAN
         
         # Proceed to confirmation
+        logger.info(f"ENTER_TUJUAN: Valid input received, proceeding to confirmation")
         return await show_confirmation(update, context)
         
     except Exception as e:
@@ -1208,9 +1220,9 @@ async def start_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start order process from command"""
     return await menu_main(update, context)
 
-# Conversation handler
+# Conversation handler - FIXED VERSION
 def get_conversation_handler():
-    """Return the conversation handler for orders"""
+    """Return the conversation handler for orders - FIXED VERSION"""
     return ConversationHandler(
         entry_points=[
             CallbackQueryHandler(menu_handler, pattern="^menu_"),
@@ -1238,10 +1250,6 @@ def get_conversation_handler():
             CONFIRM_ORDER: [
                 CallbackQueryHandler(process_order, pattern="^confirm_order$"),
                 CallbackQueryHandler(cancel_order, pattern="^cancel_order$"),
-                CallbackQueryHandler(menu_handler, pattern="^menu_")
-            ],
-            ORDER_PROCESSING: [
-                CallbackQueryHandler(check_order_status, pattern="^check_status_"),
                 CallbackQueryHandler(menu_handler, pattern="^menu_")
             ]
         },
