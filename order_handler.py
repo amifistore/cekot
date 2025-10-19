@@ -25,10 +25,9 @@ logger = logging.getLogger(__name__)
 MENU, CHOOSING_GROUP, CHOOSING_PRODUCT, ENTER_TUJUAN, CONFIRM_ORDER, ORDER_PROCESSING = range(6)
 PRODUCTS_PER_PAGE = 8
 
-# Database path - FIX: Use consistent database path
+# Database path
 DB_PATH = getattr(database, 'DB_PATH', 'bot_database.db')
 
-# PATCH: Helper agar edit_message_text tidak error jika "Message is not modified"
 async def safe_edit_message_text(callback_query, *args, **kwargs):
     """Safely edit message text with error handling"""
     try:
@@ -36,10 +35,8 @@ async def safe_edit_message_text(callback_query, *args, **kwargs):
         return True
     except telegram.error.BadRequest as e:
         if "Message is not modified" in str(e):
-            # Ignore this specific error
             return True
         elif "Message can't be deleted" in str(e):
-            # Try sending new message instead
             try:
                 await callback_query.message.reply_text(*args, **kwargs)
                 return True
@@ -69,7 +66,6 @@ async def safe_reply_message(update, *args, **kwargs):
 def get_grouped_products():
     """Get products grouped by category from database"""
     try:
-        # FIX: Use consistent database path
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("""
@@ -88,7 +84,7 @@ def get_grouped_products():
             # Use category from database, fallback to code-based grouping
             group = category or "Lainnya"
             
-            # Additional grouping for specific product codes if needed
+            # Additional grouping for specific product codes
             if code.startswith("BPAL"):
                 group = "BPAL (Bonus Akrab L)"
             elif code.startswith("BPAXXL"):
@@ -165,7 +161,7 @@ async def menu_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         text = (
-            f"🤖 *Selamat Datang!*\n\n"
+            f"🤖 *Selamat Datamaig!*\n\n"
             f"Halo, *{user.full_name or user.username or 'User'}*!\n"
             f"💰 Saldo Anda: *Rp {saldo:,.0f}*\n\n"
             f"Pilih menu di bawah:"
@@ -214,7 +210,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Jika mengalami masalah, hubungi admin.\n\n"
                 "**Cara Order:**\n"
                 "1. Pilih *Beli Produk*\n"
-                "2. Pilih grup produk\n" 
+                "2. Pilih kategori produk\n" 
                 "3. Pilih produk yang diinginkan\n"
                 "4. Masukkan nomor tujuan\n"
                 "5. Konfirmasi order\n\n"
@@ -283,14 +279,12 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return MENU
 
 async def show_stock_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show stock menu with fallback"""
+    """Show stock menu"""
     query = update.callback_query
     await query.answer()
     
     try:
-        # Fallback to direct database check
         await get_stock_from_database(update, context)
-        
     except Exception as e:
         logger.error(f"Error showing stock menu: {e}")
         await safe_edit_message_text(
@@ -307,7 +301,6 @@ async def get_stock_from_database(update: Update, context: ContextTypes.DEFAULT_
     query = update.callback_query
     
     try:
-        # FIX: Use consistent database path
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("""
@@ -415,15 +408,20 @@ async def show_order_history(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
 
 async def show_group_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show product groups menu from database"""
+    """Show product groups menu from database - FIXED VERSION"""
     try:
+        query = update.callback_query
+        await query.answer()
+        
+        logger.info("Loading product groups from database...")
         groups = get_grouped_products()
         
         if not groups:
+            logger.warning("No products found in database")
             await safe_edit_message_text(
-                update.callback_query,
+                query,
                 "❌ Tidak ada produk yang tersedia saat ini.\n\n"
-                "ℹ️ Silakan hubungi admin untuk mengupdate produk atau gunakan menu admin untuk sync produk dari provider.",
+                "ℹ️ Silakan hubungi admin untuk mengupdate produk.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔄 Coba Lagi", callback_data="menu_order")],
                     [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
@@ -431,39 +429,55 @@ async def show_group_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return MENU
         
-        # Calculate total products correctly
+        # Calculate total products
         total_products = sum(len(group_products) for group_products in groups.values())
+        logger.info(f"Showing {len(groups)} groups with {total_products} products")
         
+        # Create keyboard with better formatting
         keyboard = []
         for group, group_products in groups.items():
             # Add stock info to group button
             total_in_group = len(group_products)
             available_in_group = sum(1 for p in group_products if p.get('stock', 0) > 0)
             
+            # Create button text with emoji based on availability
             if available_in_group == 0:
-                button_text = f"🔴 {group} ({total_in_group})"
+                button_text = f"🔴 {group}"
             elif available_in_group < total_in_group:
-                button_text = f"🟡 {group} ({available_in_group}/{total_in_group})"
+                button_text = f"🟡 {group}"
             else:
-                button_text = f"🟢 {group} ({total_in_group})"
+                button_text = f"🟢 {group}"
+            
+            # Add product count
+            button_text += f" ({len(group_products)})"
                 
             keyboard.append([InlineKeyboardButton(button_text, callback_data=f"group_{group}")])
         
+        # Add navigation buttons
+        keyboard.append([InlineKeyboardButton("🔄 Refresh", callback_data="menu_order")])
         keyboard.append([InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await safe_edit_message_text(
-            update.callback_query,
+        # Create message with clear instructions
+        message_text = (
             f"📦 *PILIH KATEGORI PRODUK*\n\n"
-            f"📊 **Total {total_products} produk aktif**\n\n"
+            f"📊 Ditemukan *{total_products} produk* dalam *{len(groups)} kategori*\n\n"
             f"🟢 Semua tersedia | 🟡 Sebagian tersedia | 🔴 Stok habis\n\n"
-            f"Silakan pilih kategori produk yang diinginkan:",
+            f"Silakan pilih kategori produk:"
+        )
+        
+        logger.info(f"Sending group menu with {len(keyboard)} buttons")
+        await safe_edit_message_text(
+            query,
+            message_text,
             reply_markup=reply_markup,
             parse_mode="Markdown"
         )
         
+        # Store groups in context for later use
         context.user_data["groups"] = groups
+        logger.info("Successfully displayed group menu")
         return CHOOSING_GROUP
         
     except Exception as e:
@@ -525,6 +539,8 @@ async def choose_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
         group_name = query.data.replace("group_", "")
         groups = context.user_data.get("groups", {})
         products = groups.get(group_name, [])
+        
+        logger.info(f"User selected group: {group_name} with {len(products)} products")
         
         if not products:
             await safe_edit_message_text(
