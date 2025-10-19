@@ -731,7 +731,8 @@ if __name__ == "__main__":
     print("  - get_order_conv_handler()")
     print("  - get_order_handlers()")
     print("  - register_order_handlers()")
-    def get_conversation_handler():
+    
+def get_conversation_handler():
     """Return conversation handler for order process"""
     return ConversationHandler(
         entry_points=[
