@@ -538,8 +538,6 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
             provider_order_id=api_response.get('data', {}).get('order_id'),
             response_data=json.dumps(api_response)
         )
-        
-        # Update user balance (already handled in database method)
     else:
         db.update_order_status(
             order_id,
@@ -568,130 +566,59 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await processing_msg.edit_text(
+    await query.edit_message_text(
         format_order_result(order_data, api_response),
         reply_markup=reply_markup,
         parse_mode='Markdown'
     )
     
-    # Clean up context
-    for key in ['selected_product', 'customer_input', 'user_balance', 'order_id']:
-        context.user_data.pop(key, None)
-    
     return ConversationHandler.END
-
-async def handle_order_retry(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle retry untuk pesanan yang gagal"""
-    query = update.callback_query
-    await query.answer()
-    
-    data = query.data
-    product_code = data.split(":")[1]
-    
-    # Get product details
-    product = db.get_product_by_code(product_code)
-    if not product:
-        await query.edit_message_text("❌ Produk tidak ditemukan.")
-        return
-    
-    context.user_data['selected_product'] = product
-    context.user_data['user_balance'] = db.get_user_balance(str(query.from_user.id))
-    
-    # Ask for customer input again
-    product_name_lower = product['name'].lower()
-    
-    if any(x in product_name_lower for x in ['pulsa', 'data', 'internet', 'kuota']):
-        input_prompt = f"📞 **Masukkan nomor handphone:**"
-    elif any(x in product_name_lower for x in ['listrik', 'pln']):
-        input_prompt = f"🏠 **Masukkan nomor meter/listrik:**"
-    elif any(x in product_name_lower for x in ['game', 'voucher']):
-        input_prompt = f"🎯 **Masukkan ID game/username:**"
-    else:
-        input_prompt = f"📝 **Masukkan data yang diperlukan:**"
-    
-    await query.edit_message_text(
-        f"🔄 **Mengulang Pesanan**\n\n"
-        f"📦 **Produk:** {product['name']}\n"
-        f"💰 **Harga:** Rp {product['price']:,.0f}\n\n"
-        f"{input_prompt}\n\n"
-        f"❌ **Ketik /cancel untuk membatalkan**",
-        parse_mode='Markdown'
-    )
-    
-    return INPUT_CUSTOMER_DATA
 
 # ==================== ORDER HISTORY ====================
 async def show_order_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Tampilkan riwayat pesanan user"""
     query = update.callback_query
-    await query.answer()
-    
     user = query.from_user
-    user_id = db.get_or_create_user(str(user.id), user.username, user.full_name)
     
     # Get user orders
-    orders = db.get_user_orders(str(user.id), limit=15)
+    orders = db.get_user_orders(str(user.id), limit=10)
     
     if not orders:
         keyboard = [
-            [InlineKeyboardButton("🛒 Pesan Sekarang", callback_data="menu_order")],
+            [InlineKeyboardButton("🛒 Belanja Sekarang", callback_data="menu_order")],
             [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await query.edit_message_text(
-            "📭 **Belum ada riwayat pesanan.**\n\n"
-            "Yuk pesan produk pertama Anda! 🛒",
+            "📜 **RIWAYAT PESANAN**\n\n"
+            "Belum ada riwayat pesanan.\n"
+            "Yuk mulai belanja produk favorit Anda! 🛒",
             reply_markup=reply_markup
         )
         return
     
-    # Calculate statistics
-    total_orders = len(orders)
-    completed_orders = len([o for o in orders if o['status'] == 'completed'])
-    pending_orders = len([o for o in orders if o['status'] == 'pending'])
-    failed_orders = len([o for o in orders if o['status'] == 'failed'])
-    total_spent = sum(o['price'] for o in orders if o['status'] == 'completed')
+    message = "📜 **RIWAYAT PESANAN TERAKHIR**\n\n"
     
-    message = (
-        f"📜 **RIWAYAT PESANAN**\n\n"
-        f"📊 **Statistik:**\n"
-        f"├ Total Pesanan: {total_orders}\n"
-        f"├ Berhasil: {completed_orders}\n"
-        f"├ Gagal: {failed_orders}\n"
-        f"├ Pending: {pending_orders}\n"
-        f"└ Total Pengeluaran: Rp {total_spent:,}\n\n"
-        f"📋 **Pesanan Terbaru:**\n"
-    )
-    
-    # Show recent orders
-    for order in orders[:8]:
-        status_icon = {
-            'completed': '✅',
-            'pending': '⏳', 
-            'failed': '❌'
-        }.get(order['status'], '❓')
-        
-        status_text = order['status'].title()
-        
-        # Format time
-        created_time = datetime.fromisoformat(order['created_at'].replace('Z', '+00:00'))
-        time_str = created_time.strftime('%d/%m %H:%M')
+    for order in orders[:5]:  # Show last 5 orders
+        status_icon = "✅" if order['status'] == 'completed' else "❌"
+        status_text = order['status'].upper()
         
         message += (
-            f"{status_icon} `{order['id']:04d}` | "
-            f"{order['product_name'][:15]:<15} | "
-            f"Rp {order['price']:>7,} | "
-            f"{status_text:>8} | "
-            f"{time_str}\n"
+            f"{status_icon} **{order['product_name']}**\n"
+            f"├ 💰 Rp {order['price']:,.0f}\n"
+            f"├ 📝 {order['customer_input']}\n"
+            f"├ 🆔 `{order['id']}`\n"
+            f"├ 📅 {order['created_at'][:16]}\n"
+            f"└ 🔄 {status_text}\n\n"
         )
     
-    if len(orders) > 8:
-        message += f"\n... dan {len(orders) - 8} pesanan sebelumnya"
+    if len(orders) > 5:
+        message += f"📋 ... dan {len(orders) - 5} pesanan lainnya\n\n"
     
     keyboard = [
-        [InlineKeyboardButton("🛒 Pesan Sekarang", callback_data="menu_order")],
-        [InlineKeyboardButton("🔄 Refresh", callback_data="order_history")],
+        [InlineKeyboardButton("🛒 Pesan Lagi", callback_data="menu_order")],
+        [InlineKeyboardButton("📋 Semua Riwayat", callback_data="full_history")],
         [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -702,115 +629,105 @@ async def show_order_history(update: Update, context: ContextTypes.DEFAULT_TYPE)
         parse_mode='Markdown'
     )
 
-async def show_order_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show detailed order information"""
+# ==================== UTILITY FUNCTIONS ====================
+async def cancel_order_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel order process"""
+    await update.message.reply_text("❌ **Pemesanan Dibatalkan**")
+    return ConversationHandler.END
+
+async def handle_retry_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle retry order"""
     query = update.callback_query
     await query.answer()
     
     data = query.data
-    order_id = int(data.split(":")[1])
+    product_code = data.split(":")[1]
     
-    # Get order details from database
-    # This would require additional database method to get single order
-    # For now, we'll show a placeholder
-    await query.edit_message_text(
-        f"🔍 **Detail Pesanan #{order_id}**\n\n"
-        f"Fitur detail pesanan dalam pengembangan...\n\n"
-        f"⏰ Akan segera hadir di update berikutnya!",
-        parse_mode='Markdown'
-    )
+    # Clear previous order data
+    context.user_data.clear()
+    
+    # Get product and start order process again
+    product = db.get_product_by_code(product_code)
+    if product:
+        context.user_data['selected_product'] = product
+        user = query.from_user
+        context.user_data['user_balance'] = db.get_user_balance(str(user.id))
+        
+        await query.edit_message_text(
+            f"🔄 **MENGULANG PEMESANAN**\n\n"
+            f"📦 **Produk:** {product['name']}\n"
+            f"💰 **Harga:** Rp {product['price']:,.0f}\n\n"
+            f"📝 **Masukkan data yang diperlukan:**\n"
+            f"✅ Contoh: `081234567890` (untuk pulsa)\n\n"
+            f"❌ **Ketik /cancel untuk membatalkan**",
+            parse_mode='Markdown'
+        )
+        
+        return INPUT_CUSTOMER_DATA
+    else:
+        await query.edit_message_text("❌ Produk tidak ditemukan. Silakan pilih produk lain.")
+        return ConversationHandler.END
 
-# ==================== CONVERSATION HANDLERS ====================
-async def cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Cancel order process"""
-    await update.message.reply_text("❌ **Pemesanan Dibatalkan**")
-    
-    # Clean up context
-    for key in ['selected_product', 'customer_input', 'user_balance', 'current_products', 'current_category']:
-        context.user_data.pop(key, None)
-    
-    return ConversationHandler.END
-
+# ==================== CONVERSATION HANDLER ====================
 def get_order_conv_handler():
-    """Return order conversation handler"""
+    """Return conversation handler untuk order process"""
     return ConversationHandler(
         entry_points=[
-            CallbackQueryHandler(handle_order_category, pattern="^order_category:"),
-            CallbackQueryHandler(handle_product_selection, pattern="^select_product:"),
-            CallbackQueryHandler(handle_order_retry, pattern="^retry_order:")
+            CallbackQueryHandler(handle_product_selection, pattern="^select_product:")
         ],
         states={
-            SELECT_CATEGORY: [
-                CallbackQueryHandler(handle_order_category, pattern="^order_category:"),
-            ],
-            SELECT_PRODUCT: [
-                CallbackQueryHandler(handle_product_selection, pattern="^select_product:"),
-                CallbackQueryHandler(handle_products_pagination, pattern="^products_page:"),
-            ],
             INPUT_CUSTOMER_DATA: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_customer_input),
-                CommandHandler('cancel', cancel_order)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_customer_input)
             ],
             CONFIRM_ORDER: [
                 CallbackQueryHandler(handle_order_confirmation, pattern="^(confirm_order|cancel_order)$")
             ],
             PROCESS_ORDER: [
-                # Processing state - mostly handled by process_order function
+                CallbackQueryHandler(process_order, pattern="^process_order$")
             ]
         },
         fallbacks=[
-            CommandHandler('cancel', cancel_order),
-            CallbackQueryHandler(show_order_menu, pattern="^menu_order$")
+            CommandHandler("cancel", cancel_order_process),
+            MessageHandler(filters.COMMAND, cancel_order_process)
         ],
         allow_reentry=True
     )
 
 def get_order_handlers():
-    """Return all order handlers untuk registration"""
+    """Return semua order-related handlers"""
     return [
-        get_order_conv_handler(),
         CallbackQueryHandler(show_order_menu, pattern="^menu_order$"),
-        CallbackQueryHandler(show_order_history, pattern="^order_history$"),
-        CallbackQueryHandler(show_order_details, pattern="^order_detail:"),
+        CallbackQueryHandler(handle_order_category, pattern="^order_category:"),
         CallbackQueryHandler(handle_products_pagination, pattern="^products_page:"),
+        CallbackQueryHandler(show_order_history, pattern="^order_history$"),
+        CallbackQueryHandler(handle_retry_order, pattern="^retry_order:"),
+        CallbackQueryHandler(show_order_history, pattern="^full_history$")
     ]
 
 # ==================== COMMAND HANDLERS ====================
 async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /order"""
-    return await show_order_menu(update, context)
+    await show_order_menu(update, context)
 
 async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /history"""
-    return await show_order_history(update, context)
+    await show_order_history(update, context)
 
-# ==================== UTILITY FUNCTIONS ====================
-async def get_user_order_stats(user_id: str) -> Dict:
-    """Get user order statistics"""
-    try:
-        orders = db.get_user_orders(user_id, limit=100)
-        
-        total_orders = len(orders)
-        completed_orders = len([o for o in orders if o['status'] == 'completed'])
-        pending_orders = len([o for o in orders if o['status'] == 'pending'])
-        failed_orders = len([o for o in orders if o['status'] == 'failed'])
-        total_spent = sum(o['price'] for o in orders if o['status'] == 'completed')
-        
-        return {
-            'total_orders': total_orders,
-            'completed_orders': completed_orders,
-            'pending_orders': pending_orders,
-            'failed_orders': failed_orders,
-            'total_spent': total_spent,
-            'success_rate': (completed_orders / total_orders * 100) if total_orders > 0 else 0
-        }
-    except Exception as e:
-        logger.error(f"Error getting user order stats: {e}")
-        return {
-            'total_orders': 0,
-            'completed_orders': 0,
-            'pending_orders': 0,
-            'failed_orders': 0,
-            'total_spent': 0,
-            'success_rate': 0
-        }
+# Register command handlers
+def register_order_handlers(application):
+    """Register order handlers dengan application"""
+    application.add_handler(get_order_conv_handler())
+    application.add_handlers(get_order_handlers())
+    application.add_handler(CommandHandler("order", order_command))
+    application.add_handler(CommandHandler("history", history_command))
+    
+    logger.info("✅ Order handlers registered successfully")
+
+if __name__ == "__main__":
+    # Test functions
+    print("✅ Order Handler Module Loaded Successfully")
+    print("📋 Available Functions:")
+    print("  - show_order_menu()")
+    print("  - get_order_conv_handler()")
+    print("  - get_order_handlers()")
+    print("  - register_order_handlers()")
