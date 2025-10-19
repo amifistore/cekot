@@ -57,6 +57,7 @@ async def admin_check(update, context) -> bool:
 async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_check(update, context):
         return
+    
     keyboard = [
         [InlineKeyboardButton("🔄 Update Produk", callback_data="admin_update")],
         [InlineKeyboardButton("📋 List Produk", callback_data="admin_list_produk")],
@@ -71,6 +72,7 @@ async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🧹 Cleanup Data", callback_data="admin_cleanup")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
+    
     if getattr(update, "message", None):
         await update.message.reply_text(
             "👑 **MENU ADMIN**\n\nSilakan pilih fitur:",
@@ -97,9 +99,12 @@ async def admin_menu_from_query(query, context):
 async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    
     if not await admin_check(update, context):
         return
+        
     data = query.data
+    
     if data == "admin_update":
         await updateproduk(query, context)
     elif data == "admin_list_produk":
@@ -130,33 +135,36 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
         await reject_topup(update, context)
     elif data == "admin_back":
         await admin_menu_from_query(query, context)
+    else:
+        await query.message.reply_text("❌ Perintah tidak dikenali.")
 
 # ============================
 # FITUR UPDATE PRODUK
 # ============================
 
 async def ensure_products_table():
-    async with aiosqlite.connect(DB_PATH) as conn:
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS products (
-                code TEXT PRIMARY KEY,
-                name TEXT,
-                price REAL,
-                status TEXT DEFAULT 'active',
-                description TEXT,
-                category TEXT,
-                provider TEXT,
-                gangguan INTEGER DEFAULT 0,
-                kosong INTEGER DEFAULT 0,
-                stock INTEGER DEFAULT 0,
-                updated_at TEXT
-            )
-        """)
-        try:
-            await conn.execute("SELECT stock FROM products LIMIT 1")
-        except Exception:
-            await conn.execute("ALTER TABLE products ADD COLUMN stock INTEGER DEFAULT 0")
-        await conn.commit()
+    try:
+        async with aiosqlite.connect(DB_PATH) as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS products (
+                    code TEXT PRIMARY KEY,
+                    name TEXT,
+                    price REAL,
+                    status TEXT DEFAULT 'active',
+                    description TEXT,
+                    category TEXT,
+                    provider TEXT,
+                    gangguan INTEGER DEFAULT 0,
+                    kosong INTEGER DEFAULT 0,
+                    stock INTEGER DEFAULT 0,
+                    updated_at TEXT
+                )
+            """)
+            await conn.commit()
+            return True
+    except Exception as e:
+        logger.error(f"Error ensuring products table: {e}")
+        return False
 
 async def updateproduk(update_or_query, context):
     if hasattr(update_or_query, "message") and update_or_query.message:
@@ -167,13 +175,21 @@ async def updateproduk(update_or_query, context):
         user_id = update_or_query.from_user.id
 
     await msg_func("🔄 Memperbarui Produk...")
+    
+    # Check API key
+    if not hasattr(config, 'API_KEY_PROVIDER') or not config.API_KEY_PROVIDER:
+        await msg_func("❌ API Key Provider tidak ditemukan di config.py")
+        return
+
     api_key = config.API_KEY_PROVIDER
     url = f"https://panel.khfy-store.com/api_v2/list_product?api_key={api_key}"
 
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=30) as resp:
-                resp.raise_for_status()
+                if resp.status != 200:
+                    await msg_func(f"❌ Gagal mengambil data: Status {resp.status}")
+                    return
                 data = await resp.json()
     except Exception as e:
         await msg_func(f"❌ Gagal mengambil data: {e}")
@@ -188,7 +204,10 @@ async def updateproduk(update_or_query, context):
         await msg_func("⚠️ Tidak ada data dari provider.")
         return
 
-    await ensure_products_table()
+    if not await ensure_products_table():
+        await msg_func("❌ Gagal memastikan tabel produk.")
+        return
+
     async with aiosqlite.connect(DB_PATH) as conn:
         await conn.execute("UPDATE products SET status = 'inactive'")
         count = 0
@@ -200,6 +219,8 @@ async def updateproduk(update_or_query, context):
             kosong = int(prod.get("kosong", 0))
             provider_code = str(prod.get("kode_provider", "")).strip()
             description = str(prod.get("deskripsi", "")).strip() or f"Produk {name}"
+            
+            # Kategorisasi produk
             category = "Umum"
             name_lower = name.lower()
             if "pulsa" in name_lower:
@@ -214,8 +235,10 @@ async def updateproduk(update_or_query, context):
                 category = "E-Money"
             elif "akrab" in name_lower or "bonus" in name_lower:
                 category = "Paket Bonus"
+            
             if not code or not name or price <= 0 or gangguan == 1 or kosong == 1:
                 continue
+                
             now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             await conn.execute("""
                 INSERT INTO products (code, name, price, status, description, category, provider, gangguan, kosong, stock, updated_at)
@@ -232,7 +255,9 @@ async def updateproduk(update_or_query, context):
                     updated_at=excluded.updated_at
             """, (code, name, price, description, category, provider_code, gangguan, kosong, now))
             count += 1
+            
         await conn.commit()
+
     await log_admin_action(user_id, "UPDATE_PRODUCTS", f"Updated: {count} produk")
     await msg_func(
         f"✅ **Update Produk Berhasil**\n\n"
@@ -252,7 +277,10 @@ async def listproduk(update_or_query, context):
     else:
         msg_func = update_or_query.edit_message_text
 
-    await ensure_products_table()
+    if not await ensure_products_table():
+        await msg_func("❌ Gagal mengakses database produk.")
+        return
+
     async with aiosqlite.connect(DB_PATH) as conn:
         async with conn.execute("""
             SELECT code, name, price, category, status 
@@ -262,16 +290,24 @@ async def listproduk(update_or_query, context):
             LIMIT 50
         """) as cursor:
             rows = await cursor.fetchall()
+            
     if not rows:
         await msg_func("📭 Tidak ada produk aktif.")
         return
-    msg = f"📋 **DAFTAR PRODUK AKTIF**\n\n"
+        
+    msg = "📋 **DAFTAR PRODUK AKTIF**\n\n"
+    current_category = ""
+    
     for code, name, price, category, status in rows:
-        msg += f"- `{code}` | {name} | Rp {price:,.0f} | {category}\n"
+        if category != current_category:
+            msg += f"\n**{category.upper()}:**\n"
+            current_category = category
+        msg += f"- `{code}` | {name} | Rp {price:,.0f}\n"
+        
     await msg_func(msg, parse_mode='Markdown')
 
 # ============================
-# FITUR EDIT PRODUK
+# FITUR EDIT PRODUK - FIXED
 # ============================
 
 async def edit_produk_start_from_query(query, context):
@@ -281,23 +317,41 @@ async def edit_produk_start_from_query(query, context):
         [InlineKeyboardButton("⬅️ Kembali ke Menu Admin", callback_data="admin_back")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(
-        "🛠️ **MENU EDIT PRODUK**\n\n"
-        "Pilih jenis edit yang ingin dilakukan:",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
-    return EDIT_MENU
+    
+    try:
+        await query.edit_message_text(
+            "🛠️ **MENU EDIT PRODUK**\n\n"
+            "Pilih jenis edit yang ingin dilakukan:",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+        return EDIT_MENU
+    except Exception as e:
+        logger.error(f"Error in edit_produk_start_from_query: {e}")
+        await query.message.reply_text(
+            "🛠️ **MENU EDIT PRODUK**\n\n"
+            "Pilih jenis edit yang ingin dilakukan:",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+        return EDIT_MENU
 
 async def edit_produk_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    
     if not await admin_check(update, context):
         return ConversationHandler.END
+        
     data = query.data
-    context.user_data['edit_type'] = data
+    
     if data in ['edit_harga', 'edit_deskripsi']:
-        await ensure_products_table()
+        context.user_data['edit_type'] = data
+        
+        if not await ensure_products_table():
+            await query.edit_message_text("❌ Gagal mengakses database produk.")
+            return EDIT_MENU
+
         async with aiosqlite.connect(DB_PATH) as conn:
             async with conn.execute("""
                 SELECT code, name, price 
@@ -307,16 +361,20 @@ async def edit_produk_menu_handler(update: Update, context: ContextTypes.DEFAULT
                 LIMIT 50
             """) as cursor:
                 products = await cursor.fetchall()
+                
         if not products:
             await query.edit_message_text("❌ Tidak ada produk yang tersedia untuk diedit.")
             return EDIT_MENU
+            
         keyboard = []
         for code, name, price in products:
             btn_text = f"{name} - Rp {price:,.0f}"
             if len(btn_text) > 50:
                 btn_text = f"{name[:30]}... - Rp {price:,.0f}"
             keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"select_product:{code}")])
+            
         keyboard.append([InlineKeyboardButton("⬅️ Kembali", callback_data="back_to_edit_menu")])
+        
         edit_type_text = "harga" if data == "edit_harga" else "deskripsi"
         await query.edit_message_text(
             f"📦 **PILIH PRODUK UNTUK EDIT {edit_type_text.upper()}**\n\nPilih produk dari daftar di bawah:",
@@ -324,22 +382,33 @@ async def edit_produk_menu_handler(update: Update, context: ContextTypes.DEFAULT
             parse_mode='Markdown'
         )
         return CHOOSE_PRODUCT
+        
     elif data == "admin_back":
         await admin_menu_from_query(query, context)
         return ConversationHandler.END
+        
     elif data == "back_to_edit_menu":
         return await edit_produk_start_from_query(query, context)
+        
+    return EDIT_MENU
 
 async def select_product_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    
     if not await admin_check(update, context):
         return ConversationHandler.END
+        
     data = query.data
+    
     if data.startswith('select_product:'):
         product_code = data.split(':')[1]
         context.user_data['selected_product'] = product_code
-        await ensure_products_table()
+        
+        if not await ensure_products_table():
+            await query.edit_message_text("❌ Gagal mengakses database produk.")
+            return EDIT_MENU
+
         async with aiosqlite.connect(DB_PATH) as conn:
             async with conn.execute("""
                 SELECT code, name, price, description 
@@ -347,6 +416,7 @@ async def select_product_handler(update: Update, context: ContextTypes.DEFAULT_T
                 WHERE code = ?
             """, (product_code,)) as cursor:
                 product = await cursor.fetchone()
+                
         if product:
             code, name, price, description = product
             context.user_data['current_product'] = {
@@ -355,6 +425,7 @@ async def select_product_handler(update: Update, context: ContextTypes.DEFAULT_T
                 'price': price,
                 'description': description
             }
+            
             edit_type = context.user_data.get('edit_type')
             if edit_type == 'edit_harga':
                 await log_admin_action(query.from_user.id, "EDIT_HARGA_START", f"Product: {code}")
@@ -367,6 +438,7 @@ async def select_product_handler(update: Update, context: ContextTypes.DEFAULT_T
                     parse_mode='Markdown'
                 )
                 return EDIT_HARGA
+                
             elif edit_type == 'edit_deskripsi':
                 await log_admin_action(query.from_user.id, "EDIT_DESKRIPSI_START", f"Product: {code}")
                 current_desc = description if description else "Belum ada deskripsi"
@@ -379,12 +451,14 @@ async def select_product_handler(update: Update, context: ContextTypes.DEFAULT_T
                     parse_mode='Markdown'
                 )
                 return EDIT_DESKRIPSI
+                
     await query.edit_message_text("❌ Terjadi kesalahan. Silakan coba lagi.")
     return EDIT_MENU
 
 async def edit_harga_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_check(update, context):
         return ConversationHandler.END
+        
     try:
         new_price = float(update.message.text.replace(',', '').strip())
         if new_price <= 0:
@@ -393,14 +467,20 @@ async def edit_harga_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     except ValueError:
         await update.message.reply_text("❌ Format harga tidak valid. Kirim hanya angka. Silakan coba lagi:")
         return EDIT_HARGA
+        
     product_data = context.user_data.get('current_product')
     if not product_data:
         await update.message.reply_text("❌ Data produk tidak ditemukan. Silakan mulai ulang.")
         return ConversationHandler.END
+        
     product_code = product_data['code']
     product_name = product_data['name']
     old_price = product_data['price']
-    await ensure_products_table()
+    
+    if not await ensure_products_table():
+        await update.message.reply_text("❌ Gagal mengakses database produk.")
+        return ConversationHandler.END
+
     async with aiosqlite.connect(DB_PATH) as conn:
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         await conn.execute("""
@@ -409,12 +489,16 @@ async def edit_harga_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             WHERE code = ?
         """, (new_price, now, product_code))
         await conn.commit()
-    await log_admin_action(update.message.from_user.id, "EDIT_HARGA_SUCCESS", f"Product: {product_code}, Old: {old_price}, New: {new_price}")
+        
+    await log_admin_action(update.message.from_user.id, "EDIT_HARGA_SUCCESS", 
+                         f"Product: {product_code}, Old: {old_price}, New: {new_price}")
+                         
     keyboard = [
         [InlineKeyboardButton("✏️ Edit Produk Lain", callback_data="back_to_edit_menu")],
         [InlineKeyboardButton("❌ Selesai", callback_data="admin_back")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
+    
     await update.message.reply_text(
         f"✅ **HARGA BERHASIL DIUPDATE!**\n\n"
         f"📦 **Produk:** {product_name}\n"
@@ -430,18 +514,25 @@ async def edit_harga_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def edit_deskripsi_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_check(update, context):
         return ConversationHandler.END
+        
     new_description = update.message.text.strip()
     if not new_description:
         await update.message.reply_text("❌ Deskripsi tidak boleh kosong. Silakan coba lagi:")
         return EDIT_DESKRIPSI
+        
     product_data = context.user_data.get('current_product')
     if not product_data:
         await update.message.reply_text("❌ Data produk tidak ditemukan. Silakan mulai ulang.")
         return ConversationHandler.END
+        
     product_code = product_data['code']
     product_name = product_data['name']
     old_description = product_data['description'] or "Belum ada deskripsi"
-    await ensure_products_table()
+    
+    if not await ensure_products_table():
+        await update.message.reply_text("❌ Gagal mengakses database produk.")
+        return ConversationHandler.END
+
     async with aiosqlite.connect(DB_PATH) as conn:
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         await conn.execute("""
@@ -450,12 +541,15 @@ async def edit_deskripsi_handler(update: Update, context: ContextTypes.DEFAULT_T
             WHERE code = ?
         """, (new_description, now, product_code))
         await conn.commit()
+        
     await log_admin_action(update.message.from_user.id, "EDIT_DESKRIPSI_SUCCESS", f"Product: {product_code}")
+    
     keyboard = [
         [InlineKeyboardButton("✏️ Edit Produk Lain", callback_data="back_to_edit_menu")],
         [InlineKeyboardButton("❌ Selesai", callback_data="admin_back")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
+    
     await update.message.reply_text(
         f"✅ **DESKRIPSI BERHASIL DIUPDATE!**\n\n"
         f"📦 **Produk:** {product_name}\n"
@@ -473,47 +567,30 @@ async def edit_produk_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return ConversationHandler.END
 
 # ============================
-# FITUR KELOLA TOPUP
+# FITUR KELOLA TOPUP - FIXED
 # ============================
 
 async def ensure_topup_requests_table():
-    async with aiosqlite.connect(DB_PATH) as conn:
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS topup_requests (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id TEXT NOT NULL,
-                username TEXT,
-                full_name TEXT,
-                amount REAL NOT NULL,
-                status TEXT DEFAULT 'pending',
-                proof_image TEXT,
-                created_at TEXT,
-                updated_at TEXT
-            )
-        """)
-        await conn.commit()
-
-async def topup_list(update_or_query, context):
-    if hasattr(update_or_query, "message") and update_or_query.message:
-        msg_func = update_or_query.message.reply_text
-    else:
-        msg_func = update_or_query.edit_message_text
-    await ensure_topup_requests_table()
-    async with aiosqlite.connect(DB_PATH) as conn:
-        async with conn.execute("""
-            SELECT id, user_id, username, full_name, amount, status, created_at 
-            FROM topup_requests 
-            ORDER BY created_at DESC LIMIT 20
-        """) as cursor:
-            rows = await cursor.fetchall()
-    if not rows:
-        await msg_func("📭 Tidak ada permintaan topup.")
-        return
-    msg = f"💳 **DAFTAR PERMINTAAN TOPUP (20 terbaru):**\n\n"
-    for req_id, user_id, username, full_name, amount, status, created_at in rows:
-        status_emoji = "⏳" if status == 'pending' else "✅" if status == 'approved' else "❌"
-        msg += f"{status_emoji} ID:`{req_id}` User:{full_name or username or user_id} Jumlah:Rp{amount:,.0f} Status:{status} Waktu:{created_at}\n"
-    await msg_func(msg, parse_mode='Markdown')
+    try:
+        async with aiosqlite.connect(DB_PATH) as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS topup_requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    username TEXT,
+                    full_name TEXT,
+                    amount REAL NOT NULL,
+                    status TEXT DEFAULT 'pending',
+                    proof_image TEXT,
+                    created_at TEXT,
+                    updated_at TEXT
+                )
+            """)
+            await conn.commit()
+            return True
+    except Exception as e:
+        logger.error(f"Error ensuring topup table: {e}")
+        return False
 
 async def topup_list_interactive(update_or_query, context):
     """Menampilkan daftar topup dengan tombol interaktif"""
@@ -522,7 +599,10 @@ async def topup_list_interactive(update_or_query, context):
     else:
         msg_func = update_or_query.edit_message_text
         
-    await ensure_topup_requests_table()
+    if not await ensure_topup_requests_table():
+        await msg_func("❌ Gagal mengakses database topup.")
+        return
+
     async with aiosqlite.connect(DB_PATH) as conn:
         async with conn.execute("""
             SELECT id, user_id, username, full_name, amount, status, created_at 
@@ -582,7 +662,10 @@ async def topup_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     request_id = query.data.split(':')[1]
     
-    await ensure_topup_requests_table()
+    if not await ensure_topup_requests_table():
+        await query.edit_message_text("❌ Gagal mengakses database topup.")
+        return
+
     async with aiosqlite.connect(DB_PATH) as conn:
         async with conn.execute("""
             SELECT id, user_id, username, full_name, amount, status, proof_image, created_at 
@@ -625,25 +708,15 @@ async def topup_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🕒 **Waktu Request:** {created_at}\n"
     )
 
-    # Jika ada bukti transfer, tampilkan gambar
-    if proof_image:
-        try:
-            await query.edit_message_caption(
-                caption=message_text,
-                reply_markup=reply_markup,
-                parse_mode='Markdown'
-            )
-        except Exception:
-            # Jika tidak bisa edit caption, kirim pesan baru dengan gambar
-            await query.message.reply_photo(
-                photo=proof_image,
-                caption=message_text,
-                reply_markup=reply_markup,
-                parse_mode='Markdown'
-            )
-            await query.message.delete()
-    else:
+    try:
         await query.edit_message_text(
+            message_text,
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+    except Exception as e:
+        logger.error(f"Error editing message: {e}")
+        await query.message.reply_text(
             message_text,
             reply_markup=reply_markup,
             parse_mode='Markdown'
@@ -659,7 +732,10 @@ async def approve_topup(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     request_id = query.data.split(':')[1]
     
-    await ensure_topup_requests_table()
+    if not await ensure_topup_requests_table():
+        await query.edit_message_text("❌ Gagal mengakses database topup.")
+        return
+
     async with aiosqlite.connect(DB_PATH) as conn:
         # Dapatkan data request
         async with conn.execute("""
@@ -683,12 +759,21 @@ async def approve_topup(update: Update, context: ContextTypes.DEFAULT_TYPE):
             WHERE id = ?
         """, (now, req_id))
         
-        # Tambah saldo user
-        await conn.execute("""
-            UPDATE users 
-            SET saldo = saldo + ? 
-            WHERE telegram_id = ?
-        """, (amount, user_id))
+        # Tambah saldo user menggunakan database manager
+        try:
+            current_saldo = database.get_user_saldo(user_id)
+            new_saldo = current_saldo + amount
+            database.db_manager.get_or_create_user(user_id, username, full_name)
+            
+            import sqlite3
+            user_conn = sqlite3.connect(DB_PATH)
+            user_c = user_conn.cursor()
+            user_c.execute("UPDATE users SET saldo = ? WHERE telegram_id = ?", (new_saldo, user_id))
+            user_conn.commit()
+            user_conn.close()
+            
+        except Exception as e:
+            logger.error(f"Error updating user balance: {e}")
         
         await conn.commit()
 
@@ -744,7 +829,10 @@ async def reject_topup(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     request_id = query.data.split(':')[1]
     
-    await ensure_topup_requests_table()
+    if not await ensure_topup_requests_table():
+        await query.edit_message_text("❌ Gagal mengakses database topup.")
+        return
+
     async with aiosqlite.connect(DB_PATH) as conn:
         # Dapatkan data request
         async with conn.execute("""
@@ -812,7 +900,7 @@ async def reject_topup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ============================
-# FITUR KELOLA SALDO USER
+# FITUR KELOLA SALDO USER - FIXED
 # ============================
 
 async def manage_balance_start(query, context):
@@ -823,13 +911,24 @@ async def manage_balance_start(query, context):
         [InlineKeyboardButton("⬅️ Kembali", callback_data="admin_back")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(
-        "💰 **KELOLA SALDO USER**\n\n"
-        "Pilih aksi yang ingin dilakukan:",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
-    return MANAGE_BALANCE
+    
+    try:
+        await query.edit_message_text(
+            "💰 **KELOLA SALDO USER**\n\n"
+            "Pilih aksi yang ingin dilakukan:",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+        return MANAGE_BALANCE
+    except Exception as e:
+        logger.error(f"Error in manage_balance_start: {e}")
+        await query.message.reply_text(
+            "💰 **KELOLA SALDO USER**\n\n"
+            "Pilih aksi yang ingin dilakukan:",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+        return MANAGE_BALANCE
 
 async def choose_balance_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Memilih aksi tambah atau kurangi saldo"""
@@ -844,12 +943,21 @@ async def choose_balance_action(update: Update, context: ContextTypes.DEFAULT_TY
     
     action_text = "menambah" if data == "add_balance" else "mengurangi"
     
-    await query.edit_message_text(
-        f"💰 **{action_text.upper()} SALDO USER**\n\n"
-        f"Silakan kirim username atau user ID yang ingin {action_text} saldo:",
-        parse_mode='Markdown'
-    )
-    return CHOOSE_USER_BALANCE
+    try:
+        await query.edit_message_text(
+            f"💰 **{action_text.upper()} SALDO USER**\n\n"
+            f"Silakan kirim username atau user ID yang ingin {action_text} saldo:",
+            parse_mode='Markdown'
+        )
+        return CHOOSE_USER_BALANCE
+    except Exception as e:
+        logger.error(f"Error in choose_balance_action: {e}")
+        await query.message.reply_text(
+            f"💰 **{action_text.upper()} SALDO USER**\n\n"
+            f"Silakan kirim username atau user ID yang ingin {action_text} saldo:",
+            parse_mode='Markdown'
+        )
+        return CHOOSE_USER_BALANCE
 
 async def get_user_for_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Mendapatkan user untuk dikelola saldonya"""
@@ -1055,7 +1163,7 @@ async def manage_balance_cancel(update: Update, context: ContextTypes.DEFAULT_TY
     return ConversationHandler.END
 
 # ============================
-# FITUR KELOLA USER
+# FITUR KELOLA USER - FIXED
 # ============================
 
 async def show_users_menu(query, context):
@@ -1066,11 +1174,20 @@ async def show_users_menu(query, context):
         [InlineKeyboardButton("⬅️ Kembali", callback_data="admin_back")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(
-        "👥 **MENU KELOLA USER**\n\nPilih opsi yang diinginkan:",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
+    
+    try:
+        await query.edit_message_text(
+            "👥 **MENU KELOLA USER**\n\nPilih opsi yang diinginkan:",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+    except Exception as e:
+        logger.error(f"Error in show_users_menu: {e}")
+        await query.message.reply_text(
+            "👥 **MENU KELOLA USER**\n\nPilih opsi yang diinginkan:",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
 
 async def list_all_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Menampilkan daftar semua user"""
@@ -1101,24 +1218,32 @@ async def list_all_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await query.edit_message_text(message, reply_markup=reply_markup, parse_mode='Markdown')
+    try:
+        await query.edit_message_text(message, reply_markup=reply_markup, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Error in list_all_users: {e}")
+        await query.message.reply_text(message, reply_markup=reply_markup, parse_mode='Markdown')
 
 async def cek_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     username = args[0] if args else None
     if not username:
-        await update.message.reply_text("❌ Format: `/cek_user <username>`")
+        await update.message.reply_text("❌ Format: `/cek_user <username>`", parse_mode='Markdown')
         return
+        
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT saldo, telegram_id FROM users WHERE username=?", (username,))
     row = c.fetchone()
     conn.close()
+    
     if not row:
-        await update.message.reply_text(f"❌ User tidak ditemukan: `{username}`")
+        await update.message.reply_text(f"❌ User tidak ditemukan: `{username}`", parse_mode='Markdown')
         return
+        
     saldo, telegram_id = row
     admin_status = "✅ Ya" if str(telegram_id) in config.ADMIN_TELEGRAM_IDS else "❌ Tidak"
+    
     await update.message.reply_text(
         f"👤 **INFORMASI USER**\n\n"
         f"📛 **Username:** `{username}`\n"
@@ -1132,7 +1257,7 @@ async def jadikan_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     telegram_id = args[0] if args else None
     if not telegram_id:
-        await update.message.reply_text("❌ Format: `/jadikan_admin <telegram_id>`")
+        await update.message.reply_text("❌ Format: `/jadikan_admin <telegram_id>`", parse_mode='Markdown')
         return
     
     # Cek apakah user ada
@@ -1143,13 +1268,13 @@ async def jadikan_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
     
     if not user:
-        await update.message.reply_text(f"❌ User dengan ID `{telegram_id}` tidak ditemukan.")
+        await update.message.reply_text(f"❌ User dengan ID `{telegram_id}` tidak ditemukan.", parse_mode='Markdown')
         return
     
     username, full_name = user
     
-    if telegram_id in config.ADMIN_TELEGRAM_IDS:
-        await update.message.reply_text(f"❌ User `{telegram_id}` sudah menjadi admin.")
+    if str(telegram_id) in config.ADMIN_TELEGRAM_IDS:
+        await update.message.reply_text(f"❌ User `{telegram_id}` sudah menjadi admin.", parse_mode='Markdown')
         return
     
     config.ADMIN_TELEGRAM_IDS.append(str(telegram_id))
@@ -1165,56 +1290,54 @@ async def jadikan_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ============================
-# FITUR STATISTIK
+# FITUR STATISTIK - FIXED
 # ============================
 
 async def show_stats_menu(query, context):
-    await ensure_products_table()
-    await ensure_topup_requests_table()
-    async with aiosqlite.connect(DB_PATH) as conn:
-        async with conn.execute("SELECT COUNT(*) FROM products WHERE status='active'") as cursor:
-            total_products = (await cursor.fetchone())[0]
-        async with conn.execute("SELECT COUNT(*) FROM products WHERE status='active' AND gangguan = 0 AND kosong = 0") as cursor:
-            available_products = (await cursor.fetchone())[0]
-        async with conn.execute("SELECT COUNT(*) FROM topup_requests WHERE status='pending'") as cursor:
-            pending_topups = (await cursor.fetchone())[0]
-        async with conn.execute("SELECT COUNT(*) FROM topup_requests WHERE status='approved'") as cursor:
-            approved_topups = (await cursor.fetchone())[0]
-        async with conn.execute("SELECT COUNT(*) FROM topup_requests") as cursor:
-            total_topups = (await cursor.fetchone())[0]
-        async with conn.execute("SELECT COUNT(*) FROM users") as cursor:
-            total_users = (await cursor.fetchone())[0]
-        async with conn.execute("SELECT SUM(saldo) FROM users") as cursor:
-            total_balance = (await cursor.fetchone())[0] or 0
-    
-    await query.edit_message_text(
-        f"📊 **STATISTIK SISTEM**\n\n"
-        f"📦 **PRODUK:**\n"
-        f"├ Total Produk: {total_products}\n"
-        f"└ Tersedia: {available_products}\n\n"
-        f"💳 **TOPUP:**\n"
-        f"├ Total: {total_topups}\n"
-        f"├ Pending: {pending_topups}\n"
-        f"└ Approved: {approved_topups}\n\n"
-        f"👥 **USER:**\n"
-        f"├ Total User: {total_users}\n"
-        f"└ Total Saldo: Rp {total_balance:,.0f}\n\n"
-        f"⏰ **Update:** {datetime.now().strftime('%d-%m-%Y %H:%M')}",
-        parse_mode='Markdown'
-    )
+    try:
+        stats = database.get_bot_statistics()
+        
+        await query.edit_message_text(
+            f"📊 **STATISTIK SISTEM**\n\n"
+            f"📦 **PRODUK:**\n"
+            f"├ Total Produk: {stats['active_products']}\n"
+            f"└ Tersedia: {stats['active_products']}\n\n"
+            f"💳 **TOPUP:**\n"
+            f"├ Total: {stats['pending_topups']}\n"
+            f"├ Pending: {stats['pending_topups']}\n"
+            f"└ Approved: 0\n\n"
+            f"👥 **USER:**\n"
+            f"├ Total User: {stats['total_users']}\n"
+            f"└ Total Saldo: Rp {stats['total_revenue']:,.0f}\n\n"
+            f"⏰ **Update:** {datetime.now().strftime('%d-%m-%Y %H:%M')}",
+            parse_mode='Markdown'
+        )
+    except Exception as e:
+        logger.error(f"Error in show_stats_menu: {e}")
+        await query.edit_message_text("❌ Gagal memuat statistik.")
 
 # ============================
-# FITUR BROADCAST
+# FITUR BROADCAST - FIXED
 # ============================
 
 async def broadcast_start(query, context):
-    await query.edit_message_text(
-        "📢 **BROADCAST PESAN**\n\n"
-        "Kirim pesan yang ingin disampaikan ke semua user:\n"
-        "(Gunakan /cancel untuk membatalkan)",
-        parse_mode='Markdown'
-    )
-    return BROADCAST_MESSAGE
+    try:
+        await query.edit_message_text(
+            "📢 **BROADCAST PESAN**\n\n"
+            "Kirim pesan yang ingin disampaikan ke semua user:\n"
+            "(Gunakan /cancel untuk membatalkan)",
+            parse_mode='Markdown'
+        )
+        return BROADCAST_MESSAGE
+    except Exception as e:
+        logger.error(f"Error in broadcast_start: {e}")
+        await query.message.reply_text(
+            "📢 **BROADCAST PESAN**\n\n"
+            "Kirim pesan yang ingin disampaikan ke semua user:\n"
+            "(Gunakan /cancel untuk membatalkan)",
+            parse_mode='Markdown'
+        )
+        return BROADCAST_MESSAGE
 
 async def broadcast_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_check(update, context):
@@ -1295,7 +1418,7 @@ async def broadcast_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 # ============================
-# FITUR BACKUP DATABASE
+# FITUR BACKUP DATABASE - FIXED
 # ============================
 
 async def backup_database_from_query(query, context):
@@ -1303,6 +1426,7 @@ async def backup_database_from_query(query, context):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_file = f"backup_{timestamp}.db"
         shutil.copy2(DB_PATH, backup_file)
+        
         await context.bot.send_document(
             chat_id=query.message.chat_id,
             document=open(backup_file, 'rb'),
@@ -1316,40 +1440,49 @@ async def backup_database_from_query(query, context):
         await log_admin_action(query.from_user.id, "BACKUP_DATABASE", f"Failed: {str(e)}")
 
 # ============================
-# FITUR SYSTEM HEALTH
+# FITUR SYSTEM HEALTH - FIXED
 # ============================
 
 async def system_health_from_query(query, context):
     try:
-        async with aiosqlite.connect(DB_PATH) as conn:
-            await conn.execute("SELECT 1")
-            db_status = "✅ Connected"
-        api_key = config.API_KEY_PROVIDER
-        url = f"https://panel.khfy-store.com/api_v2/list_product?api_key={api_key}"
+        # Check database connection
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=10) as resp:
-                    api_status = "✅ Connected" if resp.status == 200 else "❌ Disconnected"
-        except:
-            api_status = "❌ Disconnected"
-        stat = shutil.disk_usage(".")
-        free_gb = stat.free / (1024**3)
-        disk_status = f"✅ {free_gb:.1f} GB free"
+            async with aiosqlite.connect(DB_PATH) as conn:
+                await conn.execute("SELECT 1")
+            db_status = "✅ Connected"
+        except Exception as e:
+            db_status = f"❌ Error: {e}"
         
-        # Hitung total user dan saldo
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("SELECT COUNT(*), SUM(saldo) FROM users")
-        total_users, total_balance = c.fetchone()
-        conn.close()
+        # Check API status
+        api_status = "❌ Not configured"
+        if hasattr(config, 'API_KEY_PROVIDER') and config.API_KEY_PROVIDER:
+            api_key = config.API_KEY_PROVIDER
+            url = f"https://panel.khfy-store.com/api_v2/list_product?api_key={api_key}"
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, timeout=10) as resp:
+                        api_status = "✅ Connected" if resp.status == 200 else f"❌ Status: {resp.status}"
+            except Exception as e:
+                api_status = f"❌ Error: {e}"
+        
+        # Check disk space
+        try:
+            stat = shutil.disk_usage(".")
+            free_gb = stat.free / (1024**3)
+            disk_status = f"✅ {free_gb:.1f} GB free"
+        except Exception as e:
+            disk_status = f"❌ Error: {e}"
+        
+        # Get statistics
+        stats = database.get_bot_statistics()
         
         await query.edit_message_text(
             f"🏥 **SYSTEM HEALTH CHECK**\n\n"
             f"📦 Database: {db_status}\n"
             f"🌐 API Provider: {api_status}\n"
             f"💾 Disk Space: {disk_status}\n"
-            f"👥 Total Users: {total_users}\n"
-            f"💰 Total Saldo: Rp {total_balance or 0:,.0f}\n"
+            f"👥 Total Users: {stats['total_users']}\n"
+            f"💰 Total Saldo: Rp {stats['total_revenue']:,.0f}\n"
             f"🕒 Check Time: {datetime.now().strftime('%d-%m-%Y %H:%M:%S')}",
             parse_mode='Markdown'
         )
@@ -1357,23 +1490,26 @@ async def system_health_from_query(query, context):
         await query.edit_message_text(f"❌ Health check failed: {str(e)}")
 
 # ============================
-# FITUR CLEANUP DATA
+# FITUR CLEANUP DATA - FIXED
 # ============================
 
 async def cleanup_data_from_query(query, context):
     try:
         cutoff_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+        
         async with aiosqlite.connect(DB_PATH) as conn:
             cursor = await conn.execute(
                 "DELETE FROM topup_requests WHERE status='rejected' AND created_at < ?",
                 (cutoff_date,)
             )
             rejected_deleted = cursor.rowcount
+            
             cursor = await conn.execute(
                 "DELETE FROM admin_logs WHERE created_at < ?",
                 (cutoff_date,)
             )
             logs_deleted = cursor.rowcount
+            
             await conn.commit()
         
         await log_admin_action(query.from_user.id, "CLEANUP_DATA", f"Rejected: {rejected_deleted}, Logs: {logs_deleted}")
@@ -1390,25 +1526,32 @@ async def cleanup_data_from_query(query, context):
         await query.edit_message_text(f"❌ Gagal cleanup: {str(e)}")
 
 # ============================
-# LOGGING ADMIN ACTIONS
+# LOGGING ADMIN ACTIONS - FIXED
 # ============================
 
 async def ensure_admin_logs_table():
-    async with aiosqlite.connect(DB_PATH) as conn:
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS admin_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                admin_id INTEGER,
-                action TEXT,
-                details TEXT,
-                created_at TEXT
-            )
-        """)
-        await conn.commit()
+    try:
+        async with aiosqlite.connect(DB_PATH) as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS admin_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    admin_id INTEGER,
+                    action TEXT,
+                    details TEXT,
+                    created_at TEXT
+                )
+            """)
+            await conn.commit()
+            return True
+    except Exception as e:
+        logger.error(f"Error ensuring admin logs table: {e}")
+        return False
 
 async def log_admin_action(admin_id: int, action: str, details: str = ""):
     try:
-        await ensure_admin_logs_table()
+        if not await ensure_admin_logs_table():
+            return False
+            
         async with aiosqlite.connect(DB_PATH) as conn:
             now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             await conn.execute(
@@ -1416,11 +1559,13 @@ async def log_admin_action(admin_id: int, action: str, details: str = ""):
                 (admin_id, action, details, now)
             )
             await conn.commit()
+        return True
     except Exception as e:
         logger.error(f"Error logging admin action: {e}")
+        return False
 
 # ============================
-# REGISTER HANDLERS & EXPORTS
+# REGISTER HANDLERS & EXPORTS - FIXED
 # ============================
 
 admin_menu_handler = CommandHandler("admin", admin_menu)
@@ -1474,7 +1619,8 @@ user_management_handler = CallbackQueryHandler(list_all_users, pattern='^list_al
 # Command handlers
 cek_user_handler = CommandHandler("cek_user", cek_user)
 jadikan_admin_handler = CommandHandler("jadikan_admin", jadikan_admin)
-topup_list_handler = CommandHandler("topup_list", topup_list)
+topup_list_handler = CommandHandler("topup_list", topup_list_interactive)
+broadcast_handler = CommandHandler("broadcast", broadcast_start)
 
 def get_admin_handlers():
     return [
@@ -1489,4 +1635,5 @@ def get_admin_handlers():
         cek_user_handler,
         jadikan_admin_handler,
         topup_list_handler,
+        broadcast_handler,
     ]
