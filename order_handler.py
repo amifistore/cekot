@@ -365,15 +365,16 @@ async def show_group_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return MENU
         
+        # FIX: Calculate total products correctly
+        total_products = sum(len(group_products) for group_products in groups.values())
+        
         keyboard = [
-            [InlineKeyboardButton(f"{group} ({len(products)} produk)", callback_data=f"group_{group}")]
-            for group in groups.keys()
+            [InlineKeyboardButton(f"{group} ({len(group_products)} produk)", callback_data=f"group_{group}")]
+            for group, group_products in groups.items()
         ]
         keyboard.append([InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        total_products = sum(len(products) for products in groups.values())
         
         await safe_edit_message_text(
             update.callback_query,
