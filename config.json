@@ -10,7 +10,7 @@
     "qris_static": "00020101021126610014COM.GO-JEK.WWW01189360091434506469550210G4506469550303UMI51440014ID.CO.QRIS.WWW0215ID10243341364120303UMI5204569753033605802ID5923Amifi Store, Kmb, TLGSR6009BONDOWOSO61056827262070703A01630431E8",
     "urls": {
       "product": "https://panel.khfy-store.com/api_v2/list_product",
-      "stock": "https://panel.khfy-store.com/api_v3/cek_stock_akrab", 
+      "stock": "https://panel.khfy-store.com/api_v3/cek_stock_akrab",
       "order": "https://panel.khfy-store.com/api_v2/order",
       "qris": "https://qrisku.my.id/api"
     },
@@ -18,7 +18,7 @@
     "max_retries": 3
   },
   "admin": {
-    "telegram_ids": [123456789, 987654321],
+    "telegram_ids": [6738243352],
     "notifications": {
       "new_order": true,
       "new_topup": true,
@@ -44,13 +44,13 @@
         "bank": "BCA"
       },
       "BRI": {
-        "number": "1234567890", 
+        "number": "1234567890",
         "name": "BOT STORE",
         "bank": "BRI"
       },
       "BNI": {
         "number": "1234567890",
-        "name": "BOT STORE", 
+        "name": "BOT STORE",
         "bank": "BNI"
       },
       "MANDIRI": {
@@ -78,7 +78,7 @@
     "status": {
       "PENDING": "pending",
       "PROCESSING": "processing",
-      "COMPLETED": "completed", 
+      "COMPLETED": "completed",
       "FAILED": "failed",
       "CANCELLED": "cancelled"
     },
@@ -88,7 +88,7 @@
     "status": {
       "PENDING": "pending",
       "COMPLETED": "completed",
-      "REJECTED": "rejected", 
+      "REJECTED": "rejected",
       "CANCELLED": "cancelled"
     }
   },
@@ -107,6 +107,32 @@
     "cache_ttl": 300
   },
   "security": {
+    "max_login_attempts": 5,
+    "session_timeout": 3600,
+    "allowed_updates": ["message", "callback_query", "inline_query"],
+    "blacklisted_ids": []
+  },
+  "notifications": {
+    "new_order": true,
+    "new_topup": true,
+    "system_alerts": true,
+    "broadcast_enabled": true
+  },
+  "messages": {
+    "welcome": "👋 **Selamat Datang di {bot_name}!**\n\n🤖 **Bot Features:**\n• 🛒 Beli produk pulsa, data, listrik, game\n• 💳 Top up saldo mudah & cepat  \n• 📊 Cek stok real-time\n• 📜 Riwayat transaksi lengkap\n• 👑 Admin panel untuk management\n\n💡 **Tips:** Gunakan menu di bawah untuk mulai!",
+    "insufficient_balance": "❌ **Saldo Tidak Mencukupi!**\n\n💰 **Harga Produk:** Rp {product_price:,}\n💳 **Saldo Anda:** Rp {user_balance:,}\n📊 **Kekurangan:** Rp {deficit:,}\n\n💡 Silakan top up saldo terlebih dahulu.",
+    "order_success": "✅ **Pesanan Berhasil!**\n\n📦 **Produk:** {product_name}\n💰 **Harga:** Rp {product_price:,}\n👤 **Data:** {customer_data}\n🆔 **Order ID:** `{order_id}`\n\n📋 **Status:** {status}\n⏰ **Waktu:** {timestamp}",
+    "topup_instructions": "💳 **TOP UP SALDO - {method}**\n\n💰 **Detail Pembayaran:**\n├ Nominal: Rp {base_amount:,}\n├ Kode Unik: {unique_digits:03d}\n├ Total Transfer: **Rp {total_amount:,}**\n└ Metode: {method}\n\n{payment_instructions}\n\n⏰ **Penting:** \n• Transfer tepat sesuai nominal\n• Simpan bukti transfer\n• Proses verifikasi 1-10 menit"
+  },
+  "features": {
+    "topup_enabled": true,
+    "ordering_enabled": true,
+    "stock_check_enabled": true,
+    "admin_panel_enabled": true,
+    "broadcast_enabled": true,
+    "maintenance_mode": false
+  }
+}  "security": {
     "max_login_attempts": 5,
     "session_timeout": 3600,
     "allowed_updates": ["message", "callback_query", "inline_query"],
