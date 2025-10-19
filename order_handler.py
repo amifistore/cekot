@@ -161,7 +161,7 @@ async def menu_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         text = (
-            f"🤖 *Selamat Datamaig!*\n\n"
+            f"🤖 *Selamat Datang!*\n\n"
             f"Halo, *{user.full_name or user.username or 'User'}*!\n"
             f"💰 Saldo Anda: *Rp {saldo:,.0f}*\n\n"
             f"Pilih menu di bawah:"
@@ -450,8 +450,12 @@ async def show_group_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             # Add product count
             button_text += f" ({len(group_products)})"
+            
+            # Clean group name for callback data
+            clean_group = re.sub(r'[^a-zA-Z0-9_]', '', group.replace(' ', '_'))
+            callback_data = f"group_{clean_group}"[:64]
                 
-            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"group_{group}")])
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
         
         # Add navigation buttons
         keyboard.append([InlineKeyboardButton("🔄 Refresh", callback_data="menu_order")])
@@ -459,24 +463,26 @@ async def show_group_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        # Create message with clear instructions
+        # Create safe message text
         message_text = (
-            f"📦 *PILIH KATEGORI PRODUK*\n\n"
-            f"📊 Ditemukan *{total_products} produk* dalam *{len(groups)} kategori*\n\n"
-            f"🟢 Semua tersedia | 🟡 Sebagian tersedia | 🔴 Stok habis\n\n"
-            f"Silakan pilih kategori produk:"
+            "📦 PILIH KATEGORI PRODUK\n\n"
+            f"📊 Ditemukan {total_products} produk dalam {len(groups)} kategori\n\n"
+            "🟢 Semua tersedia | 🟡 Sebagian tersedia | 🔴 Stok habis\n\n"
+            "Silakan pilih kategori produk:"
         )
         
         logger.info(f"Sending group menu with {len(keyboard)} buttons")
-        await safe_edit_message_text(
-            query,
+        
+        # Use plain text to avoid Markdown issues
+        await query.edit_message_text(
             message_text,
-            reply_markup=reply_markup,
-            parse_mode="Markdown"
+            reply_markup=reply_markup
         )
         
         # Store groups in context for later use
         context.user_data["groups"] = groups
+        context.user_data["group_mapping"] = {f"group_{re.sub(r'[^a-zA-Z0-9_]', '', k.replace(' ', '_'))}"[:64]: k for k in groups.keys()}
+        
         logger.info("Successfully displayed group menu")
         return CHOOSING_GROUP
         
@@ -536,7 +542,15 @@ async def choose_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     
     try:
-        group_name = query.data.replace("group_", "")
+        callback_data = query.data
+        group_mapping = context.user_data.get("group_mapping", {})
+        
+        # Get the original group name from mapping
+        group_name = group_mapping.get(callback_data)
+        if not group_name:
+            # Fallback: try to extract from callback data
+            group_name = callback_data.replace("group_", "").replace('_', ' ')
+        
         groups = context.user_data.get("groups", {})
         products = groups.get(group_name, [])
         
@@ -585,15 +599,18 @@ async def show_product_in_group(query, context, page=0):
         available_products = sum(1 for p in products if p.get('stock', 0) > 0)
         total_products = len(products)
         
-        await safe_edit_message_text(
-            query,
-            f"🛒 *PILIH PRODUK - {group_name}*\n\n"
+        message_text = (
+            f"🛒 PILIH PRODUK - {group_name}\n\n"
             f"📄 Halaman {page+1} dari {total_pages}\n"
             f"📦 {available_products}/{total_products} produk tersedia\n\n"
             f"🟢 Tersedia | 🟡 Sedikit | 🔴 Habis\n\n"
-            f"Silakan pilih produk:",
-            reply_markup=reply_markup,
-            parse_mode="Markdown"
+            f"Silakan pilih produk:"
+        )
+        
+        await safe_edit_message_text(
+            query,
+            message_text,
+            reply_markup=reply_markup
         )
         
         context.user_data["product_page"] = page
@@ -651,36 +668,35 @@ async def choose_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             # Show product details and ask for destination
             product_info = (
-                f"🛒 *PRODUK DIPILIH*\n\n"
-                f"📦 *Nama:* {selected_product['name']}\n"
-                f"🏷️ *Kode:* {selected_product['code']}\n"
-                f"💰 *Harga:* Rp {selected_product['price']:,.0f}\n"
-                f"📊 *Stok:* {stock} pcs\n"
+                f"🛒 PRODUK DIPILIH\n\n"
+                f"📦 Nama: {selected_product['name']}\n"
+                f"🏷️ Kode: {selected_product['code']}\n"
+                f"💰 Harga: Rp {selected_product['price']:,.0f}\n"
+                f"📊 Stok: {stock} pcs\n"
             )
             
             if selected_product.get('description'):
-                product_info += f"📝 *Deskripsi:* {selected_product['description']}\n"
+                product_info += f"📝 Deskripsi: {selected_product['description']}\n"
             
-            product_info += f"\n📮 *Masukkan nomor tujuan atau ID:*\n"
+            product_info += f"\n📮 Masukkan nomor tujuan atau ID:\n"
             
             # Provide examples based on product type
             if any(x in selected_product['name'].lower() for x in ['pulsa', 'data', 'internet', 'telkomsel', 'xl', 'axis', 'tri', 'indosat', 'smartfren']):
-                product_info += "Contoh: `081234567890`"
+                product_info += "Contoh: 081234567890"
                 context.user_data['input_type'] = 'phone'
             elif any(x in selected_product['name'].lower() for x in ['listrik', 'pln']):
-                product_info += "Contoh: `1234567890123456` (ID PLN 16/20 digit)"
+                product_info += "Contoh: 1234567890123456 (ID PLN 16/20 digit)"
                 context.user_data['input_type'] = 'pln'
             elif any(x in selected_product['name'].lower() for x in ['game', 'voucher']):
-                product_info += "Contoh: `123456789` (ID Game/User ID)"
+                product_info += "Contoh: 123456789 (ID Game/User ID)"
                 context.user_data['input_type'] = 'game'
             else:
-                product_info += "Contoh: `081234567890` atau `123456789`"
+                product_info += "Contoh: 081234567890 atau 123456789"
                 context.user_data['input_type'] = 'general'
             
             await safe_edit_message_text(
                 query,
                 product_info,
-                parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("⬅️ Kembali ke Produk", callback_data=f"back_to_products_{context.user_data.get('product_page', 0)}")],
                     [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
@@ -789,16 +805,16 @@ async def show_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         product_price = selected_product['price']
         
         confirmation_text = (
-            f"✅ *KONFIRMASI ORDER*\n\n"
-            f"📦 *Produk:* {selected_product['name']}\n"
-            f"🏷️ *Kode:* {selected_product['code']}\n"
-            f"📮 *Tujuan:* `{tujuan}`\n"
-            f"💰 *Harga:* Rp {product_price:,.0f}\n"
-            f"💳 *Saldo Anda:* Rp {saldo:,.0f}\n\n"
+            f"✅ KONFIRMASI ORDER\n\n"
+            f"📦 Produk: {selected_product['name']}\n"
+            f"🏷️ Kode: {selected_product['code']}\n"
+            f"📮 Tujuan: {tujuan}\n"
+            f"💰 Harga: Rp {product_price:,.0f}\n"
+            f"💳 Saldo Anda: Rp {saldo:,.0f}\n\n"
         )
         
         if saldo < product_price:
-            confirmation_text += f"❌ *Saldo tidak cukup!*\nSilakan top up saldo terlebih dahulu."
+            confirmation_text += f"❌ Saldo tidak cukup!\nSilakan top up saldo terlebih dahulu."
             keyboard = [
                 [InlineKeyboardButton("💸 Top Up Saldo", callback_data="menu_topup")],
                 [InlineKeyboardButton("❌ Batalkan", callback_data="cancel_order")]
@@ -815,9 +831,9 @@ async def show_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         if hasattr(update, 'message') and update.message:
-            await update.message.reply_text(confirmation_text, reply_markup=reply_markup, parse_mode="Markdown")
+            await update.message.reply_text(confirmation_text, reply_markup=reply_markup)
         else:
-            await safe_edit_message_text(update.callback_query, confirmation_text, reply_markup=reply_markup, parse_mode="Markdown")
+            await safe_edit_message_text(update.callback_query, confirmation_text, reply_markup=reply_markup)
         
         return CONFIRM_ORDER
         
@@ -913,18 +929,17 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Show processing message
         processing_text = (
-            f"🔄 *ORDER DALAM PROSES*\n\n"
-            f"📦 *Produk:* {selected_product['name']}\n"
-            f"📮 *Tujuan:* `{tujuan}`\n"
-            f"💰 *Harga:* Rp {product_price:,.0f}\n"
-            f"📋 *Order ID:* `{order_id}`\n\n"
+            f"🔄 ORDER DALAM PROSES\n\n"
+            f"📦 Produk: {selected_product['name']}\n"
+            f"📮 Tujuan: {tujuan}\n"
+            f"💰 Harga: Rp {product_price:,.0f}\n"
+            f"📋 Order ID: {order_id}\n\n"
             f"⏳ Sedang memproses order Anda..."
         )
         
         await safe_edit_message_text(
             query,
             processing_text,
-            parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔄 Refresh Status", callback_data=f"check_status_{order_id}")],
                 [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
@@ -956,19 +971,18 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 conn.close()
                 
                 success_text = (
-                    f"✅ *ORDER BERHASIL*\n\n"
-                    f"📦 *Produk:* {selected_product['name']}\n"
-                    f"📮 *Tujuan:* `{tujuan}`\n"
-                    f"💰 *Harga:* Rp {product_price:,.0f}\n"
-                    f"📋 *Order ID:* `{order_id}`\n"
-                    f"💳 *Sisa Saldo:* Rp {new_saldo:,.0f}\n\n"
+                    f"✅ ORDER BERHASIL\n\n"
+                    f"📦 Produk: {selected_product['name']}\n"
+                    f"📮 Tujuan: {tujuan}\n"
+                    f"💰 Harga: Rp {product_price:,.0f}\n"
+                    f"📋 Order ID: {order_id}\n"
+                    f"💳 Sisa Saldo: Rp {new_saldo:,.0f}\n\n"
                     f"Terima kasih telah berbelanja! 🎉"
                 )
                 
                 await safe_edit_message_text(
                     query,
                     success_text,
-                    parse_mode="Markdown",
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("🛒 Beli Lagi", callback_data="menu_order")],
                         [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
@@ -987,19 +1001,18 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 error_msg = api_response.get('msg', 'Unknown error') if api_response else 'Provider tidak merespon'
                 
                 failed_text = (
-                    f"❌ *ORDER GAGAL*\n\n"
-                    f"📦 *Produk:* {selected_product['name']}\n"
-                    f"📮 *Tujuan:* `{tujuan}`\n"
-                    f"💰 *Harga:* Rp {product_price:,.0f}\n"
-                    f"📋 *Order ID:* `{order_id}`\n"
-                    f"💳 *Saldo telah dikembalikan:* Rp {new_saldo + product_price:,.0f}\n\n"
-                    f"*Error:* {error_msg}"
+                    f"❌ ORDER GAGAL\n\n"
+                    f"📦 Produk: {selected_product['name']}\n"
+                    f"📮 Tujuan: {tujuan}\n"
+                    f"💰 Harga: Rp {product_price:,.0f}\n"
+                    f"📋 Order ID: {order_id}\n"
+                    f"💳 Saldo telah dikembalikan: Rp {new_saldo + product_price:,.0f}\n\n"
+                    f"Error: {error_msg}"
                 )
                 
                 await safe_edit_message_text(
                     query,
                     failed_text,
-                    parse_mode="Markdown",
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("🔄 Coba Lagi", callback_data="menu_order")],
                         [InlineKeyboardButton("📞 Bantuan", callback_data="menu_help")],
@@ -1019,8 +1032,7 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             await safe_edit_message_text(
                 query,
-                f"❌ *ERROR SISTEM*\n\nOrder gagal diproses karena error sistem.\nSaldo telah dikembalikan.\n\nOrder ID: `{order_id}`",
-                parse_mode="Markdown",
+                f"❌ ERROR SISTEM\n\nOrder gagal diproses karena error sistem.\nSaldo telah dikembalikan.\n\nOrder ID: {order_id}",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("📞 Bantuan", callback_data="menu_help")],
                     [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
@@ -1055,8 +1067,7 @@ async def check_order_status(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if not order:
             await safe_edit_message_text(
                 query,
-                f"❌ Order ID `{order_id}` tidak ditemukan.",
-                parse_mode="Markdown"
+                f"❌ Order ID {order_id} tidak ditemukan."
             )
             return ConversationHandler.END
         
@@ -1072,13 +1083,13 @@ async def check_order_status(update: Update, context: ContextTypes.DEFAULT_TYPE)
         status_text, status_desc = status_info.get(status, ('❓ UNKNOWN', 'Status tidak diketahui'))
         
         status_msg = (
-            f"📋 *STATUS ORDER*\n\n"
-            f"🆔 *Order ID:* `{order_id}`\n"
-            f"📦 *Produk:* {product_name}\n"
-            f"📮 *Tujuan:* `{target}`\n"
-            f"💰 *Harga:* Rp {price:,.0f}\n"
-            f"🕒 *Waktu:* {created_at}\n\n"
-            f"*Status:* {status_text}\n"
+            f"📋 STATUS ORDER\n\n"
+            f"🆔 Order ID: {order_id}\n"
+            f"📦 Produk: {product_name}\n"
+            f"📮 Tujuan: {target}\n"
+            f"💰 Harga: Rp {price:,.0f}\n"
+            f"🕒 Waktu: {created_at}\n\n"
+            f"Status: {status_text}\n"
             f"{status_desc}"
         )
         
@@ -1090,7 +1101,6 @@ async def check_order_status(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await safe_edit_message_text(
             query,
             status_msg,
-            parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         
