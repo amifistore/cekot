@@ -8,26 +8,28 @@ class Config:
     """Main configuration class"""
     
     # Load from JSON config
-    BOT_TOKEN = json_config.get_bot_token()
+    BOT_TOKEN = json_config.get('bot.token', '')
     BOT_USERNAME = json_config.get('bot.username', '')
     BOT_NAME = json_config.get('bot.name', 'Telegram Store Bot')
+    BOT_VERSION = json_config.get('bot.version', '1.0.0')
     
     # API Configuration
-    API_KEY_PROVIDER = json_config.get_api_key()
+    API_KEY_PROVIDER = json_config.get('api.provider_key', '')
     QRIS_STATIS = json_config.get('api.qris_static', '')
     
     # Admin Configuration
-    ADMIN_TELEGRAM_IDS = json_config.get_admin_ids()
+    ADMIN_TELEGRAM_IDS = json_config.get('admin.telegram_ids', [])
+    BOT_OWNER_ID = ADMIN_TELEGRAM_IDS[0] if ADMIN_TELEGRAM_IDS else 0
     
     # Database Configuration
     DB_PATH = json_config.get('database.path', 'bot_database.db')
     DB_BACKUP_PATH = json_config.get('database.backup_path', 'backups')
     
     # API URLs
-    PRODUCT_API_URL = json_config.get('api.urls.product', 'https://panel.khfy-store.com/api_v2/list_product')
-    STOCK_API_URL = json_config.get('api.urls.stock', 'https://panel.khfy-store.com/api_v3/cek_stock_akrab')
-    ORDER_API_URL = json_config.get('api.urls.order', 'https://panel.khfy-store.com/api_v2/order')
-    QRIS_API_URL = json_config.get('api.urls.qris', 'https://qrisku.my.id/api')
+    PRODUCT_API_URL = json_config.get('api.urls.product', '')
+    STOCK_API_URL = json_config.get('api.urls.stock', '')
+    ORDER_API_URL = json_config.get('api.urls.order', '')
+    QRIS_API_URL = json_config.get('api.urls.qris', '')
     
     # Bot Settings
     MIN_TOPUP_AMOUNT = json_config.get('payment.min_topup_amount', 10000)
@@ -40,10 +42,10 @@ class Config:
     # Payment Settings
     UNIQUE_DIGITS = json_config.get('payment.unique_digits', 3)
     AUTO_CANCEL_MINUTES = json_config.get('payment.auto_cancel_minutes', 30)
-    PAYMENT_METHODS = json_config.get('payment.methods', ['QRIS', 'BANK_TRANSFER'])
+    PAYMENT_METHODS = json_config.get('payment.methods', [])
     
     # Bank Accounts
-    BANK_ACCOUNTS = json_config.get_bank_accounts()
+    BANK_ACCOUNTS = json_config.get('payment.banks', {})
     
     # Product Categories
     PRODUCT_CATEGORIES = json_config.get('products.categories', {})
@@ -56,11 +58,30 @@ class Config:
     
     # Features
     FEATURES = json_config.get('features', {})
+    
+    # Messages
+    MESSAGES = json_config.get('messages', {})
 
     @classmethod
     def validate(cls) -> bool:
         """Validate configuration"""
-        return json_config.validate()
+        required_fields = [
+            ('bot.token', cls.BOT_TOKEN),
+            ('api.provider_key', cls.API_KEY_PROVIDER),
+            ('admin.telegram_ids', cls.ADMIN_TELEGRAM_IDS)
+        ]
+        
+        for field_name, field_value in required_fields:
+            if not field_value:
+                logger.error(f"❌ Missing required configuration: {field_name}")
+                return False
+        
+        if not cls.ADMIN_TELEGRAM_IDS:
+            logger.error("❌ No admin Telegram IDs configured")
+            return False
+            
+        logger.info("✅ Configuration validated successfully")
+        return True
 
 # Global instance
 config = Config()
@@ -72,5 +93,7 @@ try:
     else:
         print("❌ Configuration validation failed")
         print("⚠️ Please check your bot.json file")
+        exit(1)
 except Exception as e:
     print(f"❌ Configuration error: {e}")
+    exit(1)
