@@ -132,6 +132,22 @@ class DatabaseManager:
                     )
                 ''')
                 
+                # ==================== TOPUP REQUESTS TABLE ====================
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS topup_requests (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id TEXT NOT NULL,
+                        username TEXT,
+                        full_name TEXT,
+                        amount REAL NOT NULL,
+                        status TEXT DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected')),
+                        proof_image TEXT,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME,
+                        FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
+                    )
+                ''')
+                
                 # ==================== ADMIN LOGS TABLE ====================
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS admin_logs (
@@ -200,6 +216,8 @@ class DatabaseManager:
                     'CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id)',
                     'CREATE INDEX IF NOT EXISTS idx_orders_created ON orders(created_at)',
                     'CREATE INDEX IF NOT EXISTS idx_orders_product ON orders(product_code)',
+                    'CREATE INDEX IF NOT EXISTS idx_topup_requests_status ON topup_requests(status)',
+                    'CREATE INDEX IF NOT EXISTS idx_topup_requests_user ON topup_requests(user_id)',
                     'CREATE INDEX IF NOT EXISTS idx_admin_logs_admin ON admin_logs(admin_id)',
                     'CREATE INDEX IF NOT EXISTS idx_admin_logs_time ON admin_logs(timestamp)',
                     'CREATE INDEX IF NOT EXISTS idx_system_logs_level ON system_logs(level)',
@@ -279,7 +297,8 @@ class DatabaseManager:
             
             # Return user data
             cursor.execute('SELECT * FROM users WHERE user_id = ?', (str(user_id),))
-            return dict(cursor.fetchone())
+            result = cursor.fetchone()
+            return dict(result) if result else {}
 
     def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
         """Get user data by ID"""
@@ -399,1021 +418,376 @@ class DatabaseManager:
                 (datetime.now(), str(user_id))
             )
 
-    # ==================== TRANSACTION MANAGEMENT ====================
-    def add_transaction(self, user_id: str, trans_type: str, amount: float, 
-                       status: str = "pending", details: str = "", 
-                       unique_code: int = 0, payment_method: str = "") -> int:
-        """Add transaction record dengan validation"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Validate transaction type
-            valid_types = ['topup', 'withdraw', 'refund', 'bonus']
-            if trans_type not in valid_types:
-                raise ValueError(f"Invalid transaction type. Must be one of: {valid_types}")
-            
-            cursor.execute(
-                '''INSERT INTO transactions 
-                (user_id, type, amount, status, details, unique_code, payment_method) 
-                VALUES (?, ?, ?, ?, ?, ?, ?)''',
-                (str(user_id), trans_type, amount, status, details, unique_code, payment_method)
-            )
-            transaction_id = cursor.lastrowid
-            
-            # Update user last active
-            self.update_user_last_active(user_id)
-            
-            logger.info(f"💳 Transaction added: {transaction_id} - {trans_type} - {amount:,.0f} - {status}")
-            return transaction_id
-
-    def update_transaction_status(self, transaction_id: int, status: str, 
-                                details: str = "", admin_notes: str = "") -> bool:
-        """Update transaction status dengan completion tracking"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Get transaction details first
-            cursor.execute(
-                'SELECT user_id, amount, type, status FROM transactions WHERE id = ?',
-                (transaction_id,)
-            )
-            trans = cursor.fetchone()
-            
-            if not trans:
-                raise ValueError(f"Transaction {transaction_id} not found")
-            
-            # If status not changed, do nothing
-            if trans['status'] == status:
-                logger.info(f"Transaction {transaction_id} status already {status}")
-                return True
-            
-            completed_at = datetime.now() if status in ['completed', 'rejected', 'cancelled'] else None
-            
-            cursor.execute(
-                '''UPDATE transactions SET 
-                status = ?, details = ?, completed_at = ?, admin_notes = ?
-                WHERE id = ?''',
-                (status, details, completed_at, admin_notes, transaction_id)
-            )
-            
-            # Jika topup completed, update user balance
-            if status == 'completed' and trans['type'] == 'topup':
-                self.update_user_balance(trans['user_id'], trans['amount'], 
-                                       f"Topup completed - Transaction #{transaction_id}")
-                logger.info(f"✅ Topup completed: {transaction_id} for user {trans['user_id']}")
-            
-            logger.info(f"📝 Transaction {transaction_id} status updated from {trans['status']} to {status}")
-            return True
-
-    def get_transaction(self, transaction_id: int) -> Optional[Dict[str, Any]]:
-        """Get transaction details dengan user info"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT 
-                    t.*,
-                    u.username,
-                    u.full_name,
-                    u.balance as user_balance
-                FROM transactions t 
-                JOIN users u ON t.user_id = u.user_id 
-                WHERE t.id = ?
-            ''', (transaction_id,))
-            result = cursor.fetchone()
-            return dict(result) if result else None
-
-    def get_pending_transactions(self, trans_type: str = 'topup') -> List[Dict[str, Any]]:
-        """Get all pending transactions dengan user info"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT 
-                    t.*,
-                    u.username,
-                    u.full_name,
-                    u.balance as user_balance
-                FROM transactions t 
-                JOIN users u ON t.user_id = u.user_id 
-                WHERE t.status = 'pending' AND t.type = ?
-                ORDER BY t.created_at DESC
-            ''', (trans_type,))
-            return [dict(row) for row in cursor.fetchall()]
-
-    def get_user_transactions(self, user_id: str, limit: int = 10, 
-                            trans_type: str = None) -> List[Dict[str, Any]]:
-        """Get user transaction history dengan filtering"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            query = '''
-                SELECT * FROM transactions 
-                WHERE user_id = ?
-            '''
-            params = [str(user_id)]
-            
-            if trans_type:
-                query += ' AND type = ?'
-                params.append(trans_type)
-            
-            query += ' ORDER BY created_at DESC LIMIT ?'
-            params.append(limit)
-            
-            cursor.execute(query, params)
-            return [dict(row) for row in cursor.fetchall()]
-
     # ==================== PRODUCT MANAGEMENT ====================
-    def get_active_products(self, category: Optional[str] = None, 
-                          provider: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Get active products dengan filtering"""
+    def get_products_by_category(self, category: str = None) -> List[Dict[str, Any]]:
+        """Get products by category"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             
-            query = '''
-                SELECT * FROM products 
-                WHERE status = 'active'
-            '''
-            params = []
+            if category:
+                cursor.execute('''
+                    SELECT * FROM products 
+                    WHERE category = ? AND status = 'active' AND gangguan = 0 AND kosong = 0
+                    ORDER BY price
+                ''', (category,))
+            else:
+                cursor.execute('''
+                    SELECT * FROM products 
+                    WHERE status = 'active' AND gangguan = 0 AND kosong = 0
+                    ORDER BY category, price
+                ''')
             
-            if category and category != 'all':
-                query += ' AND category = ?'
-                params.append(category)
-            
-            if provider and provider != 'all':
-                query += ' AND provider = ?'
-                params.append(provider)
-            
-            query += ' ORDER BY category, name, price'
-            
-            cursor.execute(query, params)
             return [dict(row) for row in cursor.fetchall()]
 
-    def get_product_by_code(self, code: str) -> Optional[Dict[str, Any]]:
-        """Get product by code dengan error handling"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT * FROM products WHERE code = ?', (code,))
-            result = cursor.fetchone()
-            return dict(result) if result else None
-
-    def update_product(self, code: str, **kwargs) -> bool:
-        """Update product information dengan comprehensive fields"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Build dynamic update query
-            valid_fields = ['name', 'price', 'status', 'description', 'category', 
-                          'provider', 'gangguan', 'kosong', 'stock', 'min_stock', 
-                          'max_stock', 'profit_margin']
-            
-            update_fields = []
-            values = []
-            
-            for field, value in kwargs.items():
-                if field in valid_fields and value is not None:
-                    update_fields.append(f"{field} = ?")
-                    values.append(value)
-            
-            if not update_fields:
-                raise ValueError("No valid fields to update")
-            
-            values.append(code)
-            values.append(datetime.now())  # for updated_at
-            
-            set_clause = ', '.join(update_fields)
-            query = f'UPDATE products SET {set_clause}, updated_at = ? WHERE code = ?'
-            
-            cursor.execute(query, values)
-            affected = cursor.rowcount > 0
-            
-            if affected:
-                logger.info(f"📦 Product updated: {code} - Fields: {', '.join(update_fields)}")
-            
-            return affected
-
-    def bulk_update_products(self, products: List[Dict]) -> int:
-        """Bulk update products untuk sync dari provider"""
-        count = 0
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Set all products to inactive first (will reactivate existing ones)
-            cursor.execute("UPDATE products SET status = 'inactive'")
-            
-            for product in products:
-                try:
-                    cursor.execute('''
-                        INSERT INTO products 
-                        (code, name, price, status, description, category, provider, 
-                         gangguan, kosong, stock, profit_margin, updated_at)
-                        VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(code) DO UPDATE SET
-                            name = excluded.name,
-                            price = excluded.price,
-                            status = 'active',
-                            description = excluded.description,
-                            category = excluded.category,
-                            provider = excluded.provider,
-                            gangguan = excluded.gangguan,
-                            kosong = excluded.kosong,
-                            stock = excluded.stock,
-                            profit_margin = excluded.profit_margin,
-                            updated_at = excluded.updated_at
-                    ''', (
-                        product['code'], 
-                        product['name'], 
-                        product['price'],
-                        product.get('description', ''), 
-                        product.get('category', 'Umum'),
-                        product.get('provider', ''), 
-                        product.get('gangguan', 0),
-                        product.get('kosong', 0), 
-                        product.get('stock', 0),
-                        product.get('profit_margin', 0),
-                        datetime.now()
-                    ))
-                    count += 1
-                except Exception as e:
-                    logger.error(f"Error updating product {product.get('code')}: {e}")
-                    continue
-            
-            logger.info(f"🔄 Bulk updated {count} products")
-            return count
-
-    def get_categories(self) -> List[str]:
-        """Get list of unique product categories"""
+    def get_product_categories(self) -> List[str]:
+        """Get list of product categories"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT DISTINCT category FROM products 
-                WHERE status = 'active' 
+                WHERE status = 'active' AND gangguan = 0 AND kosong = 0
                 ORDER BY category
             ''')
-            return [row['category'] for row in cursor.fetchall()]
+            return [row[0] for row in cursor.fetchall()]
 
-    def get_providers(self) -> List[str]:
-        """Get list of unique providers"""
+    def get_product_by_code(self, product_code: str) -> Optional[Dict[str, Any]]:
+        """Get product by code"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM products WHERE code = ?', (product_code,))
+            result = cursor.fetchone()
+            return dict(result) if result else None
+
+    def update_product_stock(self, product_code: str, new_stock: int):
+        """Update product stock"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'UPDATE products SET stock = ?, updated_at = ? WHERE code = ?',
+                (new_stock, datetime.now(), product_code)
+            )
+
+    # ==================== TOPUP MANAGEMENT ====================
+    def add_pending_topup(self, user_id: str, amount: float, proof_text: str = "") -> int:
+        """Add pending topup request"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Get user info
+            cursor.execute('SELECT username, full_name FROM users WHERE user_id = ?', (user_id,))
+            user_info = cursor.fetchone()
+            username = user_info['username'] if user_info else None
+            full_name = user_info['full_name'] if user_info else None
+            
+            cursor.execute('''
+                INSERT INTO topup_requests (user_id, username, full_name, amount, proof_image, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (user_id, username, full_name, amount, proof_text, datetime.now()))
+            
+            return cursor.lastrowid
+
+    def get_pending_topups(self) -> List[Dict[str, Any]]:
+        """Get all pending topup requests"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT DISTINCT provider FROM products 
-                WHERE status = 'active' AND provider IS NOT NULL AND provider != ''
-                ORDER BY provider
+                SELECT * FROM topup_requests 
+                WHERE status = 'pending'
+                ORDER BY created_at DESC
             ''')
-            return [row['provider'] for row in cursor.fetchall()]
+            return [dict(row) for row in cursor.fetchall()]
+
+    def approve_topup(self, topup_id: int, admin_id: str) -> bool:
+        """Approve a topup request"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            try:
+                # Get topup details
+                cursor.execute('SELECT user_id, amount FROM topup_requests WHERE id = ?', (topup_id,))
+                result = cursor.fetchone()
+                
+                if not result:
+                    return False
+                
+                user_id = result['user_id']
+                amount = result['amount']
+                
+                # Update user balance
+                self.update_user_balance(user_id, amount, f"Topup approved by admin {admin_id}")
+                
+                # Update topup status
+                cursor.execute(
+                    'UPDATE topup_requests SET status = ?, updated_at = ? WHERE id = ?',
+                    ('approved', datetime.now(), topup_id)
+                )
+                
+                # Add transaction record
+                cursor.execute('''
+                    INSERT INTO transactions (user_id, type, amount, status, details)
+                    VALUES (?, 'topup', ?, 'completed', ?)
+                ''', (user_id, amount, f'Topup approved by admin {admin_id}'))
+                
+                # Log admin action
+                self.log_admin_action(admin_id, "APPROVE_TOPUP", f"Topup ID: {topup_id}, Amount: {amount}")
+                
+                return True
+                
+            except Exception as e:
+                logger.error(f"Error approving topup {topup_id}: {e}")
+                return False
+
+    def reject_topup(self, topup_id: int, admin_id: str) -> bool:
+        """Reject a topup request"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            try:
+                cursor.execute(
+                    'UPDATE topup_requests SET status = ?, updated_at = ? WHERE id = ?',
+                    ('rejected', datetime.now(), topup_id)
+                )
+                
+                # Log admin action
+                self.log_admin_action(admin_id, "REJECT_TOPUP", f"Topup ID: {topup_id}")
+                
+                return True
+                
+            except Exception as e:
+                logger.error(f"Error rejecting topup {topup_id}: {e}")
+                return False
 
     # ==================== ORDER MANAGEMENT ====================
     def create_order(self, user_id: str, product_code: str, product_name: str, 
                     price: float, customer_input: str = "") -> int:
-        """Create new order dengan comprehensive tracking"""
+        """Create new order"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             
-            # Check product availability
-            product = self.get_product_by_code(product_code)
-            if not product:
-                raise ValueError(f"Product {product_code} not found")
+            cursor.execute('''
+                INSERT INTO orders (user_id, product_code, product_name, price, customer_input)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (user_id, product_code, product_name, price, customer_input))
             
-            if product['status'] != 'active':
-                raise ValueError(f"Product {product_code} is not active")
-            
-            if product['kosong'] == 1:
-                raise ValueError(f"Product {product_code} is empty")
-            
-            if product['gangguan'] == 1:
-                raise ValueError(f"Product {product_code} is experiencing issues")
-            
-            # Check user balance
-            user_balance = self.get_user_balance(user_id)
-            if user_balance < price:
-                raise ValueError(f"Insufficient balance. Need: {price:,.0f}, Have: {user_balance:,.0f}")
-            
-            cursor.execute(
-                '''INSERT INTO orders 
-                (user_id, product_code, product_name, price, status, customer_input) 
-                VALUES (?, ?, ?, ?, 'pending', ?)''',
-                (str(user_id), product_code, product_name, price, customer_input)
-            )
             order_id = cursor.lastrowid
             
             # Update user stats
             cursor.execute(
-                'UPDATE users SET total_orders = total_orders + 1 WHERE user_id = ?',
-                (str(user_id),)
+                'UPDATE users SET total_orders = total_orders + 1, last_active = ? WHERE user_id = ?',
+                (datetime.now(), user_id)
             )
             
-            # Update user last active
-            self.update_user_last_active(user_id)
+            self.add_system_log('INFO', 'ORDER_CREATED', f"Order {order_id} created for user {user_id}", user_id)
             
-            logger.info(f"🛒 Order created: {order_id} - {product_code} by {user_id} - Price: {price:,.0f}")
             return order_id
 
-    def update_order_status(self, order_id: int, status: str, provider_order_id: str = "", 
-                          response_data: str = "", sn: str = "", note: str = "") -> bool:
-        """Update order status dengan completion handling"""
+    def update_order_status(self, order_id: int, status: str, note: str = "", 
+                           provider_order_id: str = "", sn: str = ""):
+        """Update order status"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             
-            # Get order details first
-            cursor.execute(
-                'SELECT user_id, price, status FROM orders WHERE id = ?',
-                (order_id,)
-            )
-            order = cursor.fetchone()
+            update_fields = ["status = ?"]
+            params = [status]
             
-            if not order:
-                raise ValueError(f"Order {order_id} not found")
+            if note:
+                update_fields.append("note = ?")
+                params.append(note)
             
-            old_status = order['status']
+            if provider_order_id:
+                update_fields.append("provider_order_id = ?")
+                params.append(provider_order_id)
             
-            # Set timestamps based on status
-            processed_at = None
-            completed_at = None
+            if sn:
+                update_fields.append("sn = ?")
+                params.append(sn)
             
-            if status in ['processing'] and old_status == 'pending':
-                processed_at = datetime.now()
-            elif status in ['completed', 'failed', 'partial', 'refunded']:
-                completed_at = datetime.now()
-                if old_status != 'completed' and status == 'completed':
-                    processed_at = order['processed_at'] or datetime.now()
+            if status == 'completed':
+                update_fields.append("completed_at = ?")
+                params.append(datetime.now())
+            elif status == 'processing':
+                update_fields.append("processed_at = ?")
+                params.append(datetime.now())
             
-            cursor.execute(
-                '''UPDATE orders SET 
-                status = ?, provider_order_id = ?, response_data = ?, 
-                sn = ?, note = ?, processed_at = ?, completed_at = ?
-                WHERE id = ?''',
-                (status, provider_order_id, response_data, sn, note, 
-                 processed_at, completed_at, order_id)
-            )
+            params.append(order_id)
             
-            # Jika order completed, update user stats dan balance
-            if status == 'completed' and old_status != 'completed':
-                cursor.execute(
-                    'UPDATE users SET total_spent = total_spent + ? WHERE user_id = ?',
-                    (order['price'], order['user_id'])
-                )
-                # Balance already deducted when order was created
-                logger.info(f"✅ Order completed: {order_id} - User: {order['user_id']}")
-            
-            # Jika order failed/refunded, refund balance
-            elif status in ['failed', 'refunded'] and old_status not in ['failed', 'refunded']:
-                self.update_user_balance(order['user_id'], order['price'], 
-                                       f"Refund for order #{order_id}")
-                logger.info(f"🔄 Order {status}: {order_id} - Refunded {order['price']:,.0f}")
-            
-            logger.info(f"📝 Order {order_id} status updated from {old_status} to {status}")
-            return True
-
-    def get_order(self, order_id: int) -> Optional[Dict[str, Any]]:
-        """Get order details dengan user info"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT 
-                    o.*, 
-                    u.username,
-                    u.full_name,
-                    p.description as product_description
-                FROM orders o 
-                JOIN users u ON o.user_id = u.user_id 
-                LEFT JOIN products p ON o.product_code = p.code
-                WHERE o.id = ?
-            ''', (order_id,))
-            result = cursor.fetchone()
-            return dict(result) if result else None
-
-    def get_user_orders(self, user_id: str, limit: int = 10, 
-                       status: str = None) -> List[Dict[str, Any]]:
-        """Get user order history dengan filtering"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            query = '''
-                SELECT o.*, p.description as product_description
-                FROM orders o 
-                LEFT JOIN products p ON o.product_code = p.code
-                WHERE o.user_id = ?
-            '''
-            params = [str(user_id)]
-            
-            if status and status != 'all':
-                query += ' AND o.status = ?'
-                params.append(status)
-            
-            query += ' ORDER BY o.created_at DESC LIMIT ?'
-            params.append(limit)
-            
+            query = f"UPDATE orders SET {', '.join(update_fields)} WHERE id = ?"
             cursor.execute(query, params)
-            return [dict(row) for row in cursor.fetchall()]
-
-    def get_pending_orders(self) -> List[Dict[str, Any]]:
-        """Get all pending orders untuk processing"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT 
-                    o.*, 
-                    u.username, 
-                    u.full_name,
-                    p.description as product_description
-                FROM orders o 
-                JOIN users u ON o.user_id = u.user_id 
-                LEFT JOIN products p ON o.product_code = p.code
-                WHERE o.status = 'pending'
-                ORDER BY o.created_at ASC
-            ''')
-            return [dict(row) for row in cursor.fetchall()]
-
-    def get_orders_by_status(self, status: str, limit: int = 100) -> List[Dict[str, Any]]:
-        """Get orders by status"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT 
-                    o.*, 
-                    u.username, 
-                    u.full_name
-                FROM orders o 
-                JOIN users u ON o.user_id = u.user_id 
-                WHERE o.status = ?
-                ORDER BY o.created_at DESC
-                LIMIT ?
-            ''', (status, limit))
-            return [dict(row) for row in cursor.fetchall()]
-
-    # ==================== ADMIN & REPORTING ====================
-    def get_system_stats(self, days: int = 30) -> Dict[str, Any]:
-        """Get comprehensive system statistics"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
             
-            date_filter = datetime.now() - timedelta(days=days)
-            
-            # Total users, orders, transactions
-            cursor.execute('''
-                SELECT 
-                    COUNT(*) as total_users,
-                    SUM(balance) as total_balance,
-                    SUM(total_orders) as total_orders,
-                    SUM(total_spent) as total_revenue,
-                    SUM(total_topups) as total_topups,
-                    COUNT(CASE WHEN is_banned = 1 THEN 1 END) as banned_users
-                FROM users
-            ''')
-            stats = cursor.fetchone()
-            
-            # Today's activity
-            cursor.execute('''
-                SELECT 
-                    COUNT(*) as today_orders,
-                    SUM(price) as today_revenue
-                FROM orders 
-                WHERE DATE(created_at) = DATE('now') AND status = 'completed'
-            ''')
-            today_stats = cursor.fetchone()
-            
-            # Recent activity (last X days)
-            cursor.execute('''
-                SELECT 
-                    COUNT(*) as recent_orders,
-                    SUM(price) as recent_revenue,
-                    COUNT(DISTINCT user_id) as active_users
-                FROM orders 
-                WHERE created_at > ? AND status = 'completed'
-            ''', (date_filter,))
-            recent_stats = cursor.fetchone()
-            
-            # Pending transactions and orders
-            cursor.execute('''
-                SELECT 
-                    COUNT(*) as pending_topups,
-                    COALESCE(SUM(amount), 0) as pending_amount
-                FROM transactions 
-                WHERE status = 'pending' AND type = 'topup'
-            ''')
-            pending_stats = cursor.fetchone()
-            
-            cursor.execute('''
-                SELECT COUNT(*) as pending_orders
-                FROM orders 
-                WHERE status = 'pending'
-            ''')
-            pending_orders = cursor.fetchone()
-            
-            # Product stats
-            cursor.execute('''
-                SELECT 
-                    COUNT(*) as total_products,
-                    COUNT(CASE WHEN status = 'active' THEN 1 END) as active_products,
-                    COUNT(CASE WHEN gangguan = 1 THEN 1 END) as problem_products,
-                    COUNT(CASE WHEN kosong = 1 THEN 1 END) as empty_products
-                FROM products
-            ''')
-            product_stats = cursor.fetchone()
-            
-            return {
-                'total_users': stats['total_users'] or 0,
-                'banned_users': stats['banned_users'] or 0,
-                'total_balance': stats['total_balance'] or 0,
-                'total_orders': stats['total_orders'] or 0,
-                'total_revenue': stats['total_revenue'] or 0,
-                'total_topups': stats['total_topups'] or 0,
-                'today_orders': today_stats['today_orders'] or 0,
-                'today_revenue': today_stats['today_revenue'] or 0,
-                'recent_orders': recent_stats['recent_orders'] or 0,
-                'recent_revenue': recent_stats['recent_revenue'] or 0,
-                'active_users': recent_stats['active_users'] or 0,
-                'pending_topups': pending_stats['pending_topups'] or 0,
-                'pending_amount': pending_stats['pending_amount'] or 0,
-                'pending_orders': pending_orders['pending_orders'] or 0,
-                'total_products': product_stats['total_products'] or 0,
-                'active_products': product_stats['active_products'] or 0,
-                'problem_products': product_stats['problem_products'] or 0,
-                'empty_products': product_stats['empty_products'] or 0
-            }
-
-    def get_daily_stats(self, days: int = 7) -> List[Dict[str, Any]]:
-        """Get daily statistics untuk chart"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT 
-                    DATE(created_at) as date,
-                    COUNT(*) as order_count,
-                    SUM(price) as revenue,
-                    COUNT(DISTINCT user_id) as unique_customers
-                FROM orders 
-                WHERE created_at > DATE('now', ?) AND status = 'completed'
-                GROUP BY DATE(created_at)
-                ORDER BY date DESC
-                LIMIT ?
-            ''', (f'-{days} days', days))
-            return [dict(row) for row in cursor.fetchall()]
-
-    def get_top_users(self, limit: int = 10) -> List[Dict[str, Any]]:
-        """Get top users by spending"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT 
-                    user_id, username, full_name,
-                    total_spent, total_orders, balance,
-                    last_active, registered_at
-                FROM users 
-                WHERE is_banned = 0
-                ORDER BY total_spent DESC 
-                LIMIT ?
-            ''', (limit,))
-            return [dict(row) for row in cursor.fetchall()]
-
-    def get_top_products(self, limit: int = 10) -> List[Dict[str, Any]]:
-        """Get top products by sales"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT 
-                    p.code,
-                    p.name,
-                    p.category,
-                    p.price,
-                    COUNT(o.id) as sale_count,
-                    SUM(o.price) as total_revenue
-                FROM products p
-                LEFT JOIN orders o ON p.code = o.product_code AND o.status = 'completed'
-                GROUP BY p.code, p.name, p.category, p.price
-                ORDER BY sale_count DESC, total_revenue DESC
-                LIMIT ?
-            ''', (limit,))
-            return [dict(row) for row in cursor.fetchall()]
-
-    def ban_user(self, user_id: str, reason: str = "", admin_id: str = "") -> bool:
-        """Ban user dengan comprehensive handling"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                'UPDATE users SET is_banned = 1, ban_reason = ? WHERE user_id = ?',
-                (reason, str(user_id))
-            )
-            
-            if cursor.rowcount > 0:
-                # Log admin action
-                if admin_id:
-                    self.add_admin_log(admin_id, 'BAN_USER', 'user', user_id, 
-                                     f"Banned user {user_id}. Reason: {reason}")
-                
-                logger.warning(f"🚫 User banned: {user_id} - Reason: {reason}")
-                return True
-            return False
-
-    def unban_user(self, user_id: str, admin_id: str = "") -> bool:
-        """Unban user"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                'UPDATE users SET is_banned = 0, ban_reason = NULL WHERE user_id = ?',
-                (str(user_id),)
-            )
-            
-            if cursor.rowcount > 0:
-                # Log admin action
-                if admin_id:
-                    self.add_admin_log(admin_id, 'UNBAN_USER', 'user', user_id, 
-                                     f"Unbanned user {user_id}")
-                
-                logger.info(f"✅ User unbanned: {user_id}")
-                return True
-            return False
-
-    def get_banned_users(self) -> List[Dict[str, Any]]:
-        """Get all banned users"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT user_id, username, full_name, ban_reason, last_active
-                FROM users 
-                WHERE is_banned = 1
-                ORDER BY last_active DESC
-            ''')
-            return [dict(row) for row in cursor.fetchall()]
-
-    # ==================== SETTINGS MANAGEMENT ====================
-    def get_setting(self, key: str, default: Any = None) -> Any:
-        """Get setting value by key"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT value FROM settings WHERE key = ?', (key,))
-            result = cursor.fetchone()
-            if result:
-                try:
-                    # Try to convert to int/float if possible
-                    value = result['value']
-                    if value.isdigit():
-                        return int(value)
-                    try:
-                        return float(value)
-                    except:
-                        return value
-                except:
-                    return result['value']
-            return default
-
-    def set_setting(self, key: str, value: Any, description: str = "") -> bool:
-        """Set setting value"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT OR REPLACE INTO settings (key, value, description, updated_at)
-                VALUES (?, ?, ?, ?)
-            ''', (key, str(value), description, datetime.now()))
-            return True
-
-    def get_all_settings(self) -> Dict[str, Any]:
-        """Get all settings"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT key, value, description FROM settings')
-            return {row['key']: {'value': row['value'], 'description': row['description']} 
-                   for row in cursor.fetchall()}
+            # If order completed, update user spent
+            if status == 'completed':
+                cursor.execute('SELECT user_id, price FROM orders WHERE id = ?', (order_id,))
+                order = cursor.fetchone()
+                if order:
+                    cursor.execute(
+                        'UPDATE users SET total_spent = total_spent + ? WHERE user_id = ?',
+                        (order['price'], order['user_id'])
+                    )
 
     # ==================== LOGGING SYSTEM ====================
-    def add_admin_log(self, admin_id: str, action: str, target_type: str = "", 
-                     target_id: str = "", details: str = "", ip: str = "", 
-                     user_agent: str = ""):
-        """Add admin action log"""
+    def log_admin_action(self, admin_id: str, action: str, details: str = "", 
+                        target_type: str = None, target_id: str = None):
+        """Log admin action untuk audit trail"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT INTO admin_logs 
-                (admin_id, action, target_type, target_id, details, ip_address, user_agent)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (str(admin_id), action, target_type, target_id, details, ip, user_agent))
+                INSERT INTO admin_logs (admin_id, action, target_type, target_id, details)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (str(admin_id), action, target_type, target_id, details))
 
     def add_system_log(self, level: str, module: str, message: str, 
-                      details: str = "", user_id: str = ""):
+                      details: str = "", user_id: str = None):
         """Add system log"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT INTO system_logs 
-                (level, module, message, details, user_id)
+                INSERT INTO system_logs (level, module, message, details, user_id)
                 VALUES (?, ?, ?, ?, ?)
             ''', (level, module, message, details, user_id))
 
-    def get_admin_logs(self, admin_id: str = None, limit: int = 100) -> List[Dict[str, Any]]:
-        """Get admin logs dengan filtering"""
+    # ==================== STATISTICS & REPORTING ====================
+    def get_bot_statistics(self) -> Dict[str, Any]:
+        """Get comprehensive bot statistics"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             
-            if admin_id:
-                cursor.execute('''
-                    SELECT * FROM admin_logs 
-                    WHERE admin_id = ?
-                    ORDER BY timestamp DESC 
-                    LIMIT ?
-                ''', (str(admin_id), limit))
-            else:
-                cursor.execute('''
-                    SELECT * FROM admin_logs 
-                    ORDER BY timestamp DESC 
-                    LIMIT ?
-                ''', (limit,))
+            # Basic counts
+            cursor.execute("SELECT COUNT(*) FROM users")
+            total_users = cursor.fetchone()[0]
             
-            return [dict(row) for row in cursor.fetchall()]
-
-    def get_system_logs(self, level: str = None, limit: int = 100) -> List[Dict[str, Any]]:
-        """Get system logs dengan filtering"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM users WHERE is_banned = 0")
+            active_users = cursor.fetchone()[0]
             
-            if level:
-                cursor.execute('''
-                    SELECT * FROM system_logs 
-                    WHERE level = ?
-                    ORDER BY timestamp DESC 
-                    LIMIT ?
-                ''', (level, limit))
-            else:
-                cursor.execute('''
-                    SELECT * FROM system_logs 
-                    ORDER BY timestamp DESC 
-                    LIMIT ?
-                ''', (limit,))
+            cursor.execute("SELECT COUNT(*) FROM products WHERE status = 'active'")
+            active_products = cursor.fetchone()[0]
             
-            return [dict(row) for row in cursor.fetchall()]
-
-    # ==================== NOTIFICATION SYSTEM ====================
-    def add_notification(self, user_id: str, title: str, message: str, 
-                        notif_type: str = "info") -> int:
-        """Add notification for user"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT INTO notifications 
-                (user_id, title, message, type)
-                VALUES (?, ?, ?, ?)
-            ''', (str(user_id), title, message, notif_type))
-            return cursor.lastrowid
-
-    def get_user_notifications(self, user_id: str, unread_only: bool = False, 
-                              limit: int = 20) -> List[Dict[str, Any]]:
-        """Get user notifications"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM orders WHERE status = 'completed'")
+            completed_orders = cursor.fetchone()[0]
             
-            query = 'SELECT * FROM notifications WHERE user_id = ?'
-            params = [str(user_id)]
+            cursor.execute("SELECT SUM(price) FROM orders WHERE status = 'completed'")
+            total_revenue = cursor.fetchone()[0] or 0
             
-            if unread_only:
-                query += ' AND is_read = 0'
+            cursor.execute("SELECT COUNT(*) FROM topup_requests WHERE status = 'pending'")
+            pending_topups = cursor.fetchone()[0]
             
-            query += ' ORDER BY created_at DESC LIMIT ?'
-            params.append(limit)
+            cursor.execute("SELECT COUNT(*) FROM orders WHERE status = 'pending'")
+            pending_orders = cursor.fetchone()[0]
             
-            cursor.execute(query, params)
-            return [dict(row) for row in cursor.fetchall()]
-
-    def mark_notification_read(self, notification_id: int) -> bool:
-        """Mark notification as read"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                'UPDATE notifications SET is_read = 1 WHERE id = ?',
-                (notification_id,)
-            )
-            return cursor.rowcount > 0
-
-    def mark_all_notifications_read(self, user_id: str) -> bool:
-        """Mark all user notifications as read"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                'UPDATE notifications SET is_read = 1 WHERE user_id = ?',
-                (str(user_id),)
-            )
-            return cursor.rowcount > 0
-
-    # ==================== MAINTENANCE & BACKUP ====================
-    def cleanup_old_data(self, days: int = 30) -> Dict[str, int]:
-        """Cleanup old data untuk maintenance"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cutoff_date = datetime.now() - timedelta(days=days)
+            # Today's stats
+            today = datetime.now().strftime('%Y-%m-%d')
+            cursor.execute("SELECT COUNT(*) FROM users WHERE DATE(registered_at) = ?", (today,))
+            new_users_today = cursor.fetchone()[0]
             
-            # Archive old completed transactions (keep recent for records)
-            cursor.execute(
-                'DELETE FROM transactions WHERE status = "completed" AND created_at < ?',
-                (cutoff_date,)
-            )
-            trans_deleted = cursor.rowcount
+            cursor.execute("SELECT COUNT(*) FROM orders WHERE DATE(created_at) = ? AND status = 'completed'", (today,))
+            orders_today = cursor.fetchone()[0]
             
-            # Archive old completed orders (keep failed for analysis)
-            cursor.execute(
-                'DELETE FROM orders WHERE status IN ("completed", "failed", "refunded") AND created_at < ?',
-                (cutoff_date,)
-            )
-            orders_deleted = cursor.rowcount
-            
-            # Clean old system logs (keep ERROR logs longer)
-            error_cutoff = datetime.now() - timedelta(days=days*2)
-            cursor.execute(
-                'DELETE FROM system_logs WHERE level != "ERROR" AND timestamp < ?',
-                (cutoff_date,)
-            )
-            logs_deleted = cursor.rowcount
-            
-            # Clean old admin logs
-            cursor.execute(
-                'DELETE FROM admin_logs WHERE timestamp < ?',
-                (cutoff_date,)
-            )
-            admin_logs_deleted = cursor.rowcount
-            
-            # Clean old notifications
-            cursor.execute(
-                'DELETE FROM notifications WHERE is_read = 1 AND created_at < ?',
-                (cutoff_date - timedelta(days=7),)
-            )
-            notif_deleted = cursor.rowcount
-            
-            # Vacuum database to optimize space
-            cursor.execute('VACUUM')
-            
-            logger.info(f"🧹 Cleanup completed: {trans_deleted} transactions, {orders_deleted} orders, "
-                       f"{logs_deleted} system logs, {admin_logs_deleted} admin logs, {notif_deleted} notifications")
+            cursor.execute("SELECT SUM(price) FROM orders WHERE DATE(created_at) = ? AND status = 'completed'", (today,))
+            revenue_today = cursor.fetchone()[0] or 0
             
             return {
-                'transactions_deleted': trans_deleted,
-                'orders_deleted': orders_deleted,
-                'system_logs_deleted': logs_deleted,
-                'admin_logs_deleted': admin_logs_deleted,
-                'notifications_deleted': notif_deleted
+                'total_users': total_users,
+                'active_users': active_users,
+                'active_products': active_products,
+                'completed_orders': completed_orders,
+                'total_revenue': total_revenue,
+                'pending_topups': pending_topups,
+                'pending_orders': pending_orders,
+                'new_users_today': new_users_today,
+                'orders_today': orders_today,
+                'revenue_today': revenue_today
             }
 
-    def export_data(self, table: str, limit: int = None) -> List[Dict[str, Any]]:
-        """Export table data untuk backup"""
+    def get_user_leaderboard(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Get user leaderboard by total spent"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            
-            valid_tables = ['users', 'products', 'transactions', 'orders', 
-                          'admin_logs', 'system_logs', 'notifications', 'settings']
-            if table not in valid_tables:
-                raise ValueError(f"Invalid table. Must be one of: {valid_tables}")
-            
-            query = f'SELECT * FROM {table}'
-            if limit:
-                query += f' LIMIT {limit}'
-            
-            cursor.execute(query)
-            return [dict(row) for row in cursor.fetchall()]
-
-    def backup_database(self, backup_path: str) -> bool:
-        """Create database backup"""
-        import shutil
-        try:
-            # Create backup directory if not exists
-            os.makedirs(os.path.dirname(backup_path), exist_ok=True)
-            
-            # Copy database file
-            shutil.copy2(self.db_path, backup_path)
-            
-            # Log backup activity
-            self.add_system_log('INFO', 'BACKUP', f'Database backed up to: {backup_path}')
-            logger.info(f"💾 Database backed up to: {backup_path}")
-            return True
-        except Exception as e:
-            logger.error(f"Backup failed: {e}")
-            self.add_system_log('ERROR', 'BACKUP', f'Backup failed: {e}')
-            return False
-
-    def get_database_size(self) -> int:
-        """Get database file size in bytes"""
-        try:
-            return os.path.getsize(self.db_path)
-        except:
-            return 0
-
-    def optimize_database(self):
-        """Optimize database performance"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('PRAGMA optimize')
-            cursor.execute('PRAGMA vacuum')
-            cursor.execute('PRAGMA analysis_limit=400')
-            cursor.execute('PRAGMA auto_vacuum=INCREMENTAL')
-            
-            logger.info("🔧 Database optimized")
-            self.add_system_log('INFO', 'MAINTENANCE', 'Database optimization completed')
-
-    # ==================== ADVANCED QUERIES ====================
-    def search_users(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
-        """Search users by username, full name, or user ID"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            search_term = f"%{query}%"
             cursor.execute('''
-                SELECT user_id, username, full_name, balance, total_orders, 
-                       total_spent, last_active, is_banned
+                SELECT user_id, username, full_name, total_spent, total_orders, level
                 FROM users 
-                WHERE user_id LIKE ? OR username LIKE ? OR full_name LIKE ?
-                ORDER BY 
-                    CASE 
-                        WHEN user_id = ? THEN 1
-                        WHEN username = ? THEN 2
-                        ELSE 3
-                    END,
-                    last_active DESC
+                WHERE is_banned = 0
+                ORDER BY total_spent DESC
                 LIMIT ?
-            ''', (search_term, search_term, search_term, query, query, limit))
+            ''', (limit,))
             return [dict(row) for row in cursor.fetchall()]
 
-    def get_financial_report(self, start_date: str, end_date: str) -> Dict[str, Any]:
-        """Get financial report for period"""
+    # ==================== SETTINGS MANAGEMENT ====================
+    def get_setting(self, key: str, default: str = None) -> str:
+        """Get setting value"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            
-            # Revenue from completed orders
-            cursor.execute('''
-                SELECT 
-                    SUM(price) as revenue,
-                    COUNT(*) as order_count
-                FROM orders 
-                WHERE status = 'completed' 
-                AND created_at BETWEEN ? AND ?
-            ''', (start_date, end_date))
-            revenue_stats = cursor.fetchone()
-            
-            # Topup statistics
-            cursor.execute('''
-                SELECT 
-                    SUM(amount) as topup_amount,
-                    COUNT(*) as topup_count
-                FROM transactions 
-                WHERE type = 'topup' AND status = 'completed'
-                AND created_at BETWEEN ? AND ?
-            ''', (start_date, end_date))
-            topup_stats = cursor.fetchone()
-            
-            # User growth
-            cursor.execute('''
-                SELECT COUNT(*) as new_users
-                FROM users 
-                WHERE registered_at BETWEEN ? AND ?
-            ''', (start_date, end_date))
-            user_stats = cursor.fetchone()
-            
-            # Top products
-            cursor.execute('''
-                SELECT 
-                    p.name,
-                    p.category,
-                    COUNT(o.id) as sale_count,
-                    SUM(o.price) as revenue
-                FROM products p
-                JOIN orders o ON p.code = o.product_code
-                WHERE o.status = 'completed' AND o.created_at BETWEEN ? AND ?
-                GROUP BY p.name, p.category
-                ORDER BY revenue DESC
-                LIMIT 10
-            ''', (start_date, end_date))
-            top_products = [dict(row) for row in cursor.fetchall()]
-            
-            return {
-                'period': {'start': start_date, 'end': end_date},
-                'revenue': revenue_stats['revenue'] or 0,
-                'order_count': revenue_stats['order_count'] or 0,
-                'topup_amount': topup_stats['topup_amount'] or 0,
-                'topup_count': topup_stats['topup_count'] or 0,
-                'new_users': user_stats['new_users'] or 0,
-                'top_products': top_products
-            }
+            cursor.execute('SELECT value FROM settings WHERE key = ?', (key,))
+            result = cursor.fetchone()
+            return result['value'] if result else default
 
-# Singleton instance untuk easy access
-db = DatabaseManager()
+    def update_setting(self, key: str, value: str):
+        """Update setting value"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT OR REPLACE INTO settings (key, value, updated_at)
+                VALUES (?, ?, ?)
+            ''', (key, value, datetime.now()))
 
-# Example usage and testing
-if __name__ == "__main__":
-    # Initialize logging
-    logging.basicConfig(level=logging.INFO)
-    
-    # Test database initialization
-    db.init_database()
-    
-    # Test user operations
-    user_id = "12345"
-    user = db.get_or_create_user(user_id, "test_user", "Test User")
-    print(f"✅ User created: {user['full_name']}")
-    
-    # Test balance operations
-    db.update_user_balance(user_id, 50000, "Initial topup")
-    balance = db.get_user_balance(user_id)
-    print(f"💰 User balance: {balance:,.0f}")
-    
-    # Test settings
-    db.set_setting("test_setting", "123", "Test setting")
-    setting = db.get_setting("test_setting")
-    print(f"⚙️ Setting value: {setting}")
-    
-    # Test system stats
-    stats = db.get_system_stats()
-    print(f"📊 System stats: {stats}")
-    
-    print("✅ All database tests completed successfully!")
+# ==================== GLOBAL INSTANCE & COMPATIBILITY FUNCTIONS ====================
+
+# Create global instance
+db_manager = DatabaseManager()
+
+# Compatibility functions for existing code
+def init_database():
+    """Initialize database - compatibility function"""
+    return db_manager.init_database()
+
+def get_or_create_user(user_id: str, username: str = "", full_name: str = "") -> str:
+    """Get or create user - compatibility function"""
+    user_data = db_manager.get_or_create_user(user_id, username, full_name)
+    return user_data.get('user_id', user_id) if user_data else user_id
+
+def get_user_saldo(user_id: str) -> float:
+    """Get user balance - compatibility function"""
+    return db_manager.get_user_balance(user_id)
+
+def get_current_timestamp() -> str:
+    """Get current timestamp - compatibility function"""
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+def add_pending_topup(user_id: str, amount: float, proof_text: str = "") -> int:
+    """Add pending topup - compatibility function"""
+    return db_manager.add_pending_topup(user_id, amount, proof_text)
+
+def get_pending_topups() -> List[Dict[str, Any]]:
+    """Get pending topups - compatibility function"""
+    return db_manager.get_pending_topups()
+
+def approve_topup(topup_id: int, admin_id: str) -> bool:
+    """Approve topup - compatibility function"""
+    return db_manager.approve_topup(topup_id, admin_id)
+
+def reject_topup(topup_id: int, admin_id: str) -> bool:
+    """Reject topup - compatibility function"""
+    return db_manager.reject_topup(topup_id, admin_id)
+
+def log_admin_action(admin_id: str, action: str, details: str = ""):
+    """Log admin action - compatibility function"""
+    return db_manager.log_admin_action(admin_id, action, details)
+
+def get_bot_statistics() -> Dict[str, Any]:
+    """Get bot statistics - compatibility function"""
+    return db_manager.get_bot_statistics()
+
+# Product management compatibility functions
+def get_products_by_category(category: str = None) -> List[Dict[str, Any]]:
+    """Get products by category - compatibility function"""
+    return db_manager.get_products_by_category(category)
+
+def get_product_categories() -> List[str]:
+    """Get product categories - compatibility function"""
+    return db_manager.get_product_categories()
+
+def get_product_by_id(product_code: str) -> Optional[Dict[str, Any]]:
+    """Get product by code - compatibility function"""
+    return db_manager.get_product_by_code(product_code)
+
+def update_product_stock(product_code: str, new_stock: int):
+    """Update product stock - compatibility function"""
+    return db_manager.update_product_stock(product_code, new_stock)
