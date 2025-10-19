@@ -27,16 +27,60 @@ from telegram.ext import (
 # Custom Module Imports
 import config
 import database
-from order_handler import get_conversation_handler as order_conv_handler
-from topup_handler import (
-    topup_conv_handler, 
-    show_topup_menu, 
-    show_manage_topup,
-    handle_topup_manual,
-    handle_topup_history
-)
-from admin_handler import admin_menu, admin_callback_handler
-import stok_handler
+
+# Import handlers dengan error handling
+try:
+    from topup_handler import (
+        topup_conv_handler, 
+        show_topup_menu, 
+        show_manage_topup,
+        handle_topup_manual,
+        handle_topup_history
+    )
+except ImportError as e:
+    print(f"Error importing topup_handler: {e}")
+    # Fallback dummy handlers
+    topup_conv_handler = None
+    async def show_topup_menu(update, context): 
+        await update.callback_query.message.reply_text("❌ Topup handler tidak tersedia")
+    show_manage_topup = handle_topup_manual = handle_topup_history = show_topup_menu
+
+try:
+    import order_handler
+    # Cek jika order_handler memiliki conversation handler
+    if hasattr(order_handler, 'get_conversation_handler'):
+        order_conv_handler = order_handler.get_conversation_handler()
+    else:
+        # Buat simple fallback
+        order_conv_handler = ConversationHandler(
+            entry_points=[CallbackQueryHandler(lambda u,c: u.callback_query.message.reply_text("❌ Order system tidak tersedia"), pattern="^menu_order$")],
+            states={},
+            fallbacks=[]
+        )
+except ImportError as e:
+    print(f"Error importing order_handler: {e}")
+    order_conv_handler = None
+
+try:
+    from admin_handler import admin_menu, admin_callback_handler
+except ImportError as e:
+    print(f"Error importing admin_handler: {e}")
+    async def admin_menu(update, context):
+        await update.message.reply_text("❌ Admin handler tidak tersedia")
+    async def admin_callback_handler(update, context):
+        await update.callback_query.answer("❌ Admin features tidak tersedia")
+
+try:
+    import stok_handler
+except ImportError as e:
+    print(f"Error importing stok_handler: {e}")
+    # Buat fallback untuk stok_handler
+    class DummyStokHandler:
+        async def stock_akrab_callback(update, context):
+            await update.callback_query.message.reply_text("❌ Stok handler tidak tersedia")
+        async def stock_command(update, context):
+            await update.message.reply_text("❌ Stok handler tidak tersedia")
+    stok_handler = DummyStokHandler()
 
 # ==================== LOGGING SETUP ====================
 logging.basicConfig(
@@ -133,8 +177,12 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await query.answer("❌ Anda bukan admin!", show_alert=True)
         elif data == "menu_order":
-            from order_handler import menu_handler as order_menu_handler
-            await order_menu_handler(update, context)
+            # Direct order handler call
+            try:
+                await order_handler.menu_handler(update, context)
+            except Exception as e:
+                logger.error(f"Error in order handler: {e}")
+                await query.message.reply_text("❌ Sistem order sedang tidak tersedia.")
         else:
             await query.message.reply_text("❌ Menu tidak dikenali.")
             
@@ -252,8 +300,8 @@ async def show_help_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• 📞 **BANTUAN** - Menu bantuan ini\n\n"
         
         "**BUTUH BANTUAN?**\n"
-        "Hubungi Admin: @username_admin\n"
-        "CS 24/7 siap membantu!\n\n"
+        "Hubungi Admin untuk bantuan lebih lanjut.\n"
+        "CS siap membantu!\n\n"
         
         "**KETENTUAN:**\n"
         "• Semua transaksi bersifat final\n"
@@ -347,15 +395,17 @@ async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /order"""
-    from order_handler import menu_handler as order_menu_handler
-    await order_menu_handler(update, context)
+    try:
+        await order_handler.menu_handler(update, context)
+    except Exception as e:
+        logger.error(f"Error in order command: {e}")
+        await update.message.reply_text("❌ Sistem order sedang tidak tersedia.")
 
 # ==================== UTILITY HANDLERS ====================
 async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk pesan yang tidak dikenal"""
     logger.debug(f"Unknown message from {update.message.from_user.id}: {update.message.text}")
     
-    # Kirim pesan bantuan untuk input yang tidak dikenali
     await update.message.reply_text(
         "🤔 Saya tidak mengerti perintah tersebut.\n\n"
         "Gunakan /help untuk melihat daftar perintah yang tersedia "
@@ -370,7 +420,6 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     """Global error handler untuk menangani semua error"""
     logger.error(f"Exception while handling an update: {context.error}", exc_info=True)
     
-    # Kirim pesan error ke user
     if isinstance(update, Update):
         if update.message:
             await update.message.reply_text(
@@ -430,22 +479,23 @@ def main():
         logger.info("✅ Application built successfully")
         
         # ==================== HANDLER REGISTRATION ====================
-        # URUTAN PENTING: Conversation handlers dulu, kemudian yang lain
         
         # 1. CONVERSATION HANDLERS (harus pertama)
         logger.info("📝 Registering conversation handlers...")
         
         # Topup Conversation Handler
-        application.add_handler(topup_conv_handler)
-        logger.info("  ✅ Topup conversation handler registered")
+        if topup_conv_handler:
+            application.add_handler(topup_conv_handler)
+            logger.info("  ✅ Topup conversation handler registered")
+        else:
+            logger.warning("  ⚠️ Topup conversation handler not available")
         
         # Order Conversation Handler  
-        try:
-            order_handler = order_conv_handler()
-            application.add_handler(order_handler)
+        if order_conv_handler:
+            application.add_handler(order_conv_handler)
             logger.info("  ✅ Order conversation handler registered")
-        except Exception as e:
-            logger.error(f"  ❌ Failed to register order conversation handler: {e}")
+        else:
+            logger.warning("  ⚠️ Order conversation handler not available")
         
         # 2. COMMAND HANDLERS
         logger.info("⌨️ Registering command handlers...")
@@ -488,7 +538,6 @@ def main():
         # 4. MESSAGE HANDLERS (harus terakhir)
         logger.info("💬 Registering message handlers...")
         
-        # Handler untuk pesan teks yang tidak dikenali
         application.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND,
             unknown_message
