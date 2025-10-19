@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """
-Bot Telegram Full Feature - Integrated dengan semua handler
-Author: Your Name
-Version: 1.0
+Bot Telegram Full Feature dengan Database Manager Lengkap
 """
 
 import logging
@@ -26,45 +24,9 @@ from telegram.ext import (
 
 # Custom Module Imports
 import config
+import database  # Now using the new DatabaseManager
 
-# ==================== DATABASE FALLBACK ====================
-class DatabaseFallback:
-    """Fallback database jika modul database tidak tersedia"""
-    
-    @staticmethod
-    def init_database():
-        """Inisialisasi database fallback"""
-        print("⚠️ Using fallback database - no actual database initialized")
-        return True
-    
-    @staticmethod
-    def get_or_create_user(user_id, username, full_name):
-        """Create atau get user fallback"""
-        return user_id
-    
-    @staticmethod
-    def get_user_saldo(user_id):
-        """Get saldo fallback"""
-        return 0
-    
-    @staticmethod
-    def get_current_timestamp():
-        """Get timestamp fallback"""
-        from datetime import datetime
-        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-# Try to import database dengan fallback
-try:
-    import database
-    # Test jika fungsi tersedia
-    if not hasattr(database, 'init_database'):
-        raise AttributeError("init_database not found in database module")
-except (ImportError, AttributeError) as e:
-    print(f"⚠️ Database module not available, using fallback: {e}")
-    database = DatabaseFallback()
-
-# ==================== HANDLER IMPORTS DENGAN FALLBACK ====================
-# Topup Handler
+# Import handlers
 try:
     from topup_handler import (
         topup_conv_handler, 
@@ -74,109 +36,67 @@ try:
         handle_topup_history
     )
     TOPUP_AVAILABLE = True
-    print("✅ Topup handler loaded successfully")
 except ImportError as e:
     print(f"❌ Error importing topup_handler: {e}")
     TOPUP_AVAILABLE = False
-    # Fallback dummy handlers
     topup_conv_handler = None
-    
     async def show_topup_menu(update, context): 
         if hasattr(update, 'callback_query'):
             await update.callback_query.message.reply_text("❌ Topup handler tidak tersedia")
         else:
             await update.message.reply_text("❌ Topup handler tidak tersedia")
-    
     show_manage_topup = handle_topup_manual = handle_topup_history = show_topup_menu
 
-# Order Handler
 try:
     import order_handler
     ORDER_AVAILABLE = True
-    print("✅ Order handler loaded successfully")
-    
-    # Cek jika order_handler memiliki conversation handler
-    if hasattr(order_handler, 'get_conversation_handler'):
-        order_conv_handler = order_handler.get_conversation_handler()
-    elif hasattr(order_handler, 'order_conv_handler'):
-        order_conv_handler = order_handler.order_conv_handler
-    else:
-        # Buat simple fallback
-        order_conv_handler = ConversationHandler(
-            entry_points=[CallbackQueryHandler(lambda u,c: asyncio.create_task(u.callback_query.message.reply_text("❌ Order system tidak tersedia")), pattern="^menu_order$")],
-            states={},
-            fallbacks=[]
-        )
-        
-    # Cek jika ada menu_handler
-    if hasattr(order_handler, 'menu_handler'):
-        order_menu_handler = order_handler.menu_handler
-    else:
-        async def order_menu_handler(update, context):
-            if hasattr(update, 'callback_query'):
-                await update.callback_query.message.reply_text("❌ Order system tidak tersedia")
-            else:
-                await update.message.reply_text("❌ Order system tidak tersedia")
-                
 except ImportError as e:
     print(f"❌ Error importing order_handler: {e}")
     ORDER_AVAILABLE = False
-    order_conv_handler = None
     async def order_menu_handler(update, context):
         if hasattr(update, 'callback_query'):
             await update.callback_query.message.reply_text("❌ Order system tidak tersedia")
         else:
             await update.message.reply_text("❌ Order system tidak tersedia")
 
-# Admin Handler
 try:
-    from admin_handler import admin_menu, admin_callback_handler
+    import stok_handler
+    STOK_AVAILABLE = True
+except ImportError as e:
+    print(f"❌ Error importing stok_handler: {e}")
+    STOK_AVAILABLE = False
+    class DummyStokHandler:
+        @staticmethod
+        async def stock_akrab_callback(update, context):
+            await update.callback_query.message.reply_text("❌ Stok handler tidak tersedia")
+        @staticmethod
+        async def stock_command(update, context):
+            await update.message.reply_text("❌ Stok handler tidak tersedia")
+    stok_handler = DummyStokHandler()
+
+try:
+    from admin_handler import (
+        admin_menu,
+        admin_callback_handler,
+        edit_produk_conv_handler,
+        broadcast_handler,
+        cek_user_handler,
+        jadikan_admin_handler,
+        topup_list_handler,
+        get_admin_handlers
+    )
     ADMIN_AVAILABLE = True
-    print("✅ Admin handler loaded successfully")
 except ImportError as e:
     print(f"❌ Error importing admin_handler: {e}")
     ADMIN_AVAILABLE = False
-    
     async def admin_menu(update, context):
         if hasattr(update, 'message'):
             await update.message.reply_text("❌ Admin handler tidak tersedia")
         else:
             await update.callback_query.message.reply_text("❌ Admin handler tidak tersedia")
-            
     async def admin_callback_handler(update, context):
         await update.callback_query.answer("❌ Admin features tidak tersedia", show_alert=True)
-
-# Stok Handler
-try:
-    import stok_handler
-    STOK_AVAILABLE = True
-    print("✅ Stok handler loaded successfully")
-    
-    # Cek jika fungsi tersedia
-    if not hasattr(stok_handler, 'stock_akrab_callback'):
-        async def fallback_stock_callback(update, context):
-            await update.callback_query.message.reply_text("❌ Stok handler tidak lengkap")
-        stok_handler.stock_akrab_callback = fallback_stock_callback
-        
-    if not hasattr(stok_handler, 'stock_command'):
-        async def fallback_stock_command(update, context):
-            await update.message.reply_text("❌ Stok handler tidak lengkap")
-        stok_handler.stock_command = fallback_stock_command
-        
-except ImportError as e:
-    print(f"❌ Error importing stok_handler: {e}")
-    STOK_AVAILABLE = False
-    # Buat fallback untuk stok_handler
-    class DummyStokHandler:
-        @staticmethod
-        async def stock_akrab_callback(update, context):
-            await update.callback_query.message.reply_text("❌ Stok handler tidak tersedia")
-            
-        @staticmethod
-        async def stock_command(update, context):
-            await update.message.reply_text("❌ Stok handler tidak tersedia")
-            
-    stok_handler = DummyStokHandler()
+    edit_produk_conv_handler = None
 
 # ==================== LOGGING SETUP ====================
 logging.basicConfig(
@@ -190,8 +110,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ==================== GLOBAL VARIABLES ====================
-BOT_TOKEN = getattr(config, 'BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE')
-ADMIN_IDS = set(str(admin_id) for admin_id in getattr(config, "ADMIN_TELEGRAM_IDS", []))
+BOT_TOKEN = config.BOT_TOKEN
+ADMIN_IDS = set(str(admin_id) for admin_id in config.ADMIN_TELEGRAM_IDS)
 
 # ==================== BASIC COMMAND HANDLERS ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -228,12 +148,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🤖 **Selamat Datang!**\n\n"
             f"Halo {user.full_name}!\n"
             f"💰 **Saldo Anda:** Rp {saldo:,.0f}\n\n"
-            f"Pilih menu di bawah untuk mulai berbelanja:\n\n"
-            f"• 🛒 **BELI PRODUK** - Pesan pulsa, kuota, dll\n"
-            f"• 💳 **CEK SALDO** - Lihat saldo akun\n" 
-            f"• 📊 **CEK STOK** - Cek ketersediaan produk\n"
-            f"• 💸 **TOP UP** - Tambah saldo\n"
-            f"• 📞 **BANTUAN** - Bantuan penggunaan bot"
+            f"Pilih menu di bawah untuk mulai berbelanja:"
         )
         
         await update.message.reply_text(
@@ -273,9 +188,8 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await query.answer("❌ Anda bukan admin!", show_alert=True)
         elif data == "menu_order":
-            # Direct order handler call
             try:
-                await order_menu_handler(update, context)
+                await order_handler.menu_handler(update, context)
             except Exception as e:
                 logger.error(f"Error in order handler: {e}")
                 await query.message.reply_text("❌ Sistem order sedang tidak tersedia.")
@@ -376,33 +290,19 @@ async def show_help_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     help_text = (
         "📞 **BANTUAN & PANDUAN**\n\n"
-        
         "**CARA ORDER:**\n"
         "1. Pilih 🛒 **BELI PRODUK**\n"
         "2. Pilih kategori produk\n"
         "3. Pilih produk yang diinginkan\n"
         "4. Masukkan nomor tujuan\n"
         "5. Konfirmasi dan bayar\n\n"
-        
         "**TOP UP SALDO:**\n"
         "1. Pilih 💸 **TOP UP SALDO**\n"
         "2. Masukkan nominal\n"
         "3. Transfer sesuai instruksi\n"
         "4. Tunggu konfirmasi admin\n\n"
-        
-        "**FITUR LAIN:**\n"
-        "• 📊 **CEK STOK** - Lihat ketersediaan produk\n"
-        "• 💳 **CEK SALDO** - Lihat saldo akun\n"
-        "• 📞 **BANTUAN** - Menu bantuan ini\n\n"
-        
         "**BUTUH BANTUAN?**\n"
-        "Hubungi Admin untuk bantuan lebih lanjut.\n"
-        "CS siap membantu!\n\n"
-        
-        "**KETENTUAN:**\n"
-        "• Semua transaksi bersifat final\n"
-        "• Tidak ada pengembalian dana\n"
-        "• Pastikan data benar sebelum order"
+        "Hubungi Admin untuk bantuan lebih lanjut."
     )
     
     keyboard = [
@@ -462,7 +362,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     help_text = (
         "🤖 **BOT COMMANDS**\n\n"
-        
         "**PERINTAH UTAMA:**\n"
         "• /start - Menu utama bot\n"
         "• /help - Bantuan ini\n"
@@ -470,13 +369,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /topup - Top up saldo\n"
         "• /stock - Cek stok produk\n"
         "• /order - Beli produk\n\n"
-        
         "**UNTUK ADMIN:**\n"
-        "• /admin - Panel admin\n\n"
-        
-        "**CARA PENGGUNAAN:**\n"
-        "Gunakan tombol menu untuk navigasi yang mudah!\n"
-        "Atau ketik command di atas."
+        "• /admin - Panel admin\n"
+        "• /broadcast - Kirim pesan ke semua user\n"
+        "• /topup_list - Lihat daftar topup\n"
+        "• /cek_user - Cek info user\n"
     )
     
     await update.message.reply_text(
@@ -492,7 +389,7 @@ async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /order"""
     try:
-        await order_menu_handler(update, context)
+        await order_handler.menu_handler(update, context)
     except Exception as e:
         logger.error(f"Error in order command: {e}")
         await update.message.reply_text("❌ Sistem order sedang tidak tersedia.")
@@ -545,7 +442,7 @@ async def post_init(application: Application):
     # Status handler availability
     status_info = (
         f"📊 Handler Status:\n"
-        f"• Database: {'✅' if not isinstance(database, DatabaseFallback) else '❌'}\n"
+        f"• Database: ✅ (Advanced)\n"
         f"• Topup: {'✅' if TOPUP_AVAILABLE else '❌'}\n"
         f"• Order: {'✅' if ORDER_AVAILABLE else '❌'}\n"
         f"• Admin: {'✅' if ADMIN_AVAILABLE else '❌'}\n"
@@ -553,41 +450,59 @@ async def post_init(application: Application):
     )
     print(status_info)
     
+    # Get bot statistics
+    try:
+        stats = database.get_bot_statistics()
+        stats_info = (
+            f"📈 Bot Statistics:\n"
+            f"• Users: {stats['total_users']}\n"
+            f"• Active Users: {stats['active_users']}\n"
+            f"• Products: {stats['active_products']}\n"
+            f"• Revenue: Rp {stats['total_revenue']:,.0f}\n"
+            f"• Pending Topups: {stats['pending_topups']}\n"
+        )
+        print(stats_info)
+    except Exception as e:
+        logger.error(f"Error getting bot statistics: {e}")
+    
     # Kirim notification ke admin bahwa bot aktif
     admin_ids = getattr(config, 'ADMIN_TELEGRAM_IDS', [])
     for admin_id in admin_ids:
         try:
+            if not str(admin_id).isdigit():
+                logger.warning(f"⚠️ Invalid admin ID format: {admin_id}")
+                continue
+                
             await application.bot.send_message(
-                chat_id=admin_id,
+                chat_id=int(admin_id),
                 text="✅ **Bot Started Successfully!**\n\n"
-                     f"🤖 Bot is now running and ready to serve users.\n"
+                     f"🤖 Bot is now running with advanced database system.\n"
                      f"⏰ Started at: {database.get_current_timestamp()}\n\n"
-                     f"{status_info}\n"
-                     "Use /admin to access admin panel.",
+                     f"{status_info}",
                 parse_mode='Markdown'
             )
             logger.info(f"✅ Startup notification sent to admin {admin_id}")
         except Exception as e:
-            logger.error(f"❌ Failed to send startup notification to admin {admin_id}: {e}")
+            logger.warning(f"⚠️ Cannot send notification to admin {admin_id}: {e}")
 
 # ==================== MAIN FUNCTION ====================
 def main():
     """Main function - Initialize dan start bot"""
     try:
-        logger.info("🚀 Starting Telegram Bot...")
+        logger.info("🚀 Starting Telegram Bot with Advanced Database...")
         
         # Check BOT_TOKEN
         if BOT_TOKEN == 'YOUR_BOT_TOKEN_HERE':
             logger.critical("❌ Please set BOT_TOKEN in config.py")
             sys.exit(1)
         
-        # Initialize database
+        # Initialize database dengan new DatabaseManager
         try:
             database.init_database()
-            logger.info("✅ Database initialized")
+            logger.info("✅ Advanced database initialized successfully")
         except Exception as e:
             logger.error(f"❌ Database initialization failed: {e}")
-            logger.info("⚠️ Continuing with fallback database")
+            sys.exit(1)
         
         # Create Application dengan persistence
         persistence = PicklePersistence(filepath="bot_persistence")
@@ -611,12 +526,12 @@ def main():
         else:
             logger.warning("  ⚠️ Topup conversation handler not available")
         
-        # Order Conversation Handler  
-        if order_conv_handler:
-            application.add_handler(order_conv_handler)
-            logger.info("  ✅ Order conversation handler registered")
+        # Admin Edit Produk Conversation Handler
+        if edit_produk_conv_handler:
+            application.add_handler(edit_produk_conv_handler)
+            logger.info("  ✅ Admin edit produk conversation handler registered")
         else:
-            logger.warning("  ⚠️ Order conversation handler not available")
+            logger.warning("  ⚠️ Admin edit produk conversation handler not available")
         
         # 2. COMMAND HANDLERS
         logger.info("⌨️ Registering command handlers...")
@@ -628,8 +543,17 @@ def main():
             CommandHandler("topup", topup_command),
             CommandHandler("stock", stock_command),
             CommandHandler("order", order_command),
-            CommandHandler("admin", admin_menu),
         ]
+        
+        # Add admin commands if available
+        if ADMIN_AVAILABLE:
+            command_handlers.extend([
+                CommandHandler("admin", admin_menu),
+                CommandHandler("broadcast", broadcast_handler),
+                CommandHandler("cek_user", cek_user_handler),
+                CommandHandler("jadikan_admin", jadikan_admin_handler),
+                CommandHandler("topup_list", topup_list_handler),
+            ])
         
         for handler in command_handlers:
             application.add_handler(handler)
@@ -644,13 +568,13 @@ def main():
             
             # Topup handlers
             CallbackQueryHandler(show_topup_menu, pattern="^menu_topup$"),
-            CallbackQueryHandler(show_manage_topup, pattern="^manage_topup$"),
-            CallbackQueryHandler(handle_topup_history, pattern="^topup_history$"),
-            CallbackQueryHandler(handle_topup_manual, pattern="^topup_manual$"),
-            
-            # Admin handlers
-            CallbackQueryHandler(admin_callback_handler, pattern="^admin_"),
         ]
+        
+        # Add admin callback handlers if available
+        if ADMIN_AVAILABLE:
+            callback_handlers.extend([
+                CallbackQueryHandler(admin_callback_handler, pattern="^admin_"),
+            ])
         
         for handler in callback_handlers:
             application.add_handler(handler)
