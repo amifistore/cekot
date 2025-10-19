@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Bot Telegram Full Feature - FIXED CONFLICT VERSION
+Bot Telegram Full Feature - FINAL FIXED VERSION
 """
 
 import logging
@@ -76,7 +76,6 @@ except Exception as e:
 try:
     from order_handler import (
         get_conversation_handler as get_order_conversation_handler,
-        menu_main as order_menu_main,
         menu_handler as order_menu_handler
     )
     ORDER_AVAILABLE = True
@@ -87,9 +86,6 @@ except Exception as e:
     
     def get_order_conversation_handler():
         return None
-    
-    async def order_menu_main(update, context):
-        await update.message.reply_text("❌ Fitur order sedang dalam perbaikan.")
     
     async def order_menu_handler(update, context):
         await update.callback_query.message.reply_text("❌ Fitur order sedang dalam perbaikan.")
@@ -156,7 +152,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("💳 CEK SALDO", callback_data="main_menu_saldo")],
             [InlineKeyboardButton("📊 CEK STOK", callback_data="main_menu_stock")],
             [InlineKeyboardButton("📞 BANTUAN", callback_data="main_menu_help")],
-            [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="main_topup_start")]  # UNIK: main_topup_start
+            [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="topup_start")]  # LANGSUNG topup_start
         ]
         
         # Add admin button if user is admin
@@ -182,7 +178,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in start command: {e}")
         await update.message.reply_text("❌ Terjadi error. Silakan coba lagi.")
 
-async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Main menu handler untuk semua callback - DIPERBAIKI"""
     query = update.callback_query
     await query.answer()
@@ -209,17 +205,11 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data == "main_menu_order":
             # Handle order melalui order handler
             await order_menu_handler(update, context)
-        elif data == "main_topup_start":  # UNIK: main_topup_start
-            if TOPUP_AVAILABLE:
-                from topup_handler import topup_start
-                await topup_start(update, context)
-            else:
-                await query.message.reply_text("❌ Fitur topup sedang dalam perbaikan.")
         else:
             await query.message.reply_text("❌ Menu tidak dikenali.")
             
     except Exception as e:
-        logger.error(f"Error in menu_handler for {data}: {e}")
+        logger.error(f"Error in main_menu_handler for {data}: {e}")
         await query.message.reply_text("❌ Terjadi error. Silakan coba lagi.")
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -240,7 +230,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("💳 CEK SALDO", callback_data="main_menu_saldo")],
         [InlineKeyboardButton("📊 CEK STOK", callback_data="main_menu_stock")],
         [InlineKeyboardButton("📞 BANTUAN", callback_data="main_menu_help")],
-        [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="main_topup_start")]  # UNIK: main_topup_start
+        [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="topup_start")]  # LANGSUNG topup_start
     ]
     
     if str(user.id) in ADMIN_IDS:
@@ -282,7 +272,7 @@ async def show_saldo_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         saldo = 0
     
     keyboard = [
-        [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="main_topup_start")],  # UNIK: main_topup_start
+        [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="topup_start")],  # LANGSUNG topup_start
         [InlineKeyboardButton("🏠 MENU UTAMA", callback_data="main_menu_main")]
     ]
     
@@ -361,7 +351,7 @@ async def saldo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         saldo = 0
     
     keyboard = [
-        [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="main_topup_start")],  # UNIK: main_topup_start
+        [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="topup_start")],  # LANGSUNG topup_start
         [InlineKeyboardButton("🏠 MENU UTAMA", callback_data="main_menu_main")]
     ]
     
@@ -530,37 +520,53 @@ def main():
         
         logger.info("✅ Application built successfully")
         
-        # ==================== HANDLER REGISTRATION - FIXED ORDER ====================
+        # ==================== HANDLER REGISTRATION - FINAL FIX ====================
         
-        # 1. CONVERSATION HANDLERS - HARUS PERTAMA
-        logger.info("📝 Registering conversation handlers...")
-        
-        # Topup Conversation Handler - PRIORITAS TERTINGGI
+        # 1. TOPUP CONVERSATION HANDLER - HARUS PALING PERTAMA
         if TOPUP_AVAILABLE:
             topup_conv_handler = get_topup_conversation_handler()
             if topup_conv_handler:
                 application.add_handler(topup_conv_handler)
-                logger.info("✅ Topup conversation handler registered (PRIORITY)")
+                logger.info("✅ Topup conversation handler registered (PRIORITY 1)")
             else:
                 logger.error("❌ Failed to get topup conversation handler")
         
-        # Order Conversation Handler 
+        # 2. ORDER CONVERSATION HANDLER - PRIORITAS KEDUA
         if ORDER_AVAILABLE:
             order_conv_handler = get_order_conversation_handler()
             if order_conv_handler:
                 application.add_handler(order_conv_handler)
-                logger.info("✅ Order conversation handler registered")
+                logger.info("✅ Order conversation handler registered (PRIORITY 2)")
             else:
                 logger.error("❌ Failed to get order conversation handler")
         
-        # Admin Conversation Handler
+        # 3. ADMIN CONVERSATION HANDLER
         if edit_produk_conv_handler and ADMIN_AVAILABLE:
             application.add_handler(edit_produk_conv_handler)
             logger.info("✅ Admin edit produk conversation handler registered")
         
-        # 2. COMMAND HANDLERS
-        logger.info("⌨️ Registering command handlers...")
+        # 4. CALLBACK QUERY HANDLERS - TOPUP CALLBACKS (SEBELUM MAIN MENU)
+        if TOPUP_AVAILABLE:
+            # Topup callbacks harus didaftarkan sebelum main menu
+            topup_callbacks = [
+                CallbackQueryHandler(show_topup_menu, pattern="^topup_menu$"),
+                CallbackQueryHandler(show_topup_history, pattern="^topup_history$"),
+                CallbackQueryHandler(show_pending_topups, pattern="^topup_pending$"),
+            ]
+            for handler in topup_callbacks:
+                application.add_handler(handler)
+            logger.info("✅ Topup callback handlers registered (PRIORITY)")
         
+        # 5. MAIN MENU CALLBACK HANDLER
+        application.add_handler(CallbackQueryHandler(main_menu_handler, pattern="^main_"))
+        logger.info("✅ Main menu callback handler registered")
+        
+        # 6. ADMIN CALLBACK HANDLER
+        if ADMIN_AVAILABLE:
+            application.add_handler(CallbackQueryHandler(admin_callback_handler, pattern="^admin_"))
+            logger.info("✅ Admin callback handler registered")
+        
+        # 7. COMMAND HANDLERS
         basic_handlers = [
             CommandHandler("start", start),
             CommandHandler("help", help_command),
@@ -584,48 +590,17 @@ def main():
         # Register all basic handlers
         for handler in basic_handlers:
             application.add_handler(handler)
-        
         logger.info("✅ Basic command handlers registered")
         
-        # 3. CALLBACK QUERY HANDLERS - MAIN MENU
-        logger.info("🔘 Registering callback handlers...")
-        
-        callback_handlers = [
-            # Main menu handlers - UNIK PATTERN
-            CallbackQueryHandler(menu_handler, pattern="^main_"),
-        ]
-        
-        # Add topup callback handlers if available
-        if TOPUP_AVAILABLE:
-            callback_handlers.extend([
-                CallbackQueryHandler(show_topup_menu, pattern="^topup_menu$"),
-                CallbackQueryHandler(show_topup_history, pattern="^topup_history$"),
-                CallbackQueryHandler(show_pending_topups, pattern="^topup_pending$"),
-            ])
-            logger.info("✅ Topup callback handlers registered")
-        
-        # Add admin callback handler if available
-        if ADMIN_AVAILABLE:
-            callback_handlers.append(CallbackQueryHandler(admin_callback_handler, pattern="^admin_"))
-            logger.info("✅ Admin callback handler registered")
-        
-        # Register all callback handlers
-        for handler in callback_handlers:
-            application.add_handler(handler)
-        
-        logger.info("✅ Callback query handlers registered")
-        
-        # 4. MESSAGE HANDLERS - HARUS TERAKHIR
-        logger.info("💬 Registering message handlers...")
-        
+        # 8. MESSAGE HANDLERS - HARUS TERAKHIR
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_message))
         logger.info("✅ Unknown message handler registered")
         
-        # 5. ERROR HANDLER
+        # 9. ERROR HANDLER
         application.add_error_handler(error_handler)
         logger.info("✅ Error handler registered")
         
-        # 6. ADDITIONAL TOPUP HANDLERS
+        # 10. ADDITIONAL TOPUP HANDLERS
         if TOPUP_AVAILABLE:
             try:
                 register_topup_handlers(application)
