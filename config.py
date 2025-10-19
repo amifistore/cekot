@@ -8,7 +8,7 @@ BOT_TOKEN = os.getenv('BOT_TOKEN', '7381707221:AAFcOwFzHCSg8gTxzRVtv3takopJQoA8B
 ADMIN_TELEGRAM_IDS = [191234567]  # Ganti dengan ID Telegram admin yang sebenarnya
 
 # API Configuration
-API_KEY_PROVIDER = os.getenv('API_KEY_PROVIDER', 'your_api_key_here')
+API_KEY_PROVIDER = os.getenv('API_KEY_PROVIDER', '369594EC-A601-402D-8B60-256FF8A75C54')
 PRODUCT_API_URL = os.getenv('PRODUCT_API_URL', 'https://panel.khfy-store.com/api_v2/list_product')
 
 # System Configuration
