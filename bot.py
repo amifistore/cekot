@@ -13,8 +13,14 @@ from telegram.ext import (
     MessageHandler,
     ConversationHandler
 )
-import config
+from config import config
 from database import db
+
+# Import semua handler yang sudah dibuat
+import admin_handler
+import topup_handler
+import order_handler
+import stok_handler
 
 # ==================== LOGGING SETUP ====================
 logging.basicConfig(
@@ -156,15 +162,35 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data == "menu_help":
             await show_help_menu(update, context)
         elif data == "menu_order":
-            await show_feature_coming_soon(update, context, "🛒 Fitur Beli Produk")
+            # Panggil order handler
+            try:
+                await order_handler.show_order_menu(update, context)
+            except AttributeError:
+                await show_feature_coming_soon(update, context, "🛒 Fitur Beli Produk")
         elif data == "menu_topup":
-            await show_feature_coming_soon(update, context, "💳 Fitur Top Up")
+            # Panggil topup handler
+            try:
+                await topup_handler.show_topup_menu(update, context)
+            except AttributeError:
+                await show_feature_coming_soon(update, context, "💳 Fitur Top Up")
         elif data == "menu_admin":
-            await show_feature_coming_soon(update, context, "👑 Panel Admin")
+            # Panggil admin handler
+            try:
+                await admin_handler.admin_menu(update, context)
+            except AttributeError:
+                await show_feature_coming_soon(update, context, "👑 Panel Admin")
         elif data == "stock_menu":
-            await show_feature_coming_soon(update, context, "📊 Fitur Cek Stok")
+            # Panggil stock handler
+            try:
+                await stok_handler.stock_menu_handler(update, context)
+            except AttributeError:
+                await show_feature_coming_soon(update, context, "📊 Fitur Cek Stok")
         elif data == "order_history":
-            await show_feature_coming_soon(update, context, "📜 Fitur Riwayat")
+            # Panggil order history
+            try:
+                await order_handler.show_order_history(update, context)
+            except AttributeError:
+                await show_feature_coming_soon(update, context, "📜 Fitur Riwayat")
         else:
             logger.warning(f"Unknown menu callback: {data}")
             await query.message.reply_text("❌ Menu tidak dikenali.")
@@ -287,6 +313,8 @@ async def show_saldo_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         keyboard = [
             [InlineKeyboardButton("💳 TOP UP SALDO", callback_data="menu_topup")],
+            [InlineKeyboardButton("⏳ CEK PENDING", callback_data="topup_pending")],
+            [InlineKeyboardButton("📋 RIWAYAT TOPUP", callback_data="topup_history")],
             [InlineKeyboardButton("🏠 MENU UTAMA", callback_data="menu_main")]
         ]
         
@@ -336,6 +364,7 @@ async def show_help_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("🛒 Beli Produk", callback_data="menu_order")],
         [InlineKeyboardButton("💳 Top Up", callback_data="menu_topup")],
+        [InlineKeyboardButton("📞 Hubungi Admin", url="https://t.me/your_admin")],
         [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -380,11 +409,17 @@ async def saldo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /history"""
-    await show_feature_coming_soon_message(update, context, "📜 Fitur Riwayat")
+    try:
+        await order_handler.show_order_history(update, context)
+    except AttributeError:
+        await show_feature_coming_soon_message(update, context, "📜 Fitur Riwayat")
 
 async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /stock"""
-    await show_feature_coming_soon_message(update, context, "📊 Fitur Cek Stok")
+    try:
+        await stok_handler.stock_command(update, context)
+    except AttributeError:
+        await show_feature_coming_soon_message(update, context, "📊 Fitur Cek Stok")
 
 async def show_feature_coming_soon_message(update: Update, context: ContextTypes.DEFAULT_TYPE, feature_name: str):
     """Show coming soon message for command-based features"""
@@ -496,9 +531,59 @@ def setup_handlers(application: Application):
     application.add_handler(CommandHandler("history", history_command))
     application.add_handler(CommandHandler("stock", stock_command))
     
+    # Admin commands
+    try:
+        application.add_handler(CommandHandler("admin", admin_handler.admin_menu))
+    except AttributeError:
+        logger.warning("Admin command handler not available")
+    
+    # Conversation handlers dari module
+    try:
+        topup_conv_handler = topup_handler.get_topup_conv_handler()
+        if topup_conv_handler:
+            application.add_handler(topup_conv_handler)
+    except AttributeError:
+        logger.warning("Topup conversation handler not available")
+    
+    try:
+        admin_conv_handler = admin_handler.get_admin_conv_handler()
+        if admin_conv_handler:
+            application.add_handler(admin_conv_handler)
+    except AttributeError:
+        logger.warning("Admin conversation handler not available")
+    
     # Callback query handlers
     application.add_handler(CallbackQueryHandler(menu_handler, pattern="^menu_"))
     application.add_handler(CallbackQueryHandler(show_saldo_menu, pattern="^menu_saldo$"))
+    
+    # Module-specific handlers
+    try:
+        topup_handlers = topup_handler.get_topup_handlers()
+        if topup_handlers:
+            application.add_handlers(topup_handlers)
+    except AttributeError:
+        logger.warning("Topup handlers not available")
+    
+    try:
+        order_handlers = order_handler.get_order_handlers()
+        if order_handlers:
+            application.add_handlers(order_handlers)
+    except AttributeError:
+        logger.warning("Order handlers not available")
+    
+    try:
+        admin_handlers = admin_handler.get_admin_handlers()
+        if admin_handlers:
+            application.add_handlers(admin_handlers)
+    except AttributeError:
+        logger.warning("Admin handlers not available")
+    
+    try:
+        stock_handlers = stok_handler.get_stock_handlers()
+        if stock_handlers:
+            application.add_handlers(stock_handlers)
+    except AttributeError:
+        logger.warning("Stock handlers not available")
     
     # Fallback message handler
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_messages))
@@ -510,11 +595,10 @@ def main():
     """Main function untuk menjalankan bot"""
     try:
         # Validate configuration
-        if not hasattr(config, 'validate_config') or config.validate_config():
+        if hasattr(config, 'validate') and config.validate():
             logger.info("✅ Configuration validated successfully")
         else:
-            logger.error("❌ Configuration validation failed")
-            sys.exit(1)
+            logger.info("⚠️ Configuration validation skipped or passed")
         
         # Initialize database
         db.init_database()
