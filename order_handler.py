@@ -64,20 +64,20 @@ async def safe_reply_message(update, *args, **kwargs):
         return False
 
 def get_grouped_products():
-    """Get products grouped by category from database"""
+    """Get products grouped by category from database - TAMPILKAN SEMUA PRODUK"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("""
             SELECT code, name, price, category, description, status, gangguan, kosong, stock
             FROM products 
-            WHERE status='active' AND gangguan=0 AND kosong=0
+            WHERE status='active'
             ORDER BY category, name ASC
         """)
         products = c.fetchall()
         conn.close()
 
-        logger.info(f"Found {len(products)} active products in database")
+        logger.info(f"Found {len(products)} active products in database (including out-of-stock)")
         
         groups = {}
         for code, name, price, category, description, status, gangguan, kosong, stock in products:
@@ -111,7 +111,9 @@ def get_grouped_products():
                 'price': price,
                 'category': category,
                 'description': description,
-                'stock': stock
+                'stock': stock,
+                'gangguan': gangguan,
+                'kosong': kosong
             })
         
         # Sort groups alphabetically
@@ -304,7 +306,7 @@ async def get_stock_from_database(update: Update, context: ContextTypes.DEFAULT_
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("""
-            SELECT code, name, price, category, stock 
+            SELECT code, name, price, category, stock, gangguan, kosong
             FROM products 
             WHERE status='active' 
             ORDER BY category, name ASC
@@ -319,17 +321,32 @@ async def get_stock_from_database(update: Update, context: ContextTypes.DEFAULT_
             msg = "📊 **STOK PRODUK DARI DATABASE**\n\n"
             current_category = ""
             
-            for code, name, price, category, stock in products:
+            for code, name, price, category, stock, gangguan, kosong in products:
                 if category != current_category:
                     msg += f"\n**{category.upper()}:**\n"
                     current_category = category
                 
-                stock_emoji = "🟢" if stock > 10 else "🟡" if stock > 0 else "🔴"
-                stock_text = f"Tersedia ({stock})" if stock > 0 else "Habis"
-                msg += f"{stock_emoji} {name} - Rp {price:,.0f} - *{stock_text}*\n"
+                # Status indicators
+                if gangguan == 1:
+                    status_emoji = "🚧"
+                    status_text = "Gangguan"
+                elif kosong == 1:
+                    status_emoji = "🔴"
+                    status_text = "Kosong"
+                elif stock > 10:
+                    status_emoji = "🟢"
+                    status_text = f"Tersedia ({stock})"
+                elif stock > 0:
+                    status_emoji = "🟡"
+                    status_text = f"Sedikit ({stock})"
+                else:
+                    status_emoji = "🔴"
+                    status_text = "Habis"
+                
+                msg += f"{status_emoji} {name} - Rp {price:,.0f} - *{status_text}*\n"
             
             msg += f"\n📊 Total {len(products)} produk aktif"
-            msg += f"\n\n🟢 Tersedia | 🟡 Sedikit | 🔴 Habis"
+            msg += f"\n\n🟢 Tersedia | 🟡 Sedikit | 🔴 Habis/Kosong | 🚧 Gangguan"
 
     except Exception as e:
         logger.error(f"Error getting stock from database: {e}")
@@ -408,7 +425,7 @@ async def show_order_history(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
 
 async def show_group_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show product groups menu from database - FIXED VERSION"""
+    """Show product groups menu from database - SEMUA PRODUK DITAMPILKAN"""
     try:
         query = update.callback_query
         await query.answer()
@@ -436,17 +453,23 @@ async def show_group_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Create keyboard with better formatting
         keyboard = []
         for group, group_products in groups.items():
-            # Add stock info to group button
+            # Count products by status
             total_in_group = len(group_products)
-            available_in_group = sum(1 for p in group_products if p.get('stock', 0) > 0)
+            available_in_group = sum(1 for p in group_products if p.get('stock', 0) > 0 and p.get('gangguan', 0) == 0 and p.get('kosong', 0) == 0)
+            gangguan_in_group = sum(1 for p in group_products if p.get('gangguan', 0) == 1)
+            kosong_in_group = sum(1 for p in group_products if p.get('kosong', 0) == 1)
             
             # Create button text with emoji based on availability
-            if available_in_group == 0:
+            if gangguan_in_group > 0:
+                button_text = f"🚧 {group}"
+            elif kosong_in_group == total_in_group:
                 button_text = f"🔴 {group}"
-            elif available_in_group < total_in_group:
+            elif available_in_group == total_in_group:
+                button_text = f"🟢 {group}"
+            elif available_in_group > 0:
                 button_text = f"🟡 {group}"
             else:
-                button_text = f"🟢 {group}"
+                button_text = f"🔴 {group}"
             
             # Add product count
             button_text += f" ({len(group_products)})"
@@ -467,7 +490,8 @@ async def show_group_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message_text = (
             "📦 PILIH KATEGORI PRODUK\n\n"
             f"📊 Ditemukan {total_products} produk dalam {len(groups)} kategori\n\n"
-            "🟢 Semua tersedia | 🟡 Sebagian tersedia | 🔴 Stok habis\n\n"
+            "🟢 Semua tersedia | 🟡 Sebagian tersedia | 🔴 Habis/Kosong | 🚧 Gangguan\n\n"
+            "ℹ️ Produk dengan stok kosong tetap bisa dipesan untuk testing\n\n"
             "Silakan pilih kategori produk:"
         )
         
@@ -496,7 +520,7 @@ async def show_group_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return MENU
 
 def get_products_keyboard_group(products, page=0):
-    """Create paginated products keyboard"""
+    """Create paginated products keyboard - SEMUA PRODUK DITAMPILKAN"""
     total_pages = (len(products) - 1) // PRODUCTS_PER_PAGE + 1
     start = page * PRODUCTS_PER_PAGE
     end = start + PRODUCTS_PER_PAGE
@@ -509,16 +533,23 @@ def get_products_keyboard_group(products, page=0):
         if len(display_name) > 30:
             display_name = display_name[:27] + "..."
         
-        # Add stock indicator
+        # Add status indicator
         stock = prod.get('stock', 0)
-        if stock > 10:
-            stock_emoji = "🟢"
+        gangguan = prod.get('gangguan', 0)
+        kosong = prod.get('kosong', 0)
+        
+        if gangguan == 1:
+            status_emoji = "🚧"
+        elif kosong == 1:
+            status_emoji = "🔴"
+        elif stock > 10:
+            status_emoji = "🟢"
         elif stock > 0:
-            stock_emoji = "🟡"
+            status_emoji = "🟡"
         else:
-            stock_emoji = "🔴"
+            status_emoji = "🔴"
             
-        btn_text = f"{stock_emoji} {display_name} - Rp {prod['price']:,.0f}"
+        btn_text = f"{status_emoji} {display_name} - Rp {prod['price']:,.0f}"
         keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"prod_{prod['code']}")])
     
     # Navigation buttons
@@ -580,7 +611,7 @@ async def choose_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return MENU
 
 async def show_product_in_group(query, context, page=0):
-    """Show products in selected group"""
+    """Show products in selected group - SEMUA PRODUK DITAMPILKAN"""
     try:
         products = context.user_data.get("product_list", [])
         group_name = context.user_data.get("current_group", "")
@@ -595,15 +626,18 @@ async def show_product_in_group(query, context, page=0):
         
         reply_markup, total_pages = get_products_keyboard_group(products, page)
         
-        # Count available products
-        available_products = sum(1 for p in products if p.get('stock', 0) > 0)
+        # Count products by status
         total_products = len(products)
+        available_products = sum(1 for p in products if p.get('stock', 0) > 0 and p.get('gangguan', 0) == 0 and p.get('kosong', 0) == 0)
+        gangguan_products = sum(1 for p in products if p.get('gangguan', 0) == 1)
+        kosong_products = sum(1 for p in products if p.get('kosong', 0) == 1)
         
         message_text = (
             f"🛒 PILIH PRODUK - {group_name}\n\n"
             f"📄 Halaman {page+1} dari {total_pages}\n"
-            f"📦 {available_products}/{total_products} produk tersedia\n\n"
-            f"🟢 Tersedia | 🟡 Sedikit | 🔴 Habis\n\n"
+            f"📊 Status: {available_products} tersedia, {gangguan_products} gangguan, {kosong_products} kosong\n\n"
+            f"🟢 Tersedia | 🟡 Sedikit | 🔴 Habis/Kosong | 🚧 Gangguan\n\n"
+            f"ℹ️ Semua produk bisa dipesan untuk testing response provider\n\n"
             f"Silakan pilih produk:"
         )
         
@@ -626,7 +660,7 @@ async def show_product_in_group(query, context, page=0):
         return MENU
 
 async def choose_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle product selection"""
+    """Handle product selection - BOLEH PILIH PRODUK STOK KOSONG"""
     query = update.callback_query
     await query.answer()
     data = query.data
@@ -657,11 +691,10 @@ async def choose_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.answer("❌ Produk tidak ditemukan!", show_alert=True)
                 return CHOOSING_PRODUCT
             
-            # Check stock
+            # Get product status
             stock = selected_product.get('stock', 0)
-            if stock <= 0:
-                await query.answer("❌ Stok produk habis!", show_alert=True)
-                return CHOOSING_PRODUCT
+            gangguan = selected_product.get('gangguan', 0)
+            kosong = selected_product.get('kosong', 0)
             
             # Store selected product in context
             context.user_data['selected_product'] = selected_product
@@ -672,8 +705,24 @@ async def choose_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"📦 Nama: {selected_product['name']}\n"
                 f"🏷️ Kode: {selected_product['code']}\n"
                 f"💰 Harga: Rp {selected_product['price']:,.0f}\n"
-                f"📊 Stok: {stock} pcs\n"
             )
+            
+            # Add status information
+            if gangguan == 1:
+                product_info += f"🚧 Status: GANGGUAN - Produk sedang mengalami gangguan\n"
+            elif kosong == 1:
+                product_info += f"🔴 Status: KOSONG - Stok produk habis\n"
+            elif stock > 0:
+                product_info += f"📊 Stok: {stock} pcs\n"
+            else:
+                product_info += f"🔴 Status: STOK HABIS\n"
+            
+            # Show warning for out-of-stock products but allow ordering
+            if gangguan == 1 or kosong == 1 or stock <= 0:
+                product_info += f"⚠️ PERINGATAN: Produk ini sedang tidak tersedia\n"
+                product_info += f"✅ Tetapi bisa dipesan untuk testing response provider\n\n"
+            else:
+                product_info += f"\n"
             
             if selected_product.get('description'):
                 product_info += f"📝 Deskripsi: {selected_product['description']}\n"
@@ -804,6 +853,11 @@ async def show_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         saldo = database.get_user_saldo(user_id)
         product_price = selected_product['price']
         
+        # Get product status
+        stock = selected_product.get('stock', 0)
+        gangguan = selected_product.get('gangguan', 0)
+        kosong = selected_product.get('kosong', 0)
+        
         confirmation_text = (
             f"✅ KONFIRMASI ORDER\n\n"
             f"📦 Produk: {selected_product['name']}\n"
@@ -812,6 +866,17 @@ async def show_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💰 Harga: Rp {product_price:,.0f}\n"
             f"💳 Saldo Anda: Rp {saldo:,.0f}\n\n"
         )
+        
+        # Add status warning if product is unavailable
+        if gangguan == 1:
+            confirmation_text += f"🚧 PERINGATAN: Produk sedang GANGGUAN\n"
+        elif kosong == 1:
+            confirmation_text += f"🔴 PERINGATAN: Produk KOSONG\n"
+        elif stock <= 0:
+            confirmation_text += f"🔴 PERINGATAN: Stok produk HABIS\n"
+        
+        if gangguan == 1 or kosong == 1 or stock <= 0:
+            confirmation_text += f"⚠️ Order akan diproses untuk testing response provider\n\n"
         
         if saldo < product_price:
             confirmation_text += f"❌ Saldo tidak cukup!\nSilakan top up saldo terlebih dahulu."
@@ -843,7 +908,7 @@ async def show_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await cancel_order(update, context)
 
 async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Process the order"""
+    """Process the order - BOLEH PROSES PRODUK STOK KOSONG"""
     query = update.callback_query
     await query.answer()
     
@@ -855,19 +920,6 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not selected_product or not tujuan:
             await safe_edit_message_text(query, "❌ Data order tidak lengkap. Silakan mulai kembali.")
             return await cancel_order(update, context)
-        
-        # Check stock again
-        stock = selected_product.get('stock', 0)
-        if stock <= 0:
-            await safe_edit_message_text(
-                query,
-                f"❌ Maaf, stok {selected_product['name']} sudah habis.\nSilakan pilih produk lain.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🛒 Pilih Produk Lain", callback_data="back_to_categories")],
-                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
-                ])
-            )
-            return ConversationHandler.END
         
         # Check balance
         user_saldo = database.get_user_saldo(user_id)
@@ -927,15 +979,29 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return ConversationHandler.END
         
+        # Get product status for message
+        stock = selected_product.get('stock', 0)
+        gangguan = selected_product.get('gangguan', 0)
+        kosong = selected_product.get('kosong', 0)
+        
         # Show processing message
         processing_text = (
             f"🔄 ORDER DALAM PROSES\n\n"
             f"📦 Produk: {selected_product['name']}\n"
             f"📮 Tujuan: {tujuan}\n"
             f"💰 Harga: Rp {product_price:,.0f}\n"
-            f"📋 Order ID: {order_id}\n\n"
-            f"⏳ Sedang memproses order Anda..."
+            f"📋 Order ID: {order_id}\n"
         )
+        
+        # Add status information
+        if gangguan == 1:
+            processing_text += f"🚧 Status: GANGGUAN\n"
+        elif kosong == 1:
+            processing_text += f"🔴 Status: KOSONG\n"
+        elif stock <= 0:
+            processing_text += f"🔴 Status: STOK HABIS\n"
+        
+        processing_text += f"\n⏳ Sedang memproses order Anda..."
         
         await safe_edit_message_text(
             query,
@@ -965,8 +1031,9 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 c = conn.cursor()
                 c.execute("UPDATE orders SET status = 'success' WHERE order_id = ?", (order_id,))
                 
-                # Update product stock
-                c.execute("UPDATE products SET stock = stock - 1 WHERE code = ?", (selected_product['code'],))
+                # Update product stock only if it's positive
+                if stock > 0:
+                    c.execute("UPDATE products SET stock = stock - 1 WHERE code = ?", (selected_product['code'],))
                 conn.commit()
                 conn.close()
                 
