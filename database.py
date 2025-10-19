@@ -252,6 +252,29 @@ class DatabaseManager:
             raise
 
     # ==================== USER MANAGEMENT ====================
+    # database.py - Perbaiki fungsi add_pending_topup
+
+def add_pending_topup(user_id: str, amount: int, proof_text: str = "", payment_method: str = "bank_transfer") -> str:
+    """Add pending topup transaction - FIXED VERSION"""
+    try:
+        conn = sqlite3.connect(DATABASE_PATH)
+        cursor = conn.cursor()
+        
+        # Generate transaction ID
+        transaction_id = f"TOPUP_{user_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        
+        cursor.execute('''
+            INSERT INTO topups (user_id, amount, unique_amount, proof_text, payment_method, transaction_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (user_id, amount, amount, proof_text, payment_method, transaction_id))
+        
+        conn.commit()
+        conn.close()
+        return transaction_id
+        
+    except Exception as e:
+        logger.error(f"Error in add_pending_topup: {e}")
+        return f"ERROR_{datetime.now().strftime('%Y%m%d%H%M%S')}"
     def get_or_create_user(self, user_id: str, username: str = "", full_name: str = "") -> Dict[str, Any]:
         """Get existing user or create new one dengan update data"""
         with self.get_connection() as conn:
