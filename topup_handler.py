@@ -135,7 +135,7 @@ async def topup_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "💳 **TOP UP SALDO**\n\n"
                 "Masukkan nominal top up (angka saja):\n"
                 "✅ **Contoh:** `50000` untuk Rp 50.000\n\n"
-                "💰 **Ketentuan:**
+                "💰 **Ketentuan:**\n"
 ├ Minimal: Rp 10.000
 ├ Maksimal: Rp 1.000.000
 ├ Kode unik otomatis ditambahkan
