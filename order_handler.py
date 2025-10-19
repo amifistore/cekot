@@ -16,12 +16,16 @@ from telegram.ext import (
 import database
 import config
 import telegram
+import os
 
 logger = logging.getLogger(__name__)
 
 # States
 MENU, CHOOSING_GROUP, CHOOSING_PRODUCT, ENTER_TUJUAN, CONFIRM_ORDER = range(5)
 PRODUCTS_PER_PAGE = 8
+
+# Database path - FIX: Use consistent database path
+DB_PATH = getattr(database, 'DB_PATH', 'bot_database.db')
 
 # PATCH: Helper agar edit_message_text tidak error jika "Message is not modified"
 async def safe_edit_message_text(callback_query, *args, **kwargs):
@@ -64,7 +68,8 @@ async def safe_reply_message(update, *args, **kwargs):
 def get_grouped_products():
     """Get products grouped by category from database"""
     try:
-        conn = sqlite3.connect(database.DB_PATH)
+        # FIX: Use consistent database path
+        conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("""
             SELECT code, name, price, category, description, status, gangguan, kosong
@@ -302,7 +307,8 @@ async def get_stock_from_database(update: Update, context: ContextTypes.DEFAULT_
     query = update.callback_query
     
     try:
-        conn = sqlite3.connect(database.DB_PATH)
+        # FIX: Use consistent database path
+        conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("""
             SELECT code, name, price, category, stock 
@@ -660,7 +666,8 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_saldo = current_saldo - price
         
         # Update user balance in database
-        conn = sqlite3.connect(database.DB_PATH)
+        # FIX: Use consistent database path
+        conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("UPDATE users SET saldo = ? WHERE telegram_id = ?", (new_saldo, user_id))
         conn.commit()
