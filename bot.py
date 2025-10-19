@@ -1,7 +1,6 @@
-
-  #!/usr/bin/env python3
+#!/usr/bin/env python3
 """
-Bot Telegram Full Feature - SYNCED VERSION
+Bot Telegram Full Feature - FIXED VERSION
 """
 
 import logging
@@ -41,17 +40,14 @@ try:
         broadcast_handler,
         cek_user_handler,
         jadikan_admin_handler,
-        topup_list_handler,
-        get_admin_handlers
+        topup_list_handler
     )
     ADMIN_AVAILABLE = True
     print("✅ Admin handler loaded successfully")
 except Exception as e:
     print(f"❌ Error importing admin_handler: {e}")
-    traceback.print_exc()
     ADMIN_AVAILABLE = False
     
-    # Dummy functions
     async def admin_menu(update, context):
         await update.message.reply_text("❌ Admin features sedang dalam perbaikan.")
     
@@ -60,9 +56,6 @@ except Exception as e:
     
     edit_produk_conv_handler = None
     broadcast_handler = cek_user_handler = jadikan_admin_handler = topup_list_handler = admin_menu
-    
-    def get_admin_handlers():
-        return []
 
 # Stok Handler
 try:
@@ -71,7 +64,6 @@ try:
     print("✅ Stok handler loaded successfully")
 except Exception as e:
     print(f"❌ Error importing stok_handler: {e}")
-    traceback.print_exc()
     STOK_AVAILABLE = False
     
     async def stock_akrab_callback(update, context):
@@ -87,18 +79,17 @@ try:
     print("✅ Order handler loaded successfully")
 except Exception as e:
     print(f"❌ Error importing order_handler: {e}")
-    traceback.print_exc()
     ORDER_AVAILABLE = False
     
     def get_order_conversation_handler():
         return None
 
-# Topup Handler - SYNCED VERSION
+# Topup Handler - FIXED IMPORT
 try:
     from topup_handler import (
         get_topup_conversation_handler,
         show_topup_menu,
-        show_topup_history,
+        show_topup_history, 
         show_pending_topups,
         register_topup_handlers,
         main_menu as topup_main_menu
@@ -107,10 +98,8 @@ try:
     print("✅ Topup handler loaded successfully")
 except Exception as e:
     print(f"❌ Error importing topup_handler: {e}")
-    traceback.print_exc()
     TOPUP_AVAILABLE = False
     
-    # Dummy functions for topup
     async def show_topup_menu(update, context): 
         if hasattr(update, 'callback_query'):
             await update.callback_query.message.reply_text("❌ Fitur topup sedang dalam perbaikan.")
@@ -128,11 +117,7 @@ except Exception as e:
 # ==================== LOGGING SETUP ====================
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO,
-    handlers=[
-        logging.FileHandler('bot.log', encoding='utf-8'),
-        logging.StreamHandler(sys.stdout)
-    ]
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
@@ -162,7 +147,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("💳 CEK SALDO", callback_data="menu_saldo")],
             [InlineKeyboardButton("📊 CEK STOK", callback_data="menu_stock")],
             [InlineKeyboardButton("📞 BANTUAN", callback_data="menu_help")],
-            [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="menu_topup")]
+            [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="topup_start")]  # DIUBAH: menu_topup -> topup_start
         ]
         
         # Add admin button if user is admin
@@ -207,21 +192,19 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await show_help_menu(update, context)
         elif data == "menu_stock":
             await stock_akrab_callback(update, context)
-        elif data == "menu_topup":
-            await show_topup_menu(update, context)
         elif data == "menu_admin":
             if str(user.id) in ADMIN_IDS:
                 await admin_menu(update, context)
             else:
                 await query.answer("❌ Anda bukan admin!", show_alert=True)
         elif data == "menu_order":
-            # Handle order through conversation handler
             try:
                 from order_handler import menu_handler as order_menu_handler
                 await order_menu_handler(update, context)
             except Exception as e:
                 logger.error(f"Error in order menu: {e}")
                 await query.message.reply_text("❌ Sistem order sedang tidak tersedia.")
+        # DIHAPUS: Handler untuk menu_topup karena sudah ditangani oleh conversation handler
         else:
             await query.message.reply_text("❌ Menu tidak dikenali.")
             
@@ -247,7 +230,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("💳 CEK SALDO", callback_data="menu_saldo")],
         [InlineKeyboardButton("📊 CEK STOK", callback_data="menu_stock")],
         [InlineKeyboardButton("📞 BANTUAN", callback_data="menu_help")],
-        [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="menu_topup")]
+        [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="topup_start")]  # DIUBAH: menu_topup -> topup_start
     ]
     
     if str(user.id) in ADMIN_IDS:
@@ -289,7 +272,7 @@ async def show_saldo_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         saldo = 0
     
     keyboard = [
-        [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="menu_topup")],
+        [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="topup_start")],  # DIUBAH: menu_topup -> topup_start
         [InlineKeyboardButton("🏠 MENU UTAMA", callback_data="menu_main")]
     ]
     
@@ -368,7 +351,7 @@ async def saldo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         saldo = 0
     
     keyboard = [
-        [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="menu_topup")],
+        [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="topup_start")],  # DIUBAH: menu_topup -> topup_start
         [InlineKeyboardButton("🏠 MENU UTAMA", callback_data="menu_main")]
     ]
     
@@ -425,9 +408,7 @@ async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in order command: {e}")
         await update.message.reply_text("❌ Sistem order sedang tidak tersedia.")
 
-async def topup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk command /topup"""
-    await show_topup_menu(update, context)
+# DIHAPUS: topup_command karena sudah ditangani oleh conversation handler
 
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /admin"""
@@ -439,6 +420,12 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================== UTILITY HANDLERS ====================
 async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk pesan yang tidak dikenal"""
+    # Cek jika user sedang dalam conversation topup
+    if context.user_data.get('in_topup'):
+        # Forward ke topup handler
+        from topup_handler import topup_nominal
+        return await topup_nominal(update, context)
+    
     logger.debug(f"Unknown message from {update.message.from_user.id}: {update.message.text}")
     
     await update.message.reply_text(
@@ -499,24 +486,11 @@ async def post_init(application: Application):
             f"• Pending Topups: {stats['pending_topups']}\n"
         )
         
+        print("=" * 50)
         print(status_info)
         print(stats_info)
+        print("=" * 50)
         
-        # Kirim notification ke admin
-        for admin_id in ADMIN_IDS:
-            try:
-                await application.bot.send_message(
-                    chat_id=admin_id,
-                    text=f"✅ **Bot Started Successfully!**\n\n"
-                         f"{status_info}\n\n"
-                         f"{stats_info}\n\n"
-                         f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-                    parse_mode='Markdown'
-                )
-                logger.info(f"✅ Startup notification sent to admin {admin_id}")
-            except Exception as e:
-                logger.warning(f"⚠️ Cannot send notification to admin {admin_id}: {e}")
-                
     except Exception as e:
         logger.error(f"Error in post_init: {e}")
 
@@ -553,7 +527,7 @@ def main():
         
         # ==================== HANDLER REGISTRATION ====================
         
-        # 1. Conversation Handlers - SYNCED VERSION
+        # 1. Conversation Handlers - HARUS DIDAFTARKAN PERTAMA
         if TOPUP_AVAILABLE:
             topup_conv_handler = get_topup_conversation_handler()
             if topup_conv_handler:
@@ -562,16 +536,15 @@ def main():
             else:
                 logger.error("❌ Failed to get topup conversation handler")
         
-        if edit_produk_conv_handler and ADMIN_AVAILABLE:
-            application.add_handler(edit_produk_conv_handler)
-            logger.info("✅ Admin edit produk conversation handler registered")
-        
-        # Add order conversation handler
         if ORDER_AVAILABLE:
             order_conv_handler = get_order_conversation_handler()
             if order_conv_handler:
                 application.add_handler(order_conv_handler)
                 logger.info("✅ Order conversation handler registered")
+        
+        if edit_produk_conv_handler and ADMIN_AVAILABLE:
+            application.add_handler(edit_produk_conv_handler)
+            logger.info("✅ Admin edit produk conversation handler registered")
         
         # 2. Command Handlers - Basic
         basic_handlers = [
@@ -580,14 +553,17 @@ def main():
             CommandHandler("saldo", saldo_command),
             CommandHandler("stock", stock_command_handler),
             CommandHandler("order", order_command),
-            CommandHandler("topup", topup_command),
             CommandHandler("admin", admin_command),
         ]
         
         # Add admin command handlers if available
         if ADMIN_AVAILABLE:
-            admin_handlers = get_admin_handlers()
-            basic_handlers.extend(admin_handlers)
+            basic_handlers.extend([
+                CommandHandler("broadcast", broadcast_handler),
+                CommandHandler("cek_user", cek_user_handler),
+                CommandHandler("jadikan_admin", jadikan_admin_handler),
+                CommandHandler("topup_list", topup_list_handler),
+            ])
             logger.info("✅ Admin command handlers registered")
         
         # Register all basic handlers
@@ -621,7 +597,7 @@ def main():
         
         logger.info("✅ Callback query handlers registered")
         
-        # 4. Message Handlers
+        # 4. Message Handlers - HARUS DIDAFTARKAN TERAKHIR
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_message))
         logger.info("✅ Unknown message handler registered")
         
@@ -629,7 +605,7 @@ def main():
         application.add_error_handler(error_handler)
         logger.info("✅ Error handler registered")
         
-        # 6. Register topup handlers (additional registration)
+        # 6. Register additional topup handlers
         if TOPUP_AVAILABLE:
             try:
                 register_topup_handlers(application)
@@ -654,4 +630,4 @@ def main():
         sys.exit(1)
 
 if __name__ == "__main__":
-    main()              
+    main()
