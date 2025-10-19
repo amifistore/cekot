@@ -123,39 +123,41 @@ def format_topup_instructions(unique_amount: int, unique_digits: int, payment_me
 
 # ==================== TOPUP START & MENU ====================
 async def topup_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Mulai proses topup - Entry point"""
+    """Start topup process"""
     try:
-        user = update.effective_user
-        user_id = db.get_or_create_user(str(user.id), user.username, user.full_name)
+        user_id = str(update.effective_user.id)
         
-        if update.callback_query:
-            query = update.callback_query
-            await query.answer()
-            await query.edit_message_text(
-                "💳 **TOP UP SALDO**\n\n"
-                "Masukkan nominal top up (angka saja):\n"
-                "✅ **Contoh:** `50000` untuk Rp 50.000\n\n"
-                "💰 **Ketentuan:**\n"
-├ Minimal: Rp 10.000
-├ Maksimal: Rp 1.000.000
-├ Kode unik otomatis ditambahkan
-└ Pilih metode pembayaran setelahnya\n\n"
-                "❌ **Ketik /cancel untuk membatalkan**",
-                parse_mode='Markdown'
-            )
-        else:
-            await update.message.reply_text(
-                "💳 **TOP UP SALDO**\n\n"
-                "Masukkan nominal top up (angka saja):\n"
-                "✅ **Contoh:** `50000` untuk Rp 50.000\n\n"
-                "💰 **Ketentuan:**
-├ Minimal: Rp 10.000
-├ Maksimal: Rp 1.000.000
-├ Kode unik otomatis ditambahkan
-└ Pilih metode pembayaran setelahnya\n\n"
-                "❌ **Ketik /cancel untuk membatalkan**",
-                parse_mode='Markdown'
-            )
+        # Get user data
+        user = db.get_or_create_user(
+            user_id,
+            update.effective_user.username,
+            update.effective_user.full_name
+        )
+        
+        if user.get('is_banned'):
+            await update.message.reply_text("❌ Akun Anda telah dibanned.")
+            return ConversationHandler.END
+        
+        # Clear any existing context
+        context.user_data.clear()
+        
+        # Send topup instructions
+        message_text = (
+            "💳 **TOP UP SALDO**\n\n"
+            "Masukkan nominal top up (angka saja):\n"
+            "✅ **Contoh:** `50000` untuk Rp 50.000\n\n"
+            "💰 **Ketentuan:**\n"
+            "• Minimal: Rp 10.000\n"
+            "• Maksimal: Rp 1.000.000\n"
+            "• Kode unik otomatis ditambahkan\n"
+            "• Pilih metode pembayaran setelahnya\n\n"
+            "❌ **Ketik /cancel untuk membatalkan**"
+        )
+        
+        if update.message:
+            await update.message.reply_text(message_text, parse_mode='Markdown')
+        elif update.callback_query:
+            await update.callback_query.edit_message_text(message_text, parse_mode='Markdown')
         
         return ASK_TOPUP_NOMINAL
         
