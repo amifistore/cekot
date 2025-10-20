@@ -552,4 +552,47 @@ def main():
         application.add_handler(CommandHandler("help", help_command))
         application.add_handler(CommandHandler("saldo", saldo_command))
         application.add_handler(CommandHandler("topup", topup_command))
-        application.add_handler(CommandHandler("stock", stock_command
+        application.add_handler(CommandHandler("stock", stock_command_handler))
+        application.add_handler(CommandHandler("order", order_command))
+        application.add_handler(CommandHandler("admin", admin_command))
+        
+        # Admin commands
+        if ADMIN_AVAILABLE:
+            application.add_handler(CommandHandler("broadcast", broadcast_handler))
+            application.add_handler(CommandHandler("cek_user", cek_user_handler))
+            application.add_handler(CommandHandler("jadikan_admin", jadikan_admin_handler))
+            application.add_handler(CommandHandler("topup_list", topup_list_handler))
+        
+        # 4. CALLBACK QUERY HANDLERS (MAIN MENU)
+        application.add_handler(CallbackQueryHandler(main_menu_handler, pattern="^main_menu_"))
+        
+        # 5. ADMIN CALLBACK HANDLER
+        if ADMIN_AVAILABLE:
+            application.add_handler(CallbackQueryHandler(admin_callback_handler, pattern="^admin_"))
+        
+        # 6. FALLBACK HANDLER
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_message))
+        
+        # 7. ERROR HANDLER
+        application.add_error_handler(error_handler)
+        
+        logger.info("✅ All handlers registered successfully")
+        
+        # ==================== START BOT ====================
+        logger.info("🤖 Bot starting...")
+        print("=" * 50)
+        print("🚀 BOT TELAH SIAP DIGUNAKAN!")
+        print("=" * 50)
+        
+        # Run bot
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        
+    except Exception as e:
+        logger.critical(f"❌ Failed to start bot: {e}")
+        traceback.print_exc()
+        sys.exit(1)
+
+# jangan ada spasi di depan baris ini
+if __name__ == '__main__':
+    application.run_polling()
+    
