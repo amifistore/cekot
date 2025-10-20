@@ -1,8 +1,3 @@
-#!/usr/bin/env python3
-"""
-Bot Telegram Full Feature - FINAL FIXED VERSION
-"""
-
 import logging
 import sys
 import os
@@ -592,5 +587,5 @@ def main():
         traceback.print_exc()
         sys.exit(1)
 
-# jangan ada spasi di depan baris ini
 if __name__ == '__main__':
+    main() # <-- Diberi 4 spasi atau 1 Tab
