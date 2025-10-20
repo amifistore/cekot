@@ -594,5 +594,5 @@ def main():
 
 # jangan ada spasi di depan baris ini
 if __name__ == '__main__':
-    application.run_polling()
+    
     
