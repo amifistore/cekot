@@ -1,526 +1,743 @@
+#!/usr/bin/env python3
+"""
+Topup Handler untuk Bot Telegram
+Fitur: Topup saldo dengan nominal unik, QRIS generator, dan konfirmasi admin
+"""
+
 import logging
 import random
-import json
-import aiohttp
 import asyncio
+import aiohttp
+import json
 from datetime import datetime
-from telegram import (
-    Update, 
-    InlineKeyboardButton, 
-    InlineKeyboardMarkup,
-    LabeledPrice
-)
+from typing import Dict, Any, List, Tuple
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ContextTypes, 
-    ConversationHandler, 
-    CommandHandler, 
-    MessageHandler, 
-    filters,
-    CallbackQueryHandler
+    ContextTypes,
+    ConversationHandler,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    filters
 )
-import database
+
 import config
+import database
 
 # ==================== LOGGING ====================
 logger = logging.getLogger(__name__)
 
 # ==================== CONVERSATION STATES ====================
-SELECT_CATEGORY, SELECT_PRODUCT, INPUT_NUMBER, CONFIRM_ORDER, PAYMENT = range(5)
+SELECTING_AMOUNT, CONFIRMING_TOPUP, UPLOADING_PROOF, SELECTING_PAYMENT_METHOD = range(4)
 
-# ==================== GLOBAL VARIABLES ====================
+# ==================== CONFIGURATION ====================
 QRIS_API_URL = "https://qrisku.my.id/api"
-QRIS_STATIS = getattr(config, 'QRIS_STATIS', 'XXXE3353COM.GO-JEK.WWWVDXXX44553463.CO.QRIS.WWXXXX4664XX.MERCHANT ENTE, XX65646XXXXTY5YY')
+QRIS_STATIC_CODE = getattr(config, 'QRIS_STATIC_CODE', '00020101021126690014COM.GO-JEK.WWW0118936009140319946531021520000005240000153033605802ID5914GOJEK INDONESIA6007JAKARTA61051234062130111QRIS Ref62280124A0123B4567C8901D234E6304')
 
-# ==================== HELPER FUNCTIONS ====================
-def generate_unique_amount(amount: int) -> int:
-    """Generate nominal unik dengan menambahkan random 2 digit"""
-    unique_code = random.randint(1, 99)
-    return amount + unique_code
+# Nominal yang tersedia untuk topup
+AVAILABLE_AMOUNTS = [
+    10000, 20000, 50000, 100000, 150000, 200000, 250000, 300000, 
+    500000, 750000, 1000000, 1500000, 2000000
+]
 
-def format_currency(amount: int) -> str:
-    """Format currency dengan pemisah ribuan"""
-    return f"Rp {amount:,.0f}"
+# ==================== UTILITY FUNCTIONS ====================
+def generate_unique_amount(base_amount: int) -> Tuple[int, int]:
+    """
+    Generate nominal unik dengan menambahkan 3 digit random di akhir
+    Returns: (nominal_unik, kode_unik)
+    """
+    unique_code = random.randint(1, 999)
+    unique_amount = base_amount + unique_code
+    return unique_amount, unique_code
 
-async def generate_qris_payment(amount: int, unique_amount: int) -> dict:
-    """Generate QRIS payment menggunakan API"""
+async def generate_qris_code(amount: int, session: aiohttp.ClientSession = None) -> Dict[str, Any]:
+    """
+    Generate QRIS code menggunakan API
+    """
+    payload = {
+        "amount": str(amount),
+        "qris_statis": QRIS_STATIC_CODE
+    }
+    
+    headers = {
+        'Content-Type': 'application/json'
+    }
+    
     try:
-        payload = {
-            "amount": str(unique_amount),
-            "qris_statis": QRIS_STATIS
-        }
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.post(QRIS_API_URL, json=payload, timeout=30) as response:
-                if response.status == 200:
+        if session:
+            async with session.post(QRIS_API_URL, json=payload, headers=headers) as response:
+                result = await response.json()
+        else:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(QRIS_API_URL, json=payload, headers=headers) as response:
                     result = await response.json()
-                    return result
-                else:
-                    logger.error(f"QRIS API error: {response.status}")
-                    return {"status": "error", "message": f"HTTP {response.status}"}
-                    
+        
+        logger.info(f"QRIS API Response: {result}")
+        return result
     except Exception as e:
         logger.error(f"Error generating QRIS: {e}")
         return {"status": "error", "message": str(e)}
 
-# ==================== ORDER HANDLERS ====================
-async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk command /order"""
-    return await show_categories(update, context)
+def get_payment_methods() -> List[List[InlineKeyboardButton]]:
+    """Daftar metode pembayaran yang tersedia"""
+    return [
+        [InlineKeyboardButton("💳 QRIS (Otomatis)", callback_data="payment_qris")],
+        [InlineKeyboardButton("🏦 Transfer Bank (Manual)", callback_data="payment_transfer")],
+        [InlineKeyboardButton("🔙 Kembali", callback_data="topup_cancel")]
+    ]
 
-async def order_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk menu order dari callback"""
-    query = update.callback_query
-    await query.answer()
-    return await show_categories(update, context)
-
-async def show_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Tampilkan kategori produk"""
+# ==================== TOPUP MENU & CONVERSATION ====================
+async def show_topup_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Menampilkan menu topup utama"""
     try:
-        # Clear previous data
-        context.user_data.clear()
-        
-        categories = database.get_categories()
-        if not categories:
-            await update.callback_query.message.reply_text(
-                "❌ Tidak ada kategori produk yang tersedia saat ini."
-            ) if hasattr(update, 'callback_query') else await update.message.reply_text(
-                "❌ Tidak ada kategori produk yang tersedia saat ini."
-            )
-            return ConversationHandler.END
-        
-        keyboard = []
-        for category in categories:
-            keyboard.append([
-                InlineKeyboardButton(
-                    f"📁 {category['name']}", 
-                    callback_data=f"order_category_{category['id']}"
-                )
-            ])
-        
-        keyboard.append([InlineKeyboardButton("🔙 KEMBALI", callback_data="main_menu_main")])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        message_text = (
-            "🛒 **BELI PRODUK**\n\n"
-            "Pilih kategori produk yang ingin Anda beli:"
-        )
-        
-        if hasattr(update, 'callback_query'):
-            await update.callback_query.edit_message_text(
-                message_text,
-                reply_markup=reply_markup,
-                parse_mode='Markdown'
-            )
+        if hasattr(update, 'callback_query') and update.callback_query:
+            query = update.callback_query
+            await query.answer()
+            message = query.message
         else:
-            await update.message.reply_text(
-                message_text,
-                reply_markup=reply_markup,
-                parse_mode='Markdown'
-            )
-        
-        return SELECT_CATEGORY
-        
-    except Exception as e:
-        logger.error(f"Error showing categories: {e}")
-        error_msg = "❌ Terjadi error saat memuat kategori. Silakan coba lagi."
-        if hasattr(update, 'callback_query'):
-            await update.callback_query.message.reply_text(error_msg)
-        else:
-            await update.message.reply_text(error_msg)
-        return ConversationHandler.END
+            message = update.message
 
-async def select_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle pemilihan kategori"""
-    query = update.callback_query
-    await query.answer()
-    
-    category_id = int(query.data.split('_')[2])
-    context.user_data['category_id'] = category_id
-    
-    return await show_products(update, context)
-
-async def show_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Tampilkan produk dalam kategori"""
-    try:
-        category_id = context.user_data['category_id']
-        products = database.get_products_by_category(category_id)
+        user = update.effective_user
+        user_id = database.get_or_create_user(str(user.id), user.username or "", user.full_name)
+        saldo = database.get_user_saldo(user_id)
         
-        if not products:
-            await update.callback_query.message.reply_text(
-                "❌ Tidak ada produk yang tersedia dalam kategori ini."
-            )
-            return SELECT_CATEGORY
-        
+        # Keyboard dengan nominal yang tersedia
         keyboard = []
-        for product in products:
-            status = "✅ TERSEDIA" if product['stock'] > 0 else "❌ HABIS"
-            keyboard.append([
-                InlineKeyboardButton(
-                    f"{product['name']} - {format_currency(product['price'])} ({status})",
-                    callback_data=f"order_product_{product['id']}"
-                )
-            ])
+        row = []
+        for i, amount in enumerate(AVAILABLE_AMOUNTS):
+            if i % 2 == 0 and i > 0:
+                keyboard.append(row)
+                row = []
+            row.append(InlineKeyboardButton(f"Rp {amount:,}", callback_data=f"topup_amount_{amount}"))
         
-        keyboard.append([
-            InlineKeyboardButton("🔙 KEMBALI KE KATEGORI", callback_data="order_back_categories")
+        if row:
+            keyboard.append(row)
+        
+        # Tambahkan opsi input manual dan lainnya
+        keyboard.extend([
+            [InlineKeyboardButton("✏️ Input Manual", callback_data="topup_custom")],
+            [InlineKeyboardButton("📋 Riwayat Topup", callback_data="topup_history")],
+            [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
         ])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        category_name = database.get_category_name(category_id)
-        
-        await update.callback_query.edit_message_text(
-            f"📦 **PRODUK {category_name.upper()}**\n\n"
-            f"Pilih produk yang ingin dibeli:",
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
+        text = (
+            f"💸 **TOP UP SALDO**\n\n"
+            f"💰 **Saldo Anda:** Rp {saldo:,}\n\n"
+            f"Pilih nominal top up atau gunakan input manual:\n"
+            f"➖ Minimal: Rp 10.000\n"
+            f"➖ Maksimal: Rp 2.000.000\n\n"
+            f"⚠️ **FITUR NOMINAL UNIK:**\n"
+            f"Setiap top up akan memiliki nominal unik 3 digit untuk memudahkan verifikasi."
         )
         
-        return SELECT_PRODUCT
+        if hasattr(update, 'callback_query') and update.callback_query:
+            await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        else:
+            await message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+            
+    except Exception as e:
+        logger.error(f"Error in show_topup_menu: {e}")
+        error_msg = "❌ Terjadi error saat menampilkan menu topup."
+        if hasattr(update, 'callback_query') and update.callback_query:
+            await update.callback_query.message.reply_text(error_msg)
+        else:
+            await update.message.reply_text(error_msg)
+
+async def topup_amount_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler untuk memilih nominal topup"""
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    user = query.from_user
+    
+    try:
+        if data == "topup_custom":
+            # Minta input manual
+            await query.edit_message_text(
+                "✏️ **INPUT MANUAL**\n\n"
+                "Silakan masukkan nominal top up:\n"
+                "➖ Minimal: Rp 10.000\n"
+                "➖ Maksimal: Rp 2.000.000\n\n"
+                "Contoh: 75000",
+                parse_mode='Markdown'
+            )
+            return SELECTING_AMOUNT
+            
+        elif data.startswith("topup_amount_"):
+            # Nominal dari button
+            amount = int(data.split("_")[2])
+            context.user_data['topup_amount'] = amount
+            await show_payment_methods(update, context)
+            return SELECTING_PAYMENT_METHOD
+            
+    except Exception as e:
+        logger.error(f"Error in topup_amount_handler: {e}")
+        await query.message.reply_text("❌ Terjadi error. Silakan coba lagi.")
+        return ConversationHandler.END
+
+async def handle_custom_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler untuk input manual nominal"""
+    try:
+        amount_text = update.message.text.strip()
+        
+        # Validasi input
+        if not amount_text.isdigit():
+            await update.message.reply_text(
+                "❌ Format nominal tidak valid. Harap masukkan angka saja.\n"
+                "Contoh: 75000"
+            )
+            return SELECTING_AMOUNT
+        
+        amount = int(amount_text)
+        
+        # Validasi range nominal
+        if amount < 10000:
+            await update.message.reply_text(
+                "❌ Nominal terlalu kecil. Minimal top up adalah Rp 10.000"
+            )
+            return SELECTING_AMOUNT
+            
+        if amount > 2000000:
+            await update.message.reply_text(
+                "❌ Nominal terlalu besar. Maksimal top up adalah Rp 2.000.000"
+            )
+            return SELECTING_AMOUNT
+        
+        context.user_data['topup_amount'] = amount
+        await show_payment_methods(update, context)
+        return SELECTING_PAYMENT_METHOD
         
     except Exception as e:
-        logger.error(f"Error showing products: {e}")
-        await update.callback_query.message.reply_text("❌ Error memuat produk.")
-        return SELECT_CATEGORY
+        logger.error(f"Error in handle_custom_amount: {e}")
+        await update.message.reply_text("❌ Terjadi error. Silakan coba lagi.")
+        return ConversationHandler.END
 
-async def select_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle pemilihan produk"""
-    query = update.callback_query
-    await query.answer()
-    
-    product_id = int(query.data.split('_')[2])
-    product = database.get_product(product_id)
-    
-    if not product:
-        await query.message.reply_text("❌ Produk tidak ditemukan.")
-        return SELECT_PRODUCT
-    
-    # Cek stok
-    if product['stock'] <= 0:
-        await query.answer("❌ Stok produk habis!", show_alert=True)
-        return SELECT_PRODUCT
-    
-    context.user_data['product_id'] = product_id
-    context.user_data['product'] = product
-    
-    await query.edit_message_text(
-        f"📝 **INPUT NOMOR TUJUAN**\n\n"
-        f"Produk: **{product['name']}**\n"
-        f"Harga: **{format_currency(product['price'])}**\n\n"
-        f"Silakan masukkan nomor tujuan untuk pengiriman produk:\n"
-        f"Contoh: 081234567890",
-        parse_mode='Markdown'
-    )
-    
-    return INPUT_NUMBER
-
-async def input_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle input nomor tujuan"""
-    phone_number = update.message.text.strip()
-    
-    # Validasi nomor telepon
-    if not phone_number.isdigit() or len(phone_number) < 10 or len(phone_number) > 15:
-        await update.message.reply_text(
-            "❌ Format nomor tidak valid! Harap masukkan nomor yang benar.\n"
-            "Contoh: 081234567890"
-        )
-        return INPUT_NUMBER
-    
-    context.user_data['phone_number'] = phone_number
-    product = context.user_data['product']
-    
-    # Generate unique amount
-    unique_amount = generate_unique_amount(product['price'])
-    context.user_data['unique_amount'] = unique_amount
-    
-    keyboard = [
-        [
-            InlineKeyboardButton("✅ KONFIRMASI", callback_data="order_confirm"),
-            InlineKeyboardButton("❌ BATAL", callback_data="order_cancel")
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        f"📋 **KONFIRMASI PESANAN**\n\n"
-        f"📦 Produk: **{product['name']}**\n"
-        f"💰 Harga: **{format_currency(product['price'])}**\n"
-        f"🔢 Kode Unik: **{format_currency(unique_amount - product['price'])}**\n"
-        f"💳 Total Bayar: **{format_currency(unique_amount)}**\n"
-        f"📱 Nomor Tujuan: **{phone_number}**\n\n"
-        f"Apakah data sudah benar?",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
-    
-    return CONFIRM_ORDER
-
-async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle konfirmasi pesanan"""
-    query = update.callback_query
-    await query.answer()
-    
-    user = query.from_user
-    product = context.user_data['product']
-    phone_number = context.user_data['phone_number']
-    unique_amount = context.user_data['unique_amount']
-    
-    # Cek saldo user
-    user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
-    saldo = database.get_user_saldo(user_id)
-    
-    if saldo >= unique_amount:
-        # Bayar menggunakan saldo
-        return await process_payment_saldo(update, context, user_id, product, phone_number, unique_amount)
-    else:
-        # Tampilkan metode pembayaran QRIS
-        return await show_qris_payment(update, context, product, phone_number, unique_amount)
-
-async def process_payment_saldo(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, product: dict, phone_number: str, unique_amount: int):
-    """Proses pembayaran menggunakan saldo"""
-    query = update.callback_query
-    
-    # Kurangi saldo user
-    if database.deduct_saldo(user_id, unique_amount):
-        # Buat order
-        order_id = database.create_order(
-            user_id=user_id,
-            product_id=product['id'],
-            phone_number=phone_number,
-            amount=product['price'],
-            unique_amount=unique_amount,
-            payment_method="SALDO",
-            status="SUCCESS"
-        )
-        
-        # Kurangi stok produk
-        database.update_product_stock(product['id'], -1)
-        
-        # Update saldo admin (tambahkan revenue)
-        admin_user_id = database.get_or_create_user("admin", "admin", "Admin Bot")
-        database.add_saldo(admin_user_id, product['price'])
-        
-        await query.edit_message_text(
-            f"🎉 **PEMBAYARAN BERHASIL!**\n\n"
-            f"📦 Produk: **{product['name']}**\n"
-            f"💰 Harga: **{format_currency(product['price'])}**\n"
-            f"🔢 Kode Unik: **{format_currency(unique_amount - product['price'])}**\n"
-            f"💳 Total Bayar: **{format_currency(unique_amount)}**\n"
-            f"📱 Nomor Tujuan: **{phone_number}**\n"
-            f"📋 Order ID: **#{order_id}**\n\n"
-            f"Pesanan Anda sedang diproses. Terima kasih!",
-            parse_mode='Markdown'
-        )
-        
-        # Kirim notifikasi ke admin
-        await notify_admin_order(context, order_id, product, user, phone_number, unique_amount)
-        
-    else:
-        await query.edit_message_text(
-            "❌ **PEMBAYARAN GAGAL!**\n\n"
-            "Saldo tidak cukup atau terjadi kesalahan sistem.",
-            parse_mode='Markdown'
-        )
-    
-    context.user_data.clear()
-    return ConversationHandler.END
-
-async def show_qris_payment(update: Update, context: ContextTypes.DEFAULT_TYPE, product: dict, phone_number: str, unique_amount: int):
-    """Tampilkan pembayaran QRIS"""
-    query = update.callback_query
-    
-    # Tampilkan pesan loading
-    await query.edit_message_text(
-        "⏳ **MEMBUAT PEMBAYARAN QRIS...**\n\n"
-        "Sedang generate kode QRIS untuk pembayaran...",
-        parse_mode='Markdown'
-    )
-    
-    # Generate QRIS
-    qris_result = await generate_qris_payment(product['price'], unique_amount)
-    
-    if qris_result.get('status') == 'success':
-        qris_base64 = qris_result.get('qris_base64')
-        
-        # Simpan data order sementara
-        user = query.from_user
-        user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
-        
-        order_id = database.create_order(
-            user_id=user_id,
-            product_id=product['id'],
-            phone_number=phone_number,
-            amount=product['price'],
-            unique_amount=unique_amount,
-            payment_method="QRIS",
-            status="PENDING"
-        )
-        
-        context.user_data['pending_order_id'] = order_id
-        
-        # Kirim gambar QRIS
-        try:
-            # Decode base64 dan kirim sebagai photo
-            import base64
-            from io import BytesIO
-            
-            qris_image_data = base64.b64decode(qris_base64)
-            qris_image = BytesIO(qris_image_data)
-            qris_image.name = 'qris_payment.png'
-            
-            await context.bot.send_photo(
-                chat_id=query.message.chat_id,
-                photo=qris_image,
-                caption=(
-                    f"💰 **PEMBAYARAN QRIS**\n\n"
-                    f"📦 Produk: **{product['name']}**\n"
-                    f"💳 Total Bayar: **{format_currency(unique_amount)}**\n"
-                    f"📱 Nomor Tujuan: **{phone_number}**\n"
-                    f"📋 Order ID: **#{order_id}**\n\n"
-                    f"**Instruksi Pembayaran:**\n"
-                    f"1. Scan QRIS di atas menggunakan aplikasi e-wallet atau mobile banking\n"
-                    f"2. Pastikan nominal tepat **{format_currency(unique_amount)}**\n"
-                    f"3. Setelah bayar, tunggu konfirmasi otomatis\n"
-                    f"4. Pesanan akan diproses setelah pembayaran berhasil\n\n"
-                    f"⏳ QRIS berlaku 15 menit"
-                ),
-                parse_mode='Markdown'
-            )
-            
-            # Hapus pesan loading
-            await query.message.delete()
-            
-        except Exception as e:
-            logger.error(f"Error sending QRIS image: {e}")
-            await query.edit_message_text(
-                f"❌ **GAGAL MEMUAT QRIS**\n\n"
-                f"Silakan coba lagi atau gunakan metode pembayaran lain.\n\n"
-                f"Detail Order:\n"
-                f"📦 Produk: {product['name']}\n"
-                f"💳 Total Bayar: {format_currency(unique_amount)}\n"
-                f"📱 Nomor Tujuan: {phone_number}",
-                parse_mode='Markdown'
-            )
-        
-    else:
-        await query.edit_message_text(
-            f"❌ **GAGAL MEMBUAT PEMBAYARAN**\n\n"
-            f"Error: {qris_result.get('message', 'Unknown error')}\n\n"
-            f"Silakan coba lagi atau hubungi admin.",
-            parse_mode='Markdown'
-        )
-    
-    return ConversationHandler.END
-
-async def notify_admin_order(context: ContextTypes.DEFAULT_TYPE, order_id: int, product: dict, user, phone_number: str, amount: int):
-    """Kirim notifikasi order ke admin"""
+async def show_payment_methods(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Menampilkan pilihan metode pembayaran"""
     try:
-        admin_ids = getattr(config, 'ADMIN_TELEGRAM_IDS', [])
+        amount = context.user_data.get('topup_amount', 0)
         
-        message = (
-            f"🛎️ **ORDER BARU**\n\n"
-            f"📋 Order ID: #{order_id}\n"
-            f"👤 User: {user.full_name} (@{user.username})\n"
-            f"📦 Produk: {product['name']}\n"
-            f"💰 Total: {format_currency(amount)}\n"
-            f"📱 Nomor: {phone_number}\n"
-            f"⏰ Waktu: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        # Generate nominal unik
+        unique_amount, unique_code = generate_unique_amount(amount)
+        context.user_data['unique_amount'] = unique_amount
+        context.user_data['unique_code'] = unique_code
+        
+        text = (
+            f"💸 **KONFIRMASI TOP UP**\n\n"
+            f"📊 **Detail Transaksi:**\n"
+            f"• Nominal Request: Rp {amount:,}\n"
+            f"• Kode Unik: +{unique_code}\n"
+            f"• **Total Bayar: Rp {unique_amount:,}**\n\n"
+            f"Pilih metode pembayaran:"
         )
         
-        for admin_id in admin_ids:
+        reply_markup = InlineKeyboardMarkup(get_payment_methods())
+        
+        if hasattr(update, 'callback_query') and update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        else:
+            await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+            
+    except Exception as e:
+        logger.error(f"Error in show_payment_methods: {e}")
+        error_msg = "❌ Terjadi error saat memilih metode pembayaran."
+        if hasattr(update, 'callback_query') and update.callback_query:
+            await update.callback_query.message.reply_text(error_msg)
+        else:
+            await update.message.reply_text(error_msg)
+
+async def handle_payment_method(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler untuk memilih metode pembayaran"""
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    user = query.from_user
+    
+    try:
+        if data == "payment_qris":
+            await process_qris_payment(update, context)
+            return ConversationHandler.END
+            
+        elif data == "payment_transfer":
+            await process_transfer_payment(update, context)
+            return UPLOADING_PROOF
+            
+        elif data == "topup_cancel":
+            await query.edit_message_text(
+                "❌ Top up dibatalkan.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("💸 Top Up Lagi", callback_data="topup_menu")],
+                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
+                ])
+            )
+            return ConversationHandler.END
+            
+    except Exception as e:
+        logger.error(f"Error in handle_payment_method: {e}")
+        await query.message.reply_text("❌ Terjadi error. Silakan coba lagi.")
+        return ConversationHandler.END
+
+async def process_qris_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Proses pembayaran dengan QRIS"""
+    try:
+        query = update.callback_query
+        user = query.from_user
+        amount = context.user_data.get('topup_amount', 0)
+        unique_amount = context.user_data.get('unique_amount', 0)
+        unique_code = context.user_data.get('unique_code', 0)
+        
+        # Tampilkan pesan sedang memproses
+        await query.edit_message_text(
+            "🔄 **Membuat QRIS...**\n\n"
+            "Silakan tunggu sebentar...",
+            parse_mode='Markdown'
+        )
+        
+        # Generate QRIS
+        qris_result = await generate_qris_code(unique_amount)
+        
+        if qris_result.get('status') == 'success':
+            qris_base64 = qris_result.get('qris_base64', '')
+            
+            # Simpan topup ke database
+            user_id = database.get_or_create_user(str(user.id), user.username or "", user.full_name)
+            topup_id = database.create_topup(
+                user_id=user_id,
+                amount=amount,
+                unique_code=unique_code,
+                total_amount=unique_amount,
+                method='qris',
+                status='pending'
+            )
+            
+            # Kirim QRIS ke user
+            text = (
+                f"✅ **QRIS BERHASIL DIBUAT**\n\n"
+                f"📊 **Detail Pembayaran:**\n"
+                f"• Nominal: Rp {amount:,}\n"
+                f"• Kode Unik: +{unique_code}\n"
+                f"• **Total: Rp {unique_amount:,}**\n"
+                f"• ID Transaksi: `{topup_id}`\n\n"
+                f"**CARA BAYAR:**\n"
+                f"1. Scan QRIS di bawah ini\n"
+                f"2. Bayar tepat sesuai nominal\n"
+                f"3. Pembayaran akan diverifikasi otomatis\n\n"
+                f"⚠️ **Pastikan nominal tepat: Rp {unique_amount:,}**"
+            )
+            
+            # Kirim gambar QRIS
+            await query.message.reply_photo(
+                photo=f"data:image/png;base64,{qris_base64}",
+                caption=text,
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Cek Status", callback_data=f"check_topup_{topup_id}")],
+                    [InlineKeyboardButton("💸 Top Up Lagi", callback_data="topup_menu")],
+                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
+                ])
+            )
+            
+            # Notifikasi admin
+            await notify_admin_new_topup(context, topup_id, user, amount, unique_amount, 'qris')
+            
+        else:
+            error_msg = qris_result.get('message', 'Unknown error')
+            await query.edit_message_text(
+                f"❌ **GAGAL MEMBUAT QRIS**\n\n"
+                f"Error: {error_msg}\n\n"
+                f"Silakan coba metode pembayaran lain.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Coba Lagi", callback_data="topup_menu")],
+                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
+                ]),
+                parse_mode='Markdown'
+            )
+            
+    except Exception as e:
+        logger.error(f"Error in process_qris_payment: {e}")
+        await query.edit_message_text(
+            "❌ Terjadi error saat membuat QRIS. Silakan coba lagi.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Coba Lagi", callback_data="topup_menu")],
+                [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
+            ])
+        )
+
+async def process_transfer_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Proses pembayaran dengan transfer manual"""
+    try:
+        query = update.callback_query
+        user = query.from_user
+        amount = context.user_data.get('topup_amount', 0)
+        unique_amount = context.user_data.get('unique_amount', 0)
+        unique_code = context.user_data.get('unique_code', 0)
+        
+        # Simpan topup ke database
+        user_id = database.get_or_create_user(str(user.id), user.username or "", user.full_name)
+        topup_id = database.create_topup(
+            user_id=user_id,
+            amount=amount,
+            unique_code=unique_code,
+            total_amount=unique_amount,
+            method='transfer',
+            status='pending'
+        )
+        
+        # Informasi rekening (dari config)
+        bank_info = getattr(config, 'BANK_ACCOUNTS', [{
+            'bank': 'BCA',
+            'number': '1234567890',
+            'name': 'Nama Pemilik Rekening'
+        }])
+        
+        bank_text = "\n".join([f"• {acc['bank']}: {acc['number']} a.n {acc['name']}" for acc in bank_info])
+        
+        text = (
+            f"🏦 **TRANSFER MANUAL**\n\n"
+            f"📊 **Detail Pembayaran:**\n"
+            f"• Nominal: Rp {amount:,}\n"
+            f"• Kode Unik: +{unique_code}\n"
+            f"• **Total: Rp {unique_amount:,}**\n"
+            f"• ID Transaksi: `{topup_id}`\n\n"
+            f"**REKENING TUJUAN:**\n"
+            f"{bank_text}\n\n"
+            f"**INSTRUKSI:**\n"
+            f"1. Transfer tepat Rp {unique_amount:,} ke rekening di atas\n"
+            f"2. Screenshot/simpan bukti transfer\n"
+            f"3. Upload bukti transfer dengan menekan tombol di bawah\n\n"
+            f"⚠️ **Pastikan nominal transfer tepat!**"
+        )
+        
+        await query.edit_message_text(
+            text,
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📎 Upload Bukti Transfer", callback_data=f"upload_proof_{topup_id}")],
+                [InlineKeyboardButton("💸 Top Up Lagi", callback_data="topup_menu")],
+                [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
+            ])
+        )
+        
+        # Notifikasi admin
+        await notify_admin_new_topup(context, topup_id, user, amount, unique_amount, 'transfer')
+        
+    except Exception as e:
+        logger.error(f"Error in process_transfer_payment: {e}")
+        await query.edit_message_text(
+            "❌ Terjadi error. Silakan coba lagi.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Coba Lagi", callback_data="topup_menu")],
+                [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
+            ])
+        )
+
+async def handle_proof_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler untuk upload bukti transfer"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        data = query.data
+        topup_id = int(data.split("_")[2])
+        
+        context.user_data['upload_topup_id'] = topup_id
+        
+        await query.edit_message_text(
+            "📎 **UPLOAD BUKTI TRANSFER**\n\n"
+            "Silakan upload screenshot/foto bukti transfer Anda.\n\n"
+            "⚠️ Pastikan bukti transfer jelas terbaca:\n"
+            "• Nominal transfer\n"
+            "• Nama pengirim\n"
+            "• Waktu transfer",
+            parse_mode='Markdown'
+        )
+        
+        return UPLOADING_PROOF
+        
+    except Exception as e:
+        logger.error(f"Error in handle_proof_upload: {e}")
+        await query.message.reply_text("❌ Terjadi error. Silakan coba lagi.")
+        return ConversationHandler.END
+
+async def handle_proof_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler untuk menerima foto bukti transfer"""
+    try:
+        user = update.message.from_user
+        topup_id = context.user_data.get('upload_topup_id')
+        
+        if not topup_id:
+            await update.message.reply_text("❌ Sesi upload tidak valid. Silakan mulai ulang.")
+            return ConversationHandler.END
+        
+        # Dapatkan file photo
+        photo_file = await update.message.photo[-1].get_file()
+        
+        # Simpan informasi bukti transfer (dalam implementasi real, simpan di storage)
+        # Untuk sementara, kita update status topup
+        success = database.update_topup_proof(topup_id, f"proof_{topup_id}.jpg")
+        
+        if success:
+            # Update status menunggu verifikasi
+            database.update_topup_status(topup_id, 'waiting_approval')
+            
+            await update.message.reply_text(
+                "✅ **BUKTI TRANSFER DITERIMA**\n\n"
+                "Bukti transfer Anda telah berhasil diupload dan sedang menunggu verifikasi admin.\n\n"
+                "Biasanya proses verifikasi memakan waktu 1-15 menit.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📋 Cek Status", callback_data=f"check_topup_{topup_id}")],
+                    [InlineKeyboardButton("💸 Top Up Lagi", callback_data="topup_menu")],
+                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
+                ]),
+                parse_mode='Markdown'
+            )
+            
+            # Notifikasi admin tentang bukti transfer
+            await notify_admin_proof_uploaded(context, topup_id, user)
+            
+        else:
+            await update.message.reply_text(
+                "❌ Gagal menyimpan bukti transfer. Silakan hubungi admin.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Coba Lagi", callback_data="topup_menu")],
+                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
+                ])
+            )
+        
+        return ConversationHandler.END
+        
+    except Exception as e:
+        logger.error(f"Error in handle_proof_photo: {e}")
+        await update.message.reply_text("❌ Terjadi error saat mengupload bukti. Silakan coba lagi.")
+        return ConversationHandler.END
+
+# ==================== TOPUP HISTORY ====================
+async def show_topup_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Menampilkan riwayat topup user"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        user = query.from_user
+        user_id = database.get_or_create_user(str(user.id), user.username or "", user.full_name)
+        
+        # Dapatkan riwayat topup
+        history = database.get_user_topups(user_id, limit=10)
+        
+        if not history:
+            text = "📋 **RIWAYAT TOP UP**\n\n" \
+                   "Anda belum melakukan top up."
+        else:
+            text = "📋 **RIWAYAT TOP UP**\n\n"
+            for topup in history:
+                status_emoji = {
+                    'pending': '⏳',
+                    'waiting_approval': '📋',
+                    'completed': '✅',
+                    'cancelled': '❌'
+                }.get(topup['status'], '❓')
+                
+                text += (
+                    f"{status_emoji} **Rp {topup['amount']:,}** "
+                    f"(+{topup['unique_code']}) → "
+                    f"**Rp {topup['total_amount']:,}**\n"
+                    f"   Method: {topup['method'].upper()} | "
+                    f"Status: {topup['status']}\n"
+                    f"   Waktu: {topup['created_at']}\n\n"
+                )
+        
+        await query.edit_message_text(
+            text,
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("💸 Top Up Baru", callback_data="topup_menu")],
+                [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
+            ])
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in show_topup_history: {e}")
+        await query.message.reply_text("❌ Terjadi error saat mengambil riwayat.")
+
+async def show_pending_topups(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Menampilkan topup yang pending untuk admin"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        user = query.from_user
+        
+        # Cek apakah admin
+        ADMIN_IDS = getattr(config, 'ADMIN_TELEGRAM_IDS', [])
+        if str(user.id) not in ADMIN_IDS:
+            await query.answer("❌ Anda bukan admin!", show_alert=True)
+            return
+        
+        # Dapatkan topup pending
+        pending_topups = database.get_pending_topups()
+        
+        if not pending_topups:
+            text = "📋 **TOPUP MENUNGGU VERIFIKASI**\n\nTidak ada topup yang menunggu verifikasi."
+        else:
+            text = "📋 **TOPUP MENUNGGU VERIFIKASI**\n\n"
+            for topup in pending_topups:
+                user_info = database.get_user_by_id(topup['user_id'])
+                text += (
+                    f"🔔 **ID: {topup['id']}**\n"
+                    f"User: {user_info['full_name']} (@{user_info['username']})\n"
+                    f"Amount: Rp {topup['amount']:,} (+{topup['unique_code']})\n"
+                    f"Total: Rp {topup['total_amount']:,}\n"
+                    f"Method: {topup['method']}\n"
+                    f"Waktu: {topup['created_at']}\n"
+                )
+                
+                if topup['method'] == 'transfer' and topup['status'] == 'waiting_approval':
+                    text += "📎 **Menunggu verifikasi bukti transfer**\n"
+                
+                text += "\n"
+        
+        keyboard = []
+        for topup in pending_topups:
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"✅ Verifikasi #{topup['id']}", 
+                    callback_data=f"admin_approve_topup_{topup['id']}"
+                )
+            ])
+        
+        keyboard.append([InlineKeyboardButton("🔄 Refresh", callback_data="topup_pending_list")])
+        keyboard.append([InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")])
+        
+        await query.edit_message_text(
+            text,
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in show_pending_topups: {e}")
+        await query.message.reply_text("❌ Terjadi error saat mengambil data pending topup.")
+
+# ==================== ADMIN NOTIFICATION ====================
+async def notify_admin_new_topup(context: ContextTypes.DEFAULT_TYPE, topup_id: int, user, amount: int, total_amount: int, method: str):
+    """Notify admin tentang topup baru"""
+    try:
+        ADMIN_IDS = getattr(config, 'ADMIN_TELEGRAM_IDS', [])
+        
+        text = (
+            f"🔔 **TOPUP BARU**\n\n"
+            f"**ID:** #{topup_id}\n"
+            f"**User:** {user.full_name} (@{user.username})\n"
+            f"**Nominal:** Rp {amount:,}\n"
+            f"**Total Bayar:** Rp {total_amount:,}\n"
+            f"**Method:** {method.upper()}\n"
+            f"**Waktu:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        
+        for admin_id in ADMIN_IDS:
             try:
                 await context.bot.send_message(
                     chat_id=admin_id,
-                    text=message,
-                    parse_mode='Markdown'
+                    text=text,
+                    parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("✅ Verifikasi", callback_data=f"admin_approve_topup_{topup_id}")],
+                        [InlineKeyboardButton("📋 Lihat Pending", callback_data="topup_pending_list")]
+                    ])
                 )
             except Exception as e:
                 logger.error(f"Failed to notify admin {admin_id}: {e}")
                 
     except Exception as e:
-        logger.error(f"Error in notify_admin_order: {e}")
+        logger.error(f"Error in notify_admin_new_topup: {e}")
 
-async def cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Batalkan pesanan"""
-    query = update.callback_query
-    await query.answer()
-    
-    context.user_data.clear()
-    
-    await query.edit_message_text(
-        "❌ **PESANAN DIBATALKAN**\n\n"
-        "Pesanan Anda telah dibatalkan.",
-        parse_mode='Markdown'
-    )
-    
-    return ConversationHandler.END
-
-async def back_to_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Kembali ke menu kategori"""
-    query = update.callback_query
-    await query.answer()
-    
-    return await show_categories(update, context)
-
-async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Cancel conversation dari command /cancel"""
-    context.user_data.clear()
-    
-    if update.message:
-        await update.message.reply_text(
-            "❌ **PEMESANAN DIBATALKAN**\n\n"
-            "Anda telah membatalkan proses pemesanan.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🏠 MENU UTAMA", callback_data="main_menu_main")]
-            ])
+async def notify_admin_proof_uploaded(context: ContextTypes.DEFAULT_TYPE, topup_id: int, user):
+    """Notify admin tentang bukti transfer yang diupload"""
+    try:
+        ADMIN_IDS = getattr(config, 'ADMIN_TELEGRAM_IDS', [])
+        
+        text = (
+            f"📎 **BUKTI TRANSFER DIUPLOAD**\n\n"
+            f"**ID Topup:** #{topup_id}\n"
+            f"**User:** {user.full_name} (@{user.username})\n"
+            f"**Waktu:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
-    
-    return ConversationHandler.END
+        
+        for admin_id in ADMIN_IDS:
+            try:
+                await context.bot.send_message(
+                    chat_id=admin_id,
+                    text=text,
+                    parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("✅ Verifikasi", callback_data=f"admin_approve_topup_{topup_id}")],
+                        [InlineKeyboardButton("📋 Lihat Pending", callback_data="topup_pending_list")]
+                    ])
+                )
+            except Exception as e:
+                logger.error(f"Failed to notify admin {admin_id}: {e}")
+                
+    except Exception as e:
+        logger.error(f"Error in notify_admin_proof_uploaded: {e}")
 
 # ==================== CONVERSATION HANDLER ====================
-def get_conversation_handler():
-    """Return conversation handler untuk order"""
+def get_topup_conversation_handler():
+    """Mengembalikan conversation handler untuk topup"""
     return ConversationHandler(
         entry_points=[
-            CallbackQueryHandler(order_menu_handler, pattern="^main_menu_order$"),
-            CommandHandler("order", order_command)
+            CallbackQueryHandler(topup_amount_handler, pattern="^topup_amount_|^topup_custom$")
         ],
         states={
-            SELECT_CATEGORY: [
-                CallbackQueryHandler(select_category, pattern="^order_category_"),
-                CallbackQueryHandler(back_to_categories, pattern="^order_back_categories$"),
-                CallbackQueryHandler(cancel_order, pattern="^order_cancel$"),
+            SELECTING_AMOUNT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_custom_amount)
             ],
-            SELECT_PRODUCT: [
-                CallbackQueryHandler(select_product, pattern="^order_product_"),
-                CallbackQueryHandler(back_to_categories, pattern="^order_back_categories$"),
-                CallbackQueryHandler(cancel_order, pattern="^order_cancel$"),
+            SELECTING_PAYMENT_METHOD: [
+                CallbackQueryHandler(handle_payment_method, pattern="^payment_|^topup_cancel$")
             ],
-            INPUT_NUMBER: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, input_number),
-                CommandHandler("cancel", cancel_conversation),
-            ],
-            CONFIRM_ORDER: [
-                CallbackQueryHandler(confirm_order, pattern="^order_confirm$"),
-                CallbackQueryHandler(cancel_order, pattern="^order_cancel$"),
-            ],
+            UPLOADING_PROOF: [
+                CallbackQueryHandler(handle_proof_upload, pattern="^upload_proof_"),
+                MessageHandler(filters.PHOTO, handle_proof_photo)
+            ]
         },
         fallbacks=[
-            CommandHandler("cancel", cancel_conversation),
-            CallbackQueryHandler(cancel_order, pattern="^order_cancel$"),
+            CallbackQueryHandler(cancel_topup, pattern="^topup_cancel$"),
+            CommandHandler("cancel", cancel_topup)
         ],
         allow_reentry=True
     )
 
-def get_order_handlers():
-    """Return additional order handlers"""
+def get_topup_handlers():
+    """Mengembalikan list of handlers untuk topup"""
     return [
-        CallbackQueryHandler(back_to_categories, pattern="^order_back_categories$"),
-        CallbackQueryHandler(cancel_order, pattern="^order_cancel$"),
+        CallbackQueryHandler(show_topup_menu, pattern="^topup_menu$"),
+        CallbackQueryHandler(show_topup_history, pattern="^topup_history$"),
+        CallbackQueryHandler(show_pending_topups, pattern="^topup_pending_list$"),
+        CallbackQueryHandler(handle_proof_upload, pattern="^upload_proof_"),
     ]
 
-# Handler untuk menu callback
-async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk menu order"""
-    return await order_menu_handler(update, context)
+async def cancel_topup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel topup conversation"""
+    await update.message.reply_text(
+        "❌ Top up dibatalkan.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("💸 Top Up Lagi", callback_data="topup_menu")],
+            [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
+        ])
+    )
+    return ConversationHandler.END
+
+# ==================== EXPORT FUNCTIONS ====================
+# Fungsi-fungsi yang diimport oleh main.py
+__all__ = [
+    'get_topup_conversation_handler',
+    'show_topup_menu', 
+    'show_topup_history',
+    'show_pending_topups',
+    'handle_proof_upload',
+    'get_topup_handlers'
+]
