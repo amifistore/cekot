@@ -1,4 +1,4 @@
-# database.py - Complete Database Management System
+# database.py - Complete Database Management System - FIXED & READY FOR RELEASE
 import sqlite3
 import logging
 import os
@@ -142,6 +142,10 @@ class DatabaseManager:
                         amount REAL NOT NULL,
                         status TEXT DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected')),
                         proof_image TEXT,
+                        unique_code INTEGER DEFAULT 0,
+                        payment_method TEXT,
+                        total_amount REAL DEFAULT 0,
+                        admin_notes TEXT,
                         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                         updated_at DATETIME,
                         FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
@@ -467,9 +471,10 @@ class DatabaseManager:
                 (new_stock, datetime.now(), product_code)
             )
 
-    # ==================== TOPUP MANAGEMENT ====================
-    def add_pending_topup(self, user_id: str, amount: float, proof_text: str = "") -> int:
-        """Add pending topup request"""
+    # ==================== TOPUP MANAGEMENT - ENHANCED ====================
+    def add_pending_topup(self, user_id: str, amount: float, proof_text: str = "", 
+                         unique_code: int = 0, payment_method: str = "", total_amount: float = 0) -> int:
+        """Add pending topup request dengan informasi lengkap"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             
@@ -479,12 +484,22 @@ class DatabaseManager:
             username = user_info['username'] if user_info else None
             full_name = user_info['full_name'] if user_info else None
             
-            cursor.execute('''
-                INSERT INTO topup_requests (user_id, username, full_name, amount, proof_image, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (user_id, username, full_name, amount, proof_text, datetime.now()))
+            # If total_amount not provided, use amount + unique_code
+            if total_amount == 0 and unique_code > 0:
+                total_amount = amount + unique_code
+            elif total_amount == 0:
+                total_amount = amount
             
-            return cursor.lastrowid
+            cursor.execute('''
+                INSERT INTO topup_requests 
+                (user_id, username, full_name, amount, proof_image, unique_code, payment_method, total_amount, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (user_id, username, full_name, amount, proof_text, unique_code, payment_method, total_amount, datetime.now()))
+            
+            topup_id = cursor.lastrowid
+            logger.info(f"💳 Topup request created: ID {topup_id} for user {user_id} - Amount: {amount}")
+            
+            return topup_id
 
     def get_pending_topups(self) -> List[Dict[str, Any]]:
         """Get all pending topup requests"""
@@ -496,6 +511,36 @@ class DatabaseManager:
                 ORDER BY created_at DESC
             ''')
             return [dict(row) for row in cursor.fetchall()]
+
+    def get_topup_by_id(self, topup_id: int) -> Optional[Dict[str, Any]]:
+        """Get topup request by ID"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM topup_requests WHERE id = ?', (topup_id,))
+            result = cursor.fetchone()
+            return dict(result) if result else None
+
+    def get_topup_history(self, user_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """Get user's topup history"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT * FROM topup_requests 
+                WHERE user_id = ? 
+                ORDER BY created_at DESC 
+                LIMIT ?
+            ''', (str(user_id), limit))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def update_topup_status(self, topup_id: int, status: str, admin_notes: str = ""):
+        """Update topup status"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'UPDATE topup_requests SET status = ?, updated_at = ?, admin_notes = ? WHERE id = ?',
+                (status, datetime.now(), admin_notes, topup_id)
+            )
+            logger.info(f"📝 Topup {topup_id} status updated to {status}")
 
     def approve_topup(self, topup_id: int, admin_id: str) -> bool:
         """Approve a topup request"""
@@ -531,6 +576,7 @@ class DatabaseManager:
                 # Log admin action
                 self.log_admin_action(admin_id, "APPROVE_TOPUP", f"Topup ID: {topup_id}, Amount: {amount}")
                 
+                logger.info(f"✅ Topup {topup_id} approved by admin {admin_id}")
                 return True
                 
             except Exception as e:
@@ -551,6 +597,7 @@ class DatabaseManager:
                 # Log admin action
                 self.log_admin_action(admin_id, "REJECT_TOPUP", f"Topup ID: {topup_id}")
                 
+                logger.info(f"❌ Topup {topup_id} rejected by admin {admin_id}")
                 return True
                 
             except Exception as e:
@@ -578,6 +625,7 @@ class DatabaseManager:
             )
             
             self.add_system_log('INFO', 'ORDER_CREATED', f"Order {order_id} created for user {user_id}", user_id)
+            logger.info(f"🛒 Order created: {order_id} for user {user_id} - Product: {product_code}")
             
             return order_id
 
@@ -623,6 +671,28 @@ class DatabaseManager:
                         'UPDATE users SET total_spent = total_spent + ? WHERE user_id = ?',
                         (order['price'], order['user_id'])
                     )
+            
+            logger.info(f"📦 Order {order_id} status updated to {status}")
+
+    def get_user_orders(self, user_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """Get user's order history"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT * FROM orders 
+                WHERE user_id = ? 
+                ORDER BY created_at DESC 
+                LIMIT ?
+            ''', (str(user_id), limit))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_order_by_id(self, order_id: int) -> Optional[Dict[str, Any]]:
+        """Get order by ID"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM orders WHERE id = ?', (order_id,))
+            result = cursor.fetchone()
+            return dict(result) if result else None
 
     # ==================== LOGGING SYSTEM ====================
     def log_admin_action(self, admin_id: str, action: str, details: str = "", 
@@ -634,6 +704,8 @@ class DatabaseManager:
                 INSERT INTO admin_logs (admin_id, action, target_type, target_id, details)
                 VALUES (?, ?, ?, ?, ?)
             ''', (str(admin_id), action, target_type, target_id, details))
+            
+            logger.info(f"👑 Admin action: {admin_id} - {action} - {details}")
 
     def add_system_log(self, level: str, module: str, message: str, 
                       details: str = "", user_id: str = None):
@@ -684,6 +756,13 @@ class DatabaseManager:
             cursor.execute("SELECT SUM(price) FROM orders WHERE DATE(created_at) = ? AND status = 'completed'", (today,))
             revenue_today = cursor.fetchone()[0] or 0
             
+            # Total topups approved
+            cursor.execute("SELECT COUNT(*) FROM topup_requests WHERE status = 'approved'")
+            total_topups = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT SUM(amount) FROM topup_requests WHERE status = 'approved'")
+            total_topup_amount = cursor.fetchone()[0] or 0
+            
             return {
                 'total_users': total_users,
                 'active_users': active_users,
@@ -694,7 +773,9 @@ class DatabaseManager:
                 'pending_orders': pending_orders,
                 'new_users_today': new_users_today,
                 'orders_today': orders_today,
-                'revenue_today': revenue_today
+                'revenue_today': revenue_today,
+                'total_topups': total_topups,
+                'total_topup_amount': total_topup_amount
             }
 
     def get_user_leaderboard(self, limit: int = 10) -> List[Dict[str, Any]]:
@@ -727,6 +808,74 @@ class DatabaseManager:
                 INSERT OR REPLACE INTO settings (key, value, updated_at)
                 VALUES (?, ?, ?)
             ''', (key, value, datetime.now()))
+
+    # ==================== NOTIFICATION SYSTEM ====================
+    def add_notification(self, user_id: str, title: str, message: str, notification_type: str = 'info'):
+        """Add notification for user"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO notifications (user_id, title, message, type)
+                VALUES (?, ?, ?, ?)
+            ''', (str(user_id), title, message, notification_type))
+
+    def get_unread_notifications(self, user_id: str) -> List[Dict[str, Any]]:
+        """Get user's unread notifications"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT * FROM notifications 
+                WHERE user_id = ? AND is_read = 0
+                ORDER BY created_at DESC
+            ''', (str(user_id),))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def mark_notification_read(self, notification_id: int):
+        """Mark notification as read"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE notifications SET is_read = 1 WHERE id = ?
+            ''', (notification_id,))
+
+    # ==================== ADVANCED QUERIES ====================
+    def get_daily_stats(self, days: int = 7) -> List[Dict[str, Any]]:
+        """Get daily statistics for the last N days"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT 
+                    DATE(created_at) as date,
+                    COUNT(*) as order_count,
+                    SUM(price) as revenue,
+                    COUNT(DISTINCT user_id) as unique_users
+                FROM orders 
+                WHERE status = 'completed' AND created_at >= DATE('now', ?)
+                GROUP BY DATE(created_at)
+                ORDER BY date DESC
+            ''', (f'-{days} days',))
+            
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_popular_products(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Get most popular products"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT 
+                    p.code,
+                    p.name,
+                    p.category,
+                    COUNT(o.id) as order_count,
+                    SUM(o.price) as total_revenue
+                FROM products p
+                LEFT JOIN orders o ON p.code = o.product_code AND o.status = 'completed'
+                GROUP BY p.code, p.name, p.category
+                ORDER BY order_count DESC, total_revenue DESC
+                LIMIT ?
+            ''', (limit,))
+            
+            return [dict(row) for row in cursor.fetchall()]
 
 # ==================== GLOBAL INSTANCE & COMPATIBILITY FUNCTIONS ====================
 
@@ -791,3 +940,66 @@ def get_product_by_id(product_code: str) -> Optional[Dict[str, Any]]:
 def update_product_stock(product_code: str, new_stock: int):
     """Update product stock - compatibility function"""
     return db_manager.update_product_stock(product_code, new_stock)
+
+# ==================== NEW COMPATIBILITY FUNCTIONS FOR TOPUP ====================
+def create_topup(user_id: str, amount: float, unique_code: int, total_amount: float, 
+                method: str, status: str = 'pending') -> int:
+    """Create topup request - compatibility function for topup_handler"""
+    return db_manager.add_pending_topup(
+        user_id=user_id, 
+        amount=amount, 
+        unique_code=unique_code, 
+        payment_method=method, 
+        total_amount=total_amount
+    )
+
+def get_topup_history(user_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+    """Get user's topup history - compatibility function"""
+    return db_manager.get_topup_history(user_id, limit)
+
+def update_topup_status(topup_id: int, status: str, admin_notes: str = ""):
+    """Update topup status - compatibility function"""
+    return db_manager.update_topup_status(topup_id, status, admin_notes)
+
+def get_topup_by_id(topup_id: int) -> Optional[Dict[str, Any]]:
+    """Get topup by ID - compatibility function"""
+    return db_manager.get_topup_by_id(topup_id)
+
+# Order management compatibility functions
+def create_order(user_id: str, product_code: str, product_name: str, 
+                price: float, customer_input: str = "") -> int:
+    """Create order - compatibility function"""
+    return db_manager.create_order(user_id, product_code, product_name, price, customer_input)
+
+def update_order_status(order_id: int, status: str, note: str = "", 
+                       provider_order_id: str = "", sn: str = ""):
+    """Update order status - compatibility function"""
+    return db_manager.update_order_status(order_id, status, note, provider_order_id, sn)
+
+def get_user_orders(user_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+    """Get user orders - compatibility function"""
+    return db_manager.get_user_orders(user_id, limit)
+
+def get_order_by_id(order_id: int) -> Optional[Dict[str, Any]]:
+    """Get order by ID - compatibility function"""
+    return db_manager.get_order_by_id(order_id)
+
+# User management compatibility functions
+def get_user_stats(user_id: str) -> Dict[str, Any]:
+    """Get user statistics - compatibility function"""
+    return db_manager.get_user_stats(user_id)
+
+def update_user_last_active(user_id: str):
+    """Update user last active - compatibility function"""
+    return db_manager.update_user_last_active(user_id)
+
+# Settings compatibility functions
+def get_setting(key: str, default: str = None) -> str:
+    """Get setting - compatibility function"""
+    return db_manager.get_setting(key, default)
+
+def update_setting(key: str, value: str):
+    """Update setting - compatibility function"""
+    return db_manager.update_setting(key, value)
+
+print("✅ database.py loaded successfully - All features ready for release!")
