@@ -29,7 +29,7 @@ import database
 logger = logging.getLogger(__name__)
 
 # ==================== CONVERSATION STATES ====================
-SELECTING_AMOUNT, CONFIRMING_TOPUP, UPLOADING_PROOF, SELECTING_PAYMENT_METHOD = range(4)
+SELECTING_AMOUNT, SELECTING_PAYMENT_METHOD, UPLOADING_PROOF = range(3)
 
 # ==================== CONFIGURATION ====================
 QRIS_API_URL = getattr(config, 'QRIS_API_URL', "https://qrisku.my.id/api")
@@ -149,6 +149,7 @@ async def show_topup_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
             
         logger.info("show_topup_menu completed successfully")
+        return SELECTING_AMOUNT
             
     except Exception as e:
         logger.error(f"Error in show_topup_menu: {e}", exc_info=True)
@@ -157,6 +158,7 @@ async def show_topup_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.callback_query.message.reply_text(error_msg)
         else:
             await update.message.reply_text(error_msg)
+        return ConversationHandler.END
 
 async def topup_amount_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk memilih nominal topup - FIXED VERSION"""
@@ -187,6 +189,10 @@ async def topup_amount_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             context.user_data['topup_amount'] = amount
             await show_payment_methods(update, context)
             return SELECTING_PAYMENT_METHOD
+            
+        elif data == "topup_history":
+            await show_topup_history(update, context)
+            return ConversationHandler.END
             
     except Exception as e:
         logger.error(f"Error in topup_amount_handler: {e}", exc_info=True)
@@ -227,8 +233,12 @@ async def handle_custom_amount(update: Update, context: ContextTypes.DEFAULT_TYP
         
         context.user_data['topup_amount'] = amount
         
-        # Edit pesan sebelumnya untuk menghapus input manual
-        await update.message.delete()
+        # Kirim konfirmasi
+        await update.message.reply_text(
+            f"✅ **Nominal Diterima:** Rp {amount:,}\n\n"
+            f"Silakan tunggu, mengarahkan ke metode pembayaran...",
+            parse_mode='Markdown'
+        )
         
         await show_payment_methods(update, context)
         return SELECTING_PAYMENT_METHOD
@@ -266,18 +276,27 @@ async def show_payment_methods(update: Update, context: ContextTypes.DEFAULT_TYP
         
         reply_markup = InlineKeyboardMarkup(get_payment_methods())
         
+        # Determine message source
         if hasattr(update, 'callback_query') and update.callback_query:
             await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
-        else:
+        elif hasattr(update, 'message') and update.message:
             await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        else:
+            # Fallback - create new message
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=text,
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
             
     except Exception as e:
         logger.error(f"Error in show_payment_methods: {e}", exc_info=True)
         error_msg = "❌ Terjadi error saat memilih metode pembayaran."
-        if hasattr(update, 'callback_query') and update.callback_query:
-            await update.callback_query.message.reply_text(error_msg)
-        else:
-            await update.message.reply_text(error_msg)
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=error_msg
+        )
 
 async def handle_payment_method(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk memilih metode pembayaran - FIXED VERSION"""
@@ -522,9 +541,6 @@ async def handle_proof_photo(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
             return UPLOADING_PROOF
         
-        # Get the highest resolution photo
-        photo_file = await update.message.photo[-1].get_file()
-        
         # Update topup request dengan proof info
         try:
             database.update_topup_status(topup_id, 'pending', f"Proof uploaded at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -686,8 +702,6 @@ async def show_pending_topups(update: Update, context: ContextTypes.DEFAULT_TYPE
                     f"📅 {topup['created_at'][:16]}\n"
                 )
                 
-                # Add action buttons for each topup
-                # Note: This would need to be implemented with pagination in a real scenario
                 text += "────────────────────\n"
             
             text += f"\nTotal menunggu: {len(pending_topups)} top up"
@@ -773,17 +787,19 @@ def get_topup_conversation_handler():
     return ConversationHandler(
         entry_points=[
             CallbackQueryHandler(show_topup_menu, pattern="^topup_menu$"),
-            CallbackQueryHandler(show_topup_menu, pattern="^topup_start$")
+            CallbackQueryHandler(show_topup_menu, pattern="^topup_start$"),
+            CommandHandler("topup", show_topup_menu)
         ],
         states={
             SELECTING_AMOUNT: [
                 CallbackQueryHandler(topup_amount_handler, pattern="^topup_amount_"),
                 CallbackQueryHandler(topup_amount_handler, pattern="^topup_custom$"),
+                CallbackQueryHandler(topup_amount_handler, pattern="^topup_history$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_custom_amount)
             ],
             SELECTING_PAYMENT_METHOD: [
                 CallbackQueryHandler(handle_payment_method, pattern="^payment_"),
-                CallbackQueryHandler(handle_payment_method, pattern="^topup_cancel$")
+                CallbackQueryHandler(show_topup_menu, pattern="^topup_cancel$")
             ],
             UPLOADING_PROOF: [
                 MessageHandler(filters.PHOTO, handle_proof_photo),
@@ -793,11 +809,10 @@ def get_topup_conversation_handler():
         fallbacks=[
             CallbackQueryHandler(show_topup_menu, pattern="^topup_menu$"),
             CallbackQueryHandler(show_topup_menu, pattern="^topup_start$"),
-            CommandHandler("cancel", show_topup_menu)
+            CommandHandler("cancel", show_topup_menu),
+            CommandHandler("start", show_topup_menu)
         ],
-        map_to_parent={
-            ConversationHandler.END: SELECTING_AMOUNT
-        }
+        allow_reentry=True
     )
 
 def get_topup_handlers():
@@ -812,7 +827,6 @@ def get_topup_handlers():
     ]
 
 # ==================== COMPATIBILITY WITH MAIN.PY ====================
-# Pastikan fungsi-fungsi ini tersedia untuk main.py
 async def topup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /topup"""
     await show_topup_menu(update, context)
