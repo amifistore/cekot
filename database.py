@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Database Handler untuk Bot Telegram - COMPLETE FIXED VERSION
-Menggunakan SQLite untuk penyimpanan data dengan semua fungsi yang diperlukan
+Database Handler untuk Bot Telegram - FIXED SCHEMA VERSION
 """
 
 import sqlite3
@@ -33,11 +32,10 @@ class DatabaseManager:
 
     @contextmanager
     def get_connection(self):
-        """Context manager for database connections dengan error handling"""
+        """Context manager for database connections"""
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA journal_mode = WAL")
         
         try:
             yield conn
@@ -50,7 +48,7 @@ class DatabaseManager:
             conn.close()
 
     def init_database(self):
-        """Initialize semua tabel database dengan schema lengkap"""
+        """Initialize semua tabel database dengan schema yang konsisten"""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -132,17 +130,61 @@ class DatabaseManager:
                 
                 # Create indexes
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_admin ON users(is_admin)')
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_topups_user_id ON topups(user_id)')
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_topups_status ON topups(status)')
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id)')
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_products_category ON products(category)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_products_status ON products(status)')
                 
                 logger.info("✅ Database initialized successfully with all tables")
+                
+                # Add sample data
+                self.add_sample_data(conn)
+                
                 return True
                 
         except Exception as e:
             logger.error(f"❌ Database initialization failed: {e}", exc_info=True)
             return False
+
+    def add_sample_data(self, conn):
+        """Add sample data untuk testing"""
+        try:
+            cursor = conn.cursor()
+            
+            # Add sample products if none exist
+            cursor.execute('SELECT COUNT(*) as count FROM products')
+            if cursor.fetchone()[0] == 0:
+                sample_products = [
+                    ('Pulsa Telkomsel 5.000', 'Pulsa', 6000, 100),
+                    ('Pulsa Telkomsel 10.000', 'Pulsa', 11000, 100),
+                    ('Pulsa XL 5.000', 'Pulsa', 6000, 100),
+                    ('Paket Data 1GB', 'Data', 15000, 50),
+                    ('Paket Data 3GB', 'Data', 25000, 50),
+                    ('Token Listrik 20.000', 'Token', 21000, 100),
+                    ('Token Listrik 50.000', 'Token', 51000, 100),
+                    ('Voucher Steam 10.000', 'Game', 11000, 50),
+                    ('Voucher Mobile Legends', 'Game', 15000, 50),
+                ]
+                
+                cursor.executemany(
+                    'INSERT INTO products (name, category, price, stock) VALUES (?, ?, ?, ?)',
+                    sample_products
+                )
+                logger.info("✅ Sample products added")
+            
+            # Add admin user if none exist
+            cursor.execute('SELECT COUNT(*) as count FROM users WHERE is_admin = TRUE')
+            if cursor.fetchone()[0] == 0:
+                cursor.execute(
+                    'INSERT INTO users (telegram_id, username, full_name, is_admin) VALUES (?, ?, ?, ?)',
+                    ('123456789', 'admin', 'Administrator', True)
+                )
+                logger.info("✅ Admin user added")
+                
+        except Exception as e:
+            logger.error(f"Error adding sample data: {e}")
 
     # ==================== USER MANAGEMENT ====================
     def get_or_create_user(self, telegram_id: str, username: str = "", full_name: str = "") -> int:
@@ -159,7 +201,7 @@ class DatabaseManager:
                 user = cursor.fetchone()
                 
                 if user:
-                    user_id = user['id']
+                    user_id = user[0]
                     # Update last active and username if changed
                     cursor.execute(
                         'UPDATE users SET last_active = CURRENT_TIMESTAMP, username = ?, full_name = ? WHERE id = ?',
@@ -214,7 +256,7 @@ class DatabaseManager:
                 cursor = conn.cursor()
                 cursor.execute('SELECT saldo FROM users WHERE id = ?', (user_id,))
                 result = cursor.fetchone()
-                return result['saldo'] if result else 0
+                return result[0] if result else 0
         except Exception as e:
             logger.error(f"Error in get_user_saldo: {e}")
             return 0
@@ -425,7 +467,7 @@ class DatabaseManager:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('SELECT DISTINCT category FROM products WHERE status = "active"')
-                return [row['category'] for row in cursor.fetchall()]
+                return [row[0] for row in cursor.fetchall()]
         except Exception as e:
             logger.error(f"Error in get_product_categories: {e}")
             return []
@@ -497,32 +539,32 @@ class DatabaseManager:
                 
                 # Total users
                 cursor.execute('SELECT COUNT(*) as count FROM users')
-                total_users = cursor.fetchone()['count']
+                total_users = cursor.fetchone()[0]
                 
                 # Active users (last 30 days)
                 cursor.execute('''
                     SELECT COUNT(*) as count FROM users 
                     WHERE last_active >= datetime('now', '-30 days')
                 ''')
-                active_users = cursor.fetchone()['count']
+                active_users = cursor.fetchone()[0]
                 
                 # Active products
                 cursor.execute('SELECT COUNT(*) as count FROM products WHERE status = "active"')
-                active_products = cursor.fetchone()['count']
+                active_products = cursor.fetchone()[0]
                 
                 # Total revenue from completed orders
                 cursor.execute('''
                     SELECT COALESCE(SUM(total_price), 0) as total FROM orders 
                     WHERE status = 'completed'
                 ''')
-                total_revenue = cursor.fetchone()['total']
+                total_revenue = cursor.fetchone()[0]
                 
                 # Pending topups
                 cursor.execute('''
                     SELECT COUNT(*) as count FROM topups 
                     WHERE status IN ('pending', 'waiting_approval')
                 ''')
-                pending_topups = cursor.fetchone()['count']
+                pending_topups = cursor.fetchone()[0]
                 
                 return {
                     'total_users': total_users,
@@ -541,27 +583,6 @@ class DatabaseManager:
                 'total_revenue': 0,
                 'pending_topups': 0
             }
-
-    def get_daily_stats(self, days: int = 7) -> List[Dict[str, Any]]:
-        """Get daily statistics for chart"""
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    SELECT 
-                        DATE(created_at) as date,
-                        COUNT(*) as order_count,
-                        COALESCE(SUM(total_price), 0) as revenue
-                    FROM orders 
-                    WHERE created_at >= date('now', ?)
-                    GROUP BY DATE(created_at)
-                    ORDER BY date DESC
-                ''', (f'-{days} days',))
-                
-                return [dict(row) for row in cursor.fetchall()]
-        except Exception as e:
-            logger.error(f"Error in get_daily_stats: {e}")
-            return []
 
     # ==================== ADMIN FUNCTIONS ====================
     def make_admin(self, telegram_id: str) -> bool:
@@ -588,49 +609,10 @@ class DatabaseManager:
                     (str(telegram_id),)
                 )
                 result = cursor.fetchone()
-                return result['is_admin'] if result else False
+                return result[0] if result else False
         except Exception as e:
             logger.error(f"Error in is_admin: {e}")
             return False
-
-    def add_sample_data(self):
-        """Add sample data for testing"""
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                
-                # Add sample products if none exist
-                cursor.execute('SELECT COUNT(*) as count FROM products')
-                if cursor.fetchone()['count'] == 0:
-                    sample_products = [
-                        ('Pulsa Telkomsel 5.000', 'Pulsa', 6000, 100),
-                        ('Pulsa Telkomsel 10.000', 'Pulsa', 11000, 100),
-                        ('Pulsa XL 5.000', 'Pulsa', 6000, 100),
-                        ('Paket Data 1GB', 'Data', 15000, 50),
-                        ('Paket Data 3GB', 'Data', 25000, 50),
-                        ('Token Listrik 20.000', 'Token', 21000, 100),
-                        ('Token Listrik 50.000', 'Token', 51000, 100),
-                        ('Voucher Steam 10.000', 'Game', 11000, 50),
-                        ('Voucher Mobile Legends', 'Game', 15000, 50),
-                    ]
-                    
-                    cursor.executemany(
-                        'INSERT INTO products (name, category, price, stock) VALUES (?, ?, ?, ?)',
-                        sample_products
-                    )
-                    logger.info("✅ Sample products added")
-                
-                # Add admin user if none exist
-                cursor.execute('SELECT COUNT(*) as count FROM users WHERE is_admin = TRUE')
-                if cursor.fetchone()['count'] == 0:
-                    cursor.execute(
-                        'INSERT INTO users (telegram_id, username, full_name, is_admin) VALUES (?, ?, ?, ?)',
-                        ('123456789', 'admin', 'Administrator', True)
-                    )
-                    logger.info("✅ Admin user added")
-                    
-        except Exception as e:
-            logger.error(f"Error adding sample data: {e}")
 
 # ==================== GLOBAL DATABASE INSTANCE ====================
 db = DatabaseManager()
@@ -726,11 +708,6 @@ def get_all_users() -> List[Dict[str, Any]]:
     """Get all users - compatibility function"""
     return db.get_all_users()
 
-def add_sample_data():
-    """Add sample data - compatibility function"""
-    return db.add_sample_data()
-
-# Initialize database dan tambah sample data saat module diimport
+# Initialize database saat module diimport
 if __name__ != "__main__":
     db.init_database()
-    db.add_sample_data()
