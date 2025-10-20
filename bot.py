@@ -74,22 +74,35 @@ except Exception as e:
     get_order_conversation_handler = lambda: None
     order_menu_handler = None
 
-# Topup Handler
+# Topup Handler - IMPORT YANG DIPERBAIKI
 try:
     from topup_handler import (
         get_topup_conversation_handler,
         show_topup_menu,
         show_topup_history, 
         show_pending_topups,
-        handle_proof_upload
+        handle_proof_upload,
+        get_topup_handlers  # Tambahkan ini
     )
     TOPUP_AVAILABLE = True
     print("✅ Topup handler loaded successfully")
 except Exception as e:
     print(f"❌ Error importing topup_handler: {e}")
     TOPUP_AVAILABLE = False
-    get_topup_conversation_handler = lambda: None
-    show_topup_menu = show_topup_history = show_pending_topups = handle_proof_upload = None
+    
+    async def show_topup_menu(update, context): 
+        if hasattr(update, 'callback_query'):
+            await update.callback_query.message.reply_text("❌ Fitur topup sedang dalam perbaikan.")
+        else:
+            await update.message.reply_text("❌ Fitur topup sedang dalam perbaikan.")
+    
+    show_topup_history = show_pending_topups = show_topup_menu
+    
+    def get_topup_conversation_handler():
+        return None
+    
+    def get_topup_handlers():
+        return []
 
 # ==================== LOGGING SETUP ====================
 logging.basicConfig(
@@ -114,6 +127,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.message.from_user
         logger.info(f"User {user.id} started the bot")
         
+        # Get or create user in database
         saldo = 0
         try:
             user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
@@ -122,25 +136,33 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Error getting user saldo: {e}")
             saldo = 0
         
+        # Main menu keyboard
         keyboard = [
             [InlineKeyboardButton("🛒 BELI PRODUK", callback_data="main_menu_order")],
             [InlineKeyboardButton("💳 CEK SALDO", callback_data="main_menu_saldo")],
             [InlineKeyboardButton("📊 CEK STOK", callback_data="main_menu_stock")],
             [InlineKeyboardButton("📞 BANTUAN", callback_data="main_menu_help")],
-            [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="topup_menu")]
+            [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="topup_menu")]  # Ubah ke topup_menu
         ]
         
+        # Add admin button if user is admin
         if str(user.id) in ADMIN_IDS:
             keyboard.append([InlineKeyboardButton("👑 ADMIN PANEL", callback_data="main_menu_admin")])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
+        
         welcome_text = (
             f"🤖 **Selamat Datang!**\n\n"
             f"Halo {user.full_name}!\n"
             f"💰 **Saldo Anda:** {format_currency(saldo)}\n\n"
             f"Pilih menu di bawah untuk mulai berbelanja:"
         )
-        await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
+        
+        await update.message.reply_text(
+            welcome_text,
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
         
     except Exception as e:
         logger.error(f"Error in start command: {e}")
@@ -163,17 +185,17 @@ async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await show_saldo_menu(update, context)
         elif data == "main_menu_help":
             await show_help_menu(update, context)
-        elif data == "main_menu_stock" and STOK_AVAILABLE:
-            await stock_akrab_callback(update, context)
+        elif data == "main_menu_stock":
+            if STOK_AVAILABLE: await stock_akrab_callback(update, context)
         elif data == "main_menu_admin":
-            if str(user.id) in ADMIN_IDS and ADMIN_AVAILABLE:
-                await admin_menu(update, context)
+            if str(user.id) in ADMIN_IDS:
+                if ADMIN_AVAILABLE: await admin_menu(update, context)
             else:
                 await query.answer("❌ Anda bukan admin!", show_alert=True)
-        elif data == "main_menu_order" and ORDER_AVAILABLE:
-            await order_menu_handler(update, context)
-        elif data == "topup_menu" and TOPUP_AVAILABLE:
-            await show_topup_menu(update, context)
+        elif data == "main_menu_order":
+            if ORDER_AVAILABLE: await order_menu_handler(update, context)
+        elif data == "topup_menu":
+            if TOPUP_AVAILABLE: await show_topup_menu(update, context)
         else:
             await query.message.reply_text("❌ Menu tidak dikenali.")
             
@@ -185,7 +207,14 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Tampilkan menu utama"""
     query = update.callback_query
     user = query.from_user
-    saldo = database.get_user_saldo(str(user.id))
+    
+    saldo = 0
+    try:
+        user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
+        saldo = database.get_user_saldo(user_id)
+    except Exception as e:
+        logger.error(f"Error getting user saldo: {e}")
+        saldo = 0
     
     keyboard = [
         [InlineKeyboardButton("🛒 BELI PRODUK", callback_data="main_menu_order")],
@@ -194,52 +223,141 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📞 BANTUAN", callback_data="main_menu_help")],
         [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="topup_menu")]
     ]
+    
     if str(user.id) in ADMIN_IDS:
         keyboard.append([InlineKeyboardButton("👑 ADMIN PANEL", callback_data="main_menu_admin")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(
-        f"🏠 **MENU UTAMA**\n\n"
-        f"Halo {user.full_name}!\n"
-        f"💰 **Saldo Anda:** {format_currency(saldo)}\n\n"
-        f"Pilih menu di bawah:",
-        reply_markup=reply_markup, parse_mode='Markdown'
-    )
+    
+    try:
+        await query.edit_message_text(
+            f"🏠 **MENU UTAMA**\n\n"
+            f"Halo {user.full_name}!\n"
+            f"💰 **Saldo Anda:** {format_currency(saldo)}\n\n"
+            f"Pilih menu di bawah:",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+    except Exception as e:
+        logger.warning(f"Could not edit message: {e}")
+        # Fallback if edit fails
+        pass
 
 async def show_saldo_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Tampilkan menu saldo"""
     query = update.callback_query
-    saldo = database.get_user_saldo(str(query.from_user.id))
+    user = query.from_user
+    
+    saldo = 0
+    try:
+        user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
+        saldo = database.get_user_saldo(user_id)
+    except Exception as e:
+        logger.error(f"Error getting user saldo: {e}")
+        saldo = 0
     
     keyboard = [
         [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="topup_menu")],
         [InlineKeyboardButton("🏠 MENU UTAMA", callback_data="main_menu_main")]
     ]
-    await query.edit_message_text(
-        f"💰 **SALDO ANDA**\n\nSaldo saat ini: **{format_currency(saldo)}**\n\n",
-        reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown'
-    )
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    try:
+        await query.edit_message_text(
+            f"💰 **SALDO ANDA**\n\n"
+            f"Saldo saat ini: **{format_currency(saldo)}**\n\n"
+            f"Gunakan menu Top Up untuk menambah saldo.",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+    except Exception as e:
+        logger.warning(f"Could not edit message: {e}")
+
 
 async def show_help_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Tampilkan menu bantuan"""
     query = update.callback_query
-    help_text = "📞 **BANTUAN & PANDUAN**\n\nHubungi Admin untuk bantuan."
-    keyboard = [[InlineKeyboardButton("🏠 MENU UTAMA", callback_data="main_menu_main")]]
-    await query.edit_message_text(help_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    
+    help_text = (
+        "📞 **BANTUAN & PANDUAN**\n\n"
+        "**CARA ORDER:**\n"
+        "1. Pilih 🛒 **BELI PRODUK**\n"
+        "2. Pilih kategori produk\n"
+        "3. Pilih produk yang diinginkan\n"
+        "4. Masukkan nomor tujuan\n"
+        "5. Konfirmasi dan bayar\n\n"
+        "**TOP UP SALDO:**\n"
+        "1. Pilih 💸 **TOP UP SALDO**\n"
+        "2. Masukkan nominal\n"
+        "3. Pilih metode pembayaran (QRIS/Transfer Bank)\n"
+        "4. Ikuti instruksi pembayaran\n"
+        "5. Tunggu konfirmasi admin\n\n"
+        "**BUTUH BANTUAN?**\n"
+        "Hubungi Admin untuk bantuan lebih lanjut."
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("🏠 MENU UTAMA", callback_data="main_menu_main")]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    try:
+        await query.edit_message_text(
+            help_text,
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+    except Exception as e:
+        logger.warning(f"Could not edit message: {e}")
 
 async def saldo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /saldo"""
     user = update.message.from_user
-    saldo = database.get_user_saldo(str(user.id))
+    
+    saldo = 0
+    try:
+        user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
+        saldo = database.get_user_saldo(user_id)
+    except Exception as e:
+        logger.error(f"Error getting user saldo: {e}")
+        saldo = 0
+    
+    keyboard = [
+        [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="topup_menu")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
     await update.message.reply_text(
-        f"💰 **SALDO ANDA**\n\nSaldo saat ini: **{format_currency(saldo)}**",
+        f"💰 **SALDO ANDA**\n\n"
+        f"Saldo saat ini: **{format_currency(saldo)}**",
+        reply_markup=reply_markup,
         parse_mode='Markdown'
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /help"""
-    help_text = "🤖 **BOT COMMANDS**\n\n/start\n/help\n/saldo\n/topup\n/stock\n/order\n/admin"
-    await update.message.reply_text(help_text, parse_mode='Markdown')
+    help_text = (
+        "🤖 **BOT COMMANDS**\n\n"
+        "**PERINTAH UTAMA:**\n"
+        "• /start - Menu utama bot\n"
+        "• /help - Bantuan ini\n"
+        "• /saldo - Cek saldo\n"
+        "• /topup - Top up saldo\n"
+        "• /stock - Cek stok produk\n"
+        "• /order - Beli produk\n\n"
+        "**UNTUK ADMIN:**\n"
+        "• /admin - Panel admin\n"
+        "• /broadcast - Kirim pesan ke semua user\n"
+        "• /topup_list - Lihat daftar topup\n"
+        "• /cek_user - Cek info user\n"
+    )
+    
+    await update.message.reply_text(
+        help_text,
+        parse_mode='Markdown'
+    )
 
 async def stock_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /stock"""
@@ -260,12 +378,13 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ Anda bukan admin!")
 
+# ==================== UTILITY HANDLERS ====================
 async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk pesan yang tidak dikenal"""
-    await update.message.reply_text("🤔 Saya tidak mengerti. Gunakan /start untuk kembali.")
+    await update.message.reply_text("🤔 Saya tidak mengerti perintah tersebut. Gunakan /help untuk bantuan.")
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    """Global error handler"""
+    """Global error handler untuk menangani semua error"""
     logger.error(f"Exception while handling an update: {context.error}", exc_info=True)
 
 async def post_init(application: Application):
@@ -275,83 +394,81 @@ async def post_init(application: Application):
 # ==================== MAIN FUNCTION ====================
 def main():
     """Main function - Initialize dan start bot"""
-    logger.info("🚀 Starting Telegram Bot...")
-    
-    if not BOT_TOKEN or BOT_TOKEN == 'YOUR_BOT_TOKEN_HERE':
-        logger.critical("❌ Please set BOT_TOKEN in config.py")
-        sys.exit(1)
-        
     try:
+        logger.info("🚀 Starting Telegram Bot...")
+        
+        if not BOT_TOKEN or BOT_TOKEN == 'YOUR_BOT_TOKEN_HERE':
+            logger.critical("❌ Please set BOT_TOKEN in config.py")
+            sys.exit(1)
+        
         database.init_database()
         logger.info("✅ Database initialized successfully")
-    except Exception as e:
-        logger.critical(f"❌ Database initialization failed: {e}")
-        sys.exit(1)
         
-    persistence = PicklePersistence(filepath="bot_persistence")
-    application = Application.builder()\
-        .token(BOT_TOKEN)\
-        .persistence(persistence)\
-        .post_init(post_init)\
-        .build()
-    
-    logger.info("✅ Application built successfully")
-    
-    # ==================== HANDLER REGISTRATION (SESUAI STRUKTUR ASLI) ====================
-    
-    # 1. CONVERSATION HANDLERS
-    if TOPUP_AVAILABLE and get_topup_conversation_handler:
-        application.add_handler(get_topup_conversation_handler())
-    if ORDER_AVAILABLE and get_order_conversation_handler:
-        application.add_handler(get_order_conversation_handler())
-    if ADMIN_AVAILABLE and edit_produk_conv_handler:
-        application.add_handler(edit_produk_conv_handler)
-    
-    # 2. COMMAND HANDLERS
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("saldo", saldo_command))
-    application.add_handler(CommandHandler("topup", topup_command))
-    application.add_handler(CommandHandler("stock", stock_command_handler))
-    
-    # BAGIAN YANG SAYA LENGKAPI DAN PERBAIKI
-    application.add_handler(CommandHandler("order", order_command))
-    application.add_handler(CommandHandler("admin", admin_command))
+        persistence = PicklePersistence(filepath="bot_persistence")
+        application = Application.builder()\
+            .token(BOT_TOKEN)\
+            .persistence(persistence)\
+            .post_init(post_init)\
+            .build()
+        
+        logger.info("✅ Application built successfully")
+        
+        # ==================== HANDLER REGISTRATION (SESUAI STRUKTUR ASLI) ====================
+        
+        # 1. CONVERSATION HANDLERS (PRIORITAS TERTINGGI)
+        if TOPUP_AVAILABLE and get_topup_conversation_handler:
+            application.add_handler(get_topup_conversation_handler())
+        
+        if ORDER_AVAILABLE and get_order_conversation_handler:
+            application.add_handler(get_order_conversation_handler())
+        
+        if ADMIN_AVAILABLE and edit_produk_conv_handler:
+            application.add_handler(edit_produk_conv_handler)
+        
+        # 2. COMMAND HANDLERS
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(CommandHandler("saldo", saldo_command))
+        application.add_handler(CommandHandler("topup", topup_command))
+        application.add_handler(CommandHandler("stock", stock_command_handler))
+        application.add_handler(CommandHandler("order", order_command))
+        application.add_handler(CommandHandler("admin", admin_command))
+        
+        if ADMIN_AVAILABLE:
+             application.add_handler(CommandHandler("broadcast", broadcast_handler))
+             application.add_handler(CommandHandler("topup_list", topup_list_handler))
+             application.add_handler(CommandHandler("cek_user", cek_user_handler))
+             application.add_handler(CommandHandler("jadikanadmin", jadikan_admin_handler))
 
-    if ADMIN_AVAILABLE:
-        application.add_handler(CommandHandler("broadcast", broadcast_handler))
-        application.add_handler(CommandHandler("topup_list", topup_list_handler))
-        application.add_handler(CommandHandler("cek_user", cek_user_handler))
-        # Perintah jadikan_admin_handler biasanya butuh argumen, jadi didaftar terpisah jika diperlukan
-        application.add_handler(CommandHandler("jadikanadmin", jadikan_admin_handler)) 
+        # 3. CALLBACK QUERY HANDLERS
+        # Router utama untuk semua tombol menu
+        application.add_handler(CallbackQueryHandler(main_menu_handler))
 
-    # 3. CALLBACK QUERY HANDLERS
-    # Router utama untuk tombol-tombol menu
-    application.add_handler(CallbackQueryHandler(main_menu_handler))
-    
-    # Handler spesifik untuk admin callbacks
-    if ADMIN_AVAILABLE and admin_callback_handler:
-        application.add_handler(CallbackQueryHandler(admin_callback_handler, pattern="^admin_"))
+        # Handler spesifik admin (jika ada, dengan pattern)
+        if ADMIN_AVAILABLE and admin_callback_handler:
+            application.add_handler(CallbackQueryHandler(admin_callback_handler, pattern="^admin_"))
 
-    # Handler spesifik untuk topup callbacks (sesuai impor asli)
-    if TOPUP_AVAILABLE:
-        # Catatan: show_topup_menu sudah ditangani oleh main_menu_handler dengan callback "topup_menu"
-        if show_topup_history:
-             application.add_handler(CallbackQueryHandler(show_topup_history, pattern="^topup_history$"))
-        if show_pending_topups:
-             application.add_handler(CallbackQueryHandler(show_pending_topups, pattern="^topup_pending$"))
-        # handle_proof_upload adalah bagian dari conversation, tidak perlu didaftar di sini.
-    
-    # 4. MESSAGE HANDLERS (Untuk pesan teks biasa)
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_message))
-    
-    # 5. ERROR HANDLER
-    application.add_error_handler(error_handler)
-    
-    logger.info("✅ All handlers registered following original structure.")
-    print("================ BOT IS RUNNING ================")
-    
-    application.run_polling()
+        # Handler spesifik topup (sesuai impor asli, untuk menghindari duplikasi)
+        if TOPUP_AVAILABLE:
+            if show_topup_history:
+                application.add_handler(CallbackQueryHandler(show_topup_history, pattern="^topup_history$"))
+            if show_pending_topups:
+                application.add_handler(CallbackQueryHandler(show_pending_topups, pattern="^topup_pending$"))
+        
+        # 4. MESSAGE HANDLER (Untuk teks yg tidak dikenal, harus setelah command)
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_message))
+        
+        # 5. ERROR HANDLER
+        application.add_error_handler(error_handler)
+        
+        logger.info("✅ All handlers registered following original structure.")
+        print("================ BOT IS RUNNING ================")
+        
+        application.run_polling()
+
+    except Exception as e:
+        logger.critical(f"❌ Bot failed to start: {e}")
+        sys.exit(1)
 
 if __name__ == '__main__':
     main()
