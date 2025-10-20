@@ -592,5 +592,18 @@ def main():
         traceback.print_exc()
         sys.exit(1)
 
-if __name__ == "__main__":
+# di main.py
+def main():
+    # ... setup application builder ...
+    application = Application.builder().token("TOKEN_ANDA").build()
+
+    # ... tambahkan handler lain (start, topup, dll) ...
+
+    # Tambahkan semua handler dari order_handler.py
+    for handler in get_order_handlers():
+        application.add_handler(handler)
+
+    # ... application.run_polling() ...
+
+if __name__ == '__main__':
     main()
