@@ -44,7 +44,10 @@ except Exception as e:
     ADMIN_AVAILABLE = False
     
     async def admin_menu(update, context):
-        await update.message.reply_text("❌ Admin features sedang dalam perbaikan.")
+        if hasattr(update, 'message'):
+            await update.message.reply_text("❌ Admin features sedang dalam perbaikan.")
+        else:
+            await update.callback_query.message.reply_text("❌ Admin features sedang dalam perbaikan.")
     
     async def admin_callback_handler(update, context):
         await update.callback_query.answer("❌ Admin features sedang dalam perbaikan.", show_alert=True)
@@ -71,7 +74,8 @@ except Exception as e:
 try:
     from order_handler import (
         get_conversation_handler as get_order_conversation_handler,
-        menu_handler as order_menu_handler
+        menu_handler as order_menu_handler,
+        get_order_handlers
     )
     ORDER_AVAILABLE = True
     print("✅ Order handler loaded successfully")
@@ -82,10 +86,13 @@ except Exception as e:
     def get_order_conversation_handler():
         return None
     
+    def get_order_handlers():
+        return []
+    
     async def order_menu_handler(update, context):
         await update.callback_query.message.reply_text("❌ Fitur order sedang dalam perbaikan.")
 
-# Topup Handler - IMPORT YANG DIPERBAIKI
+# Topup Handler
 try:
     from topup_handler import (
         get_topup_conversation_handler,
@@ -93,7 +100,7 @@ try:
         show_topup_history, 
         show_pending_topups,
         handle_proof_upload,
-        get_topup_handlers  # Tambahkan ini
+        get_topup_handlers
     )
     TOPUP_AVAILABLE = True
     print("✅ Topup handler loaded successfully")
@@ -148,7 +155,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("💳 CEK SALDO", callback_data="main_menu_saldo")],
             [InlineKeyboardButton("📊 CEK STOK", callback_data="main_menu_stock")],
             [InlineKeyboardButton("📞 BANTUAN", callback_data="main_menu_help")],
-            [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="topup_menu")]  # Ubah ke topup_menu
+            [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="topup_menu")]
         ]
         
         # Add admin button if user is admin
@@ -433,6 +440,11 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     """Global error handler untuk menangani semua error"""
     logger.error(f"Exception while handling an update: {context.error}", exc_info=True)
     
+    # Log the error with traceback
+    tb_list = traceback.format_exception(None, context.error, context.error.__traceback__)
+    tb_string = "".join(tb_list)
+    logger.error(f"Traceback: {tb_string}")
+    
     if isinstance(update, Update):
         if update.message:
             await update.message.reply_text(
@@ -470,17 +482,34 @@ async def post_init(application: Application):
         
         stats_info = (
             f"📈 Bot Statistics:\n"
-            f"• Users: {stats['total_users']}\n"
+            f"• Total Users: {stats['total_users']}\n"
             f"• Active Users: {stats['active_users']}\n"
-            f"• Products: {stats['active_products']}\n"
-            f"• Revenue: Rp {stats['total_revenue']:,.0f}\n"
+            f"• Active Products: {stats['active_products']}\n"
+            f"• Total Revenue: Rp {stats['total_revenue']:,.0f}\n"
             f"• Pending Topups: {stats['pending_topups']}\n"
         )
         
         print("=" * 50)
+        print("🤖 BOT STARTUP REPORT")
+        print("=" * 50)
         print(status_info)
         print(stats_info)
         print("=" * 50)
+        
+        # Send startup message to admins
+        for admin_id in ADMIN_IDS:
+            try:
+                await application.bot.send_message(
+                    chat_id=admin_id,
+                    text=(
+                        f"🚀 **Bot Started Successfully!**\n\n"
+                        f"{status_info}\n"
+                        f"{stats_info}"
+                    ),
+                    parse_mode='Markdown'
+                )
+            except Exception as e:
+                logger.error(f"Failed to send startup message to admin {admin_id}: {e}")
         
     except Exception as e:
         logger.error(f"Error in post_init: {e}")
@@ -506,7 +535,7 @@ def main():
         except Exception as e:
             logger.error(f"❌ Database initialization failed: {e}")
         
-        # Create Application
+        # Create Application with persistence
         persistence = PicklePersistence(filepath="bot_persistence")
         application = Application.builder()\
             .token(BOT_TOKEN)\
@@ -542,7 +571,14 @@ def main():
                 application.add_handler(handler)
             logger.info("✅ Topup callback handlers registered")
         
-        # 3. COMMAND HANDLERS
+        # 3. ORDER CALLBACK HANDLERS
+        if ORDER_AVAILABLE:
+            order_handlers = get_order_handlers()
+            for handler in order_handlers:
+                application.add_handler(handler)
+            logger.info("✅ Order callback handlers registered")
+        
+        # 4. COMMAND HANDLERS
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("help", help_command))
         application.add_handler(CommandHandler("saldo", saldo_command))
@@ -557,30 +593,59 @@ def main():
             application.add_handler(CommandHandler("cek_user", cek_user_handler))
             application.add_handler(CommandHandler("jadikan_admin", jadikan_admin_handler))
             application.add_handler(CommandHandler("topup_list", topup_list_handler))
+            logger.info("✅ Admin command handlers registered")
         
-        # 4. CALLBACK QUERY HANDLERS (MAIN MENU)
+        # 5. CALLBACK QUERY HANDLERS (MAIN MENU)
         application.add_handler(CallbackQueryHandler(main_menu_handler, pattern="^main_menu_"))
         
-        # 5. ADMIN CALLBACK HANDLER
+        # 6. ADMIN CALLBACK HANDLER
         if ADMIN_AVAILABLE:
             application.add_handler(CallbackQueryHandler(admin_callback_handler, pattern="^admin_"))
+            logger.info("✅ Admin callback handler registered")
         
-        # 6. FALLBACK HANDLER
+        # 7. STOCK CALLBACK HANDLER
+        if STOK_AVAILABLE:
+            application.add_handler(CallbackQueryHandler(stock_akrab_callback, pattern="^stock_"))
+            logger.info("✅ Stock callback handler registered")
+        
+        # 8. TOPUP CALLBACK HANDLERS
+        if TOPUP_AVAILABLE:
+            application.add_handler(CallbackQueryHandler(show_topup_menu, pattern="^topup_menu$"))
+            application.add_handler(CallbackQueryHandler(show_topup_history, pattern="^topup_history$"))
+            application.add_handler(CallbackQueryHandler(show_pending_topups, pattern="^pending_topups$"))
+            logger.info("✅ Topup callback handlers registered")
+        
+        # 9. ORDER CALLBACK HANDLER
+        if ORDER_AVAILABLE:
+            application.add_handler(CallbackQueryHandler(order_menu_handler, pattern="^order_"))
+            logger.info("✅ Order callback handler registered")
+        
+        # 10. FALLBACK HANDLER
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_message))
         
-        # 7. ERROR HANDLER
+        # 11. ERROR HANDLER
         application.add_error_handler(error_handler)
         
         logger.info("✅ All handlers registered successfully")
         
         # ==================== START BOT ====================
-        logger.info("🤖 Bot starting...")
+        logger.info("🤖 Bot starting polling...")
         print("=" * 50)
         print("🚀 BOT TELAH SIAP DIGUNAKAN!")
+        print("📍 Bot is now running and waiting for messages...")
+        print("⏹️  Press Ctrl+C to stop the bot")
         print("=" * 50)
         
-        # Run bot
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        # Run bot dengan polling
+        application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True,
+            timeout=30
+        )
+        
+    except KeyboardInterrupt:
+        logger.info("⏹️ Bot stopped by user (Ctrl+C)")
+        print("\n⏹️ Bot stopped successfully!")
         
     except Exception as e:
         logger.critical(f"❌ Failed to start bot: {e}")
@@ -588,4 +653,4 @@ def main():
         sys.exit(1)
 
 if __name__ == '__main__':
-    main() # <-- Diberi 4 spasi atau 1 Tab
+    main()
