@@ -591,6 +591,10 @@ def main():
         logger.critical(f"❌ Failed to start bot: {e}")
         traceback.print_exc()
         sys.exit(1)
+        def some_function():
+    print("fungsi lain")
 
-  if __name__ == '__main__':
-      main()
+# jangan ada spasi di depan baris ini
+if __name__ == '__main__':
+    application.run_polling()
+    
