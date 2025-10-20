@@ -2,7 +2,6 @@
 """
 Topup Handler untuk Bot Telegram - FIXED & READY TO USE
 Fitur: Topup saldo dengan nominal unik, QRIS generator, dan konfirmasi admin
-PERBAIKAN: QRIS base64 validation dan error handling
 """
 
 import logging
@@ -57,14 +56,18 @@ def generate_unique_amount(base_amount: int) -> Tuple[int, int]:
 
 async def generate_qris_code(amount: int) -> Dict[str, Any]:
     """
-    Generate QRIS code menggunakan API - DIPERBAIKI
+    Generate QRIS code menggunakan API - PERBAIKAN BASE64 ONLY
+    Format payload: {"amount": "10000", "qris_statis": "STATIC_CODE"}
     """
+    # Convert amount to string as required by API documentation
     payload = {
         "amount": str(amount),
         "qris_statis": QRIS_STATIC_CODE
     }
     
-    headers = {'Content-Type': 'application/json'}
+    headers = {
+        'Content-Type': 'application/json'
+    }
     
     logger.info(f"🔗 Calling QRIS API for amount: {amount}")
     
@@ -73,14 +76,6 @@ async def generate_qris_code(amount: int) -> Dict[str, Any]:
             async with session.post(QRIS_API_URL, json=payload, headers=headers, timeout=30) as response:
                 response_text = await response.text()
                 logger.info(f"📡 QRIS API Response status: {response.status}")
-                
-                # Validasi response status HTTP
-                if response.status != 200:
-                    logger.error(f"❌ QRIS API HTTP Error: {response.status}")
-                    return {
-                        "status": "error", 
-                        "message": f"HTTP {response.status} - API server error"
-                    }
                 
                 try:
                     result = json.loads(response_text)
@@ -91,11 +86,11 @@ async def generate_qris_code(amount: int) -> Dict[str, Any]:
                         "message": f"Invalid JSON response from QRIS API"
                     }
                 
-                # Check API response
+                # Check API response according to documentation
                 if result.get('status') == 'success' and result.get('qris_base64'):
                     qris_base64 = result['qris_base64']
                     
-                    # Enhanced base64 validation - DIPERBAIKI
+                    # PERBAIKAN: Enhanced base64 validation
                     try:
                         # Clean base64
                         clean_base64 = qris_base64
@@ -107,20 +102,20 @@ async def generate_qris_code(amount: int) -> Dict[str, Any]:
                         if padding != 4:
                             clean_base64 += "=" * padding
                             
-                        # Test decode dan validasi size
-                        image_data = base64.b64decode(clean_base64)
-                        image_size = len(image_data)
+                        # Test decode dan validasi size - FIX untuk error 888 bytes
+                        test_decode = base64.b64decode(clean_base64)
+                        image_size = len(test_decode)
                         logger.info(f"🔧 Decoded image size: {image_size} bytes")
                         
-                        # STRICT VALIDATION: QRIS harus minimal 1KB
-                        if image_size < 1000:
+                        # VALIDASI BARU: Jika image terlalu kecil (< 2KB), anggap invalid
+                        if image_size < 2000:
                             logger.error(f"❌ QRIS image too small: {image_size} bytes")
                             return {
                                 "status": "error", 
-                                "message": f"QRIS image too small ({image_size} bytes) - likely invalid"
+                                "message": f"QRIS image too small ({image_size} bytes) - please try again"
                             }
                         
-                        logger.info("✅ QRIS validation passed")
+                        logger.info("✅ Base64 validation passed")
                         result['qris_base64'] = clean_base64
                         return result
                         
@@ -152,30 +147,6 @@ def get_payment_methods() -> List[List[InlineKeyboardButton]]:
         [InlineKeyboardButton("🏦 Transfer Bank (Manual)", callback_data="payment_transfer")],
         [InlineKeyboardButton("🔙 Kembali", callback_data="topup_cancel")]
     ]
-
-async def notify_admin_about_topup(context: ContextTypes.DEFAULT_TYPE, topup_id: int, user: Any, amount: int):
-    """Notify admin about new topup request"""
-    try:
-        admin_id = "6738243352"  # Your admin ID from log
-        
-        text = (
-            f"🔔 **TOPUP BARU**\n\n"
-            f"👤 User: {user.full_name} (@{user.username})\n"
-            f"🆔 User ID: {user.id}\n"
-            f"💰 Nominal: Rp {amount:,}\n"
-            f"📋 TopUp ID: {topup_id}\n"
-            f"⏰ Waktu: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        )
-        
-        await context.bot.send_message(
-            chat_id=admin_id,
-            text=text,
-            parse_mode='Markdown'
-        )
-        logger.info(f"📢 Notified admin {admin_id} about new topup ID {topup_id}")
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to notify admin: {e}")
 
 # ==================== TOPUP MENU & CONVERSATION ====================
 async def show_topup_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -423,7 +394,7 @@ async def handle_payment_method(update: Update, context: ContextTypes.DEFAULT_TY
         return ConversationHandler.END
 
 async def process_qris_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Proses pembayaran dengan QRIS - FIXED VERSION"""
+    """Proses pembayaran dengan QRIS - PERBAIKAN ERROR HANDLING BASE64"""
     try:
         query = update.callback_query
         user = query.from_user
@@ -432,7 +403,7 @@ async def process_qris_payment(update: Update, context: ContextTypes.DEFAULT_TYP
         unique_code = context.user_data.get('unique_code', 0)
         
         # Tampilkan pesan sedang memproses
-        processing_msg = await query.edit_message_text(
+        await query.edit_message_text(
             "🔄 **Membuat QRIS...**\n\n"
             f"• Nominal: Rp {unique_amount:,}\n"
             f"• Sedang menghubungi server QRIS...",
@@ -454,7 +425,7 @@ async def process_qris_payment(update: Update, context: ContextTypes.DEFAULT_TYP
                 "Server QRIS tidak merespons dalam waktu yang ditentukan.\n\n"
                 "Silakan coba lagi atau gunakan metode transfer manual.",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔄 Coba Lagi", callback_data="payment_qris")],
+                    [InlineKeyboardButton("🔄 Coba Lagi", callback_data="topup_menu")],
                     [InlineKeyboardButton("🏦 Transfer Manual", callback_data="payment_transfer")],
                     [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
                 ])
@@ -463,22 +434,27 @@ async def process_qris_payment(update: Update, context: ContextTypes.DEFAULT_TYP
         
         logger.info(f"📊 QRIS Result Status: {qris_result.get('status')}")
         
-        # Handle QRIS generation failure - DIPERBAIKI
+        # PERBAIKAN: Handle QRIS generation failure khusus untuk base64 error
         if qris_result.get('status') != 'success':
-            error_message = qris_result.get('message', 'Unknown error')
+            error_message = qris_result.get('message', 'Unknown error from QRIS API')
             
-            logger.error(f"❌ QRIS generation failed: {error_message}")
-            
-            user_error_msg = (
-                f"❌ **Gagal membuat QRIS**\n\n"
-                f"**Error:** {error_message}\n\n"
-                f"Silakan gunakan metode transfer manual atau coba lagi nanti."
-            )
+            # Jika error terkait base64/image size, beri pesan khusus
+            if "too small" in error_message.lower() or "base64" in error_message.lower():
+                user_error_msg = (
+                    f"❌ **Gagal membuat QRIS**\n\n"
+                    f"Server QRIS mengembalikan data yang tidak valid.\n\n"
+                    f"Silakan gunakan metode transfer manual atau coba lagi nanti."
+                )
+            else:
+                user_error_msg = (
+                    f"❌ **Gagal membuat QRIS**\n\n"
+                    f"**Error:** {error_message}\n\n"
+                    f"Silakan gunakan metode transfer manual."
+                )
             
             await query.edit_message_text(
                 user_error_msg,
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔄 Coba Lagi", callback_data="payment_qris")],
                     [InlineKeyboardButton("🏦 Transfer Manual", callback_data="payment_transfer")],
                     [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
                 ]),
@@ -518,7 +494,7 @@ async def process_qris_payment(update: Update, context: ContextTypes.DEFAULT_TYP
             f"⏰ QRIS berlaku 24 jam"
         )
         
-        # Method: Save to temporary file and send - DIPERBAIKI
+        # Method: Save to temporary file and send
         try:
             # Clean base64 string
             clean_base64 = qris_base64
@@ -550,12 +526,6 @@ async def process_qris_payment(update: Update, context: ContextTypes.DEFAULT_TYP
                 # Hapus file temporary
                 os.unlink(temp_file.name)
             
-            # Hapus processing message
-            try:
-                await processing_msg.delete()
-            except:
-                pass
-            
             # Kirim instruksi tambahan
             await context.bot.send_message(
                 chat_id=user.id,
@@ -574,13 +544,26 @@ async def process_qris_payment(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             
             # Notify admin
-            await notify_admin_about_topup(context, topup_id, user, unique_amount)
+            admin_id = "6738243352"  # Your admin ID from log
+            admin_text = (
+                f"🔔 **TOPUP BARU - QRIS**\n\n"
+                f"👤 User: {user.full_name} (@{user.username})\n"
+                f"💰 Nominal: Rp {unique_amount:,}\n"
+                f"📋 TopUp ID: {topup_id}"
+            )
+            
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=admin_text,
+                parse_mode='Markdown'
+            )
+            logger.info(f"📢 Notified admin {admin_id} about new topup ID {topup_id}")
             
         except Exception as image_error:
-            logger.error(f"❌ Error sending QRIS image: {image_error}")
+            logger.error(f"❌ Error sending QRIS photo: {image_error}")
             await query.edit_message_text(
                 "❌ **Gagal mengirim gambar QRIS**\n\n"
-                "Data QRIS berhasil dibuat tetapi gagal dikirim.\n\n"
+                "Terjadi error saat memproses gambar QRIS.\n\n"
                 "Silakan gunakan metode transfer manual.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🏦 Transfer Manual", callback_data="payment_transfer")],
@@ -591,9 +574,8 @@ async def process_qris_payment(update: Update, context: ContextTypes.DEFAULT_TYP
             
     except Exception as e:
         logger.error(f"💥 Unexpected error in process_qris_payment: {e}", exc_info=True)
-        error_msg = "❌ Terjadi error tidak terduga saat memproses QRIS."
         await query.edit_message_text(
-            error_msg,
+            "❌ Terjadi error tidak terduga saat memproses QRIS.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔄 Coba Lagi", callback_data="topup_menu")],
                 [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
@@ -650,7 +632,20 @@ async def process_transfer_payment(update: Update, context: ContextTypes.DEFAULT
         )
         
         # Notify admin
-        await notify_admin_about_topup(context, topup_id, user, unique_amount)
+        admin_id = "6738243352"
+        admin_text = (
+            f"🔔 **TOPUP BARU - TRANSFER**\n\n"
+            f"👤 User: {user.full_name} (@{user.username})\n"
+            f"💰 Nominal: Rp {unique_amount:,}\n"
+            f"📋 TopUp ID: {topup_id}"
+        )
+        
+        await context.bot.send_message(
+            chat_id=admin_id,
+            text=admin_text,
+            parse_mode='Markdown'
+        )
+        logger.info(f"📢 Notified admin {admin_id} about new topup ID {topup_id}")
         
         return ConversationHandler.END
         
