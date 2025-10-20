@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Bot Telegram Full Feature - FIXED VISIBLE VERSION
+Bot Telegram Full Feature - FIXED & READY FOR RELEASE
 """
 
 import logging
@@ -90,7 +90,7 @@ except Exception as e:
     async def order_menu_handler(update, context):
         await update.callback_query.message.reply_text("❌ Fitur order sedang dalam perbaikan.")
 
-# Topup Handler
+# Topup Handler - IMPORT YANG DIPERBAIKI
 try:
     from topup_handler import (
         get_topup_conversation_handler,
@@ -98,7 +98,8 @@ try:
         show_topup_history, 
         show_pending_topups,
         handle_proof_upload,
-        get_topup_handlers
+        get_topup_handlers,
+        topup_command  # Pastikan ini diimpor
     )
     TOPUP_AVAILABLE = True
     print("✅ Topup handler loaded successfully")
@@ -119,6 +120,9 @@ except Exception as e:
     
     def get_topup_handlers():
         return []
+    
+    async def topup_command(update, context):
+        await show_topup_menu(update, context)
 
 # ==================== LOGGING SETUP ====================
 logging.basicConfig(
@@ -409,10 +413,10 @@ async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /order"""
     await order_menu_handler(update, context)
 
-async def topup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def topup_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /topup"""
     if TOPUP_AVAILABLE:
-        await show_topup_menu(update, context)
+        await topup_command(update, context)
     else:
         await update.message.reply_text("❌ Fitur topup sedang dalam perbaikan.")
 
@@ -556,52 +560,44 @@ def main():
                 application.add_handler(handler)
             print("✅ Topup callback handlers registered")
         
-        # 3. COMMAND HANDLERS
+        # 3. COMMAND HANDLERS - LENGKAPI BAGIAN INI
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("help", help_command))
         application.add_handler(CommandHandler("saldo", saldo_command))
-        application.add_handler(CommandHandler("topup", topup_command))
+        application.add_handler(CommandHandler("topup", topup_command_handler))
         application.add_handler(CommandHandler("stock", stock_command_handler))
         application.add_handler(CommandHandler("order", order_command))
         application.add_handler(CommandHandler("admin", admin_command))
         
-        # 4. ADMIN COMMAND HANDLERS
-        if ADMIN_AVAILABLE:
-            application.add_handler(broadcast_handler)
-            application.add_handler(cek_user_handler)
-            application.add_handler(jadikan_admin_handler)
-            application.add_handler(topup_list_handler)
-            print("✅ Admin command handlers registered")
-        
-        # 5. CALLBACK QUERY HANDLERS
+        # 4. CALLBACK QUERY HANDLERS
         application.add_handler(CallbackQueryHandler(main_menu_handler, pattern="^main_menu_"))
         
+        # 5. ADMIN CALLBACK HANDLERS
         if ADMIN_AVAILABLE:
             application.add_handler(CallbackQueryHandler(admin_callback_handler, pattern="^admin_"))
+            application.add_handler(CommandHandler("broadcast", broadcast_handler))
+            application.add_handler(CommandHandler("topup_list", topup_list_handler))
+            application.add_handler(CommandHandler("cek_user", cek_user_handler))
+            application.add_handler(CommandHandler("jadikan_admin", jadikan_admin_handler))
+            print("✅ Admin command handlers registered")
         
-        # 6. FALLBACK HANDLER (PRIORITAS TERENDAH)
+        # 6. FALLBACK HANDLERS
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_message))
-        
-        # 7. ERROR HANDLER
         application.add_error_handler(error_handler)
         
         print("✅ All handlers registered successfully")
         
         # ==================== START BOT ====================
-        print("🤖 Bot is starting...")
-        
-        # Run bot
-        if os.name == 'nt':  # Windows
-            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-        
+        print("🚀 Starting bot polling...")
         application.run_polling(
             allowed_updates=Update.ALL_TYPES,
+            timeout=30,
             drop_pending_updates=True
         )
         
     except Exception as e:
-        print(f"❌ Failed to start bot: {e}")
-        traceback.print_exc()
+        logger.error(f"❌ Failed to start bot: {e}")
+        print(f"❌ Bot startup failed: {e}")
         sys.exit(1)
 
 if __name__ == '__main__':
