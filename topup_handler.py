@@ -383,6 +383,10 @@ async def handle_payment_method(update: Update, context: ContextTypes.DEFAULT_TY
         await query.message.reply_text("❌ Terjadi error. Silakan coba lagi.")
         return ConversationHandler.END
 
+import tempfile # Pastikan import ini ada di bagian atas file Anda
+import os       # Pastikan import ini ada di bagian atas file Anda
+import base64   # Pastikan import ini ada di bagian atas file Anda
+
 async def process_qris_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Proses pembayaran dengan QRIS - FIXED VERSION"""
     try:
@@ -392,7 +396,6 @@ async def process_qris_payment(update: Update, context: ContextTypes.DEFAULT_TYP
         unique_amount = context.user_data.get('unique_amount', 0)
         unique_code = context.user_data.get('unique_code', 0)
         
-        # Tampilkan pesan sedang memproses
         await query.edit_message_text(
             "🔄 **Membuat QRIS...**\n\n"
             f"• Nominal: Rp {unique_amount:,}\n"
@@ -402,6 +405,169 @@ async def process_qris_payment(update: Update, context: ContextTypes.DEFAULT_TYP
         
         logger.info(f"🔗 Processing QRIS payment for amount: {unique_amount}")
         
+        try:
+            qris_result = await asyncio.wait_for(
+                generate_qris_code(unique_amount), 
+                timeout=30
+            )
+        except asyncio.TimeoutError:
+            logger.error("⏰ QRIS generation timeout")
+            await query.edit_message_text(
+                "❌ **Timeout membuat QRIS**\n\n"
+                "Server QRIS tidak merespons. Silakan coba lagi atau gunakan metode transfer manual.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Coba Lagi", callback_data="topup_menu")],
+                    [InlineKeyboardButton("🏦 Transfer Manual", callback_data="payment_transfer")],
+                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
+                ])
+            )
+            return ConversationHandler.END
+        
+        logger.info(f"📊 QRIS Result Status: {qris_result.get('status')}")
+        
+        if qris_result.get('status') == 'success':
+            qris_base64 = qris_result.get('qris_base64', '')
+            
+            if not qris_base64 or len(qris_base64) < 100:
+                logger.error(f"❌ Invalid QRIS base64 data length: {len(qris_base64)}")
+                await query.edit_message_text(
+                    "❌ **Gagal membuat QRIS**\n\nData QRIS yang diterima tidak valid. Silakan gunakan metode transfer manual.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🏦 Transfer Manual", callback_data="payment_transfer")],
+                        [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
+                    ])
+                )
+                return ConversationHandler.END
+            
+            user_id = database.get_or_create_user(str(user.id), user.username or "", user.full_name)
+            topup_id = database.create_topup(
+                user_id=user_id,
+                amount=amount,
+                unique_code=unique_code,
+                total_amount=unique_amount,
+                method='qris',
+                status='pending'
+            )
+            
+            logger.info(f"💾 Topup saved to database: ID {topup_id}")
+            
+            # --- BAGIAN YANG HILANG DIMULAI DI SINI ---
+            
+            text = (
+                f"✅ **QRIS BERHASIL DIBUAT**\n\n"
+                f"📊 **Detail Pembayaran:**\n"
+                f"• Nominal: Rp {amount:,}\n"
+                f"• Kode Unik: +{unique_code}\n"
+                f"• **Total: Rp {unique_amount:,}**\n"
+                f"• ID Transaksi: `{topup_id}`\n\n"
+                f"**CARA BAYAR:**\n"
+                f"1. Scan QRIS di bawah ini\n"
+                f"2. Bayar tepat sesuai nominal\n"
+                f"3. Pembayaran akan diverifikasi otomatis\n\n"
+                f"⚠️ **Pastikan nominal tepat: Rp {unique_amount:,}**\n"
+                f"⏰ QRIS berlaku 24 jam"
+            )
+            
+            temp_path = None
+            try:
+                clean_base64 = qris_base64
+                if "base64," in qris_base64:
+                    clean_base64 = qris_base64.split("base64,")[1]
+                
+                logger.info(f"🔧 Base64 length: {len(clean_base64)}")
+                
+                try:
+                    padding = 4 - (len(clean_base64) % 4)
+                    if padding != 4:
+                        clean_base64 += "=" * padding
+                    
+                    image_data = base64.b64decode(clean_base64)
+                    logger.info(f"🔧 Decoded image size: {len(image_data)} bytes")
+                    
+                    if len(image_data) < 100: 
+                        raise ValueError("Decoded image is too small, likely invalid.")
+                        
+                except Exception as decode_error:
+                    logger.error(f"❌ Base64 decode error: {decode_error}")
+                    raise ValueError(f"Invalid base64 data: {decode_error}")
+
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as temp_file:
+                    temp_file.write(image_data)
+                    temp_path = temp_file.name
+                
+                logger.info(f"🔧 Temporary file created: {temp_path}")
+                
+                with open(temp_path, 'rb') as photo:
+                    await query.message.reply_photo(
+                        photo=photo,
+                        caption=text,
+                        parse_mode='Markdown',
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("🔄 Cek Status", callback_data=f"check_topup_{topup_id}")],
+                            [InlineKeyboardButton("💸 Top Up Lagi", callback_data="topup_menu")],
+                            [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
+                        ])
+                    )
+                
+                logger.info("✅ QRIS image sent successfully via temporary file")
+                await query.delete_message()
+            
+            except Exception as e:
+                logger.error(f"❌ Error sending QRIS photo: {e}")
+                fallback_text = (
+                    f"✅ **QRIS BERHASIL DIBUAT - GAGAL KIRIM GAMBAR**\n\n"
+                    f"📊 **Detail Pembayaran:**\n"
+                    f"• **Total Bayar: Rp {unique_amount:,}**\n"
+                    f"• ID Transaksi: `{topup_id}`\n\n"
+                    f"**INSTRUKSI:**\n"
+                    f"Silakan buka aplikasi E-Wallet/Bank Anda dan transfer manual sejumlah nominal di atas ke QRIS merchant kami.\n\n"
+                    f"⚠️ **Pastikan nominal tepat!**"
+                )
+                await query.edit_message_text(
+                    fallback_text,
+                    parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔄 Cek Status", callback_data=f"check_topup_{topup_id}")],
+                        [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
+                    ])
+                )
+            finally:
+                if temp_path and os.path.exists(temp_path):
+                    try:
+                        os.unlink(temp_path)
+                        logger.info(f"✅ Temporary file cleaned up: {temp_path}")
+                    except Exception as cleanup_error:
+                        logger.warning(f"⚠️ Could not delete temp file: {cleanup_error}")
+            
+            await notify_admin_new_topup(context, topup_id, user, amount, unique_amount, 'qris')
+            
+        else:
+            error_msg = qris_result.get('message', 'Unknown error from QRIS API')
+            logger.error(f"❌ QRIS Generation Failed: {error_msg}")
+            
+            await query.edit_message_text(
+                f"❌ **GAGAL MEMBUAT QRIS**\n\n"
+                f"**Error:** {error_msg}\n\n"
+                f"Silakan coba metode pembayaran lain.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🏦 Transfer Manual", callback_data="payment_transfer")],
+                    [InlineKeyboardButton("🔄 Coba Lagi", callback_data="topup_menu")],
+                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
+                ]),
+                parse_mode='Markdown'
+            )
+            
+    except Exception as e:
+        logger.error(f"❌ Error in process_qris_payment: {e}", exc_info=True)
+        # Check if query object exists before trying to use it
+        if 'query' in locals() and query:
+            await query.edit_message_text(
+                "❌ Terjadi error fatal saat memproses QRIS. Silakan coba lagi.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Coba Lagi", callback_data="topup_menu")],
+                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
+                ])
+            )
         # Generate QRIS dengan timeout
         try:
             qris_result = await asyncio.wait_for(
