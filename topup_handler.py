@@ -54,81 +54,146 @@ def generate_unique_amount(base_amount: int) -> Tuple[int, int]:
     unique_amount = base_amount + unique_code
     return unique_amount, unique_code
 
-async def generate_qris_code(amount: int) -> Dict[str, Any]:
+async def generate_qris_code(amount: int, retry_count: int = 3) -> Dict[str, Any]:
     """
-    Generate QRIS code menggunakan API - SESUAI DOKUMENTASI
-    Format payload: {"amount": "10000", "qris_statis": "STATIC_CODE"}
+    Generate QRIS code menggunakan API - FIXED VERSION
+    Dengan retry mechanism dan base64 validation yang lebih robust
     """
-    # Convert amount to string as required by API documentation
-    payload = {
-        "amount": str(amount),
-        "qris_statis": QRIS_STATIC_CODE
-    }
-    
-    headers = {
-        'Content-Type': 'application/json'
-    }
-    
-    logger.info(f"🔗 Calling QRIS API for amount: {amount}")
-    
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(QRIS_API_URL, json=payload, headers=headers, timeout=30) as response:
-                response_text = await response.text()
-                logger.info(f"📡 QRIS API Response status: {response.status}")
-                
-                try:
-                    result = json.loads(response_text)
-                except json.JSONDecodeError as e:
-                    logger.error(f"❌ JSON decode error: {e}")
-                    return {
-                        "status": "error", 
-                        "message": f"Invalid JSON response from QRIS API"
-                    }
-                
-                # Check API response according to documentation
-                if result.get('status') == 'success' and result.get('qris_base64'):
-                    qris_base64 = result['qris_base64']
+    for attempt in range(retry_count):
+        try:
+            # Convert amount to string as required by API documentation
+            payload = {
+                "amount": str(amount),
+                "qris_statis": QRIS_STATIC_CODE
+            }
+            
+            headers = {
+                'Content-Type': 'application/json',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            
+            logger.info(f"🔗 Attempt {attempt + 1}: Calling QRIS API for amount: {amount}")
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    QRIS_API_URL, 
+                    json=payload, 
+                    headers=headers, 
+                    timeout=30
+                ) as response:
                     
-                    # Validasi base64
+                    response_text = await response.text()
+                    logger.info(f"📡 QRIS API Response status: {response.status}")
+                    
+                    # Parse JSON response
                     try:
-                        # Clean base64
-                        clean_base64 = qris_base64
-                        if "base64," in qris_base64:
-                            clean_base64 = qris_base64.split("base64,")[1]
-                        
-                        # Test decode
-                        padding = 4 - (len(clean_base64) % 4)
-                        if padding != 4:
-                            clean_base64 += "=" * padding
-                            
-                        test_decode = base64.b64decode(clean_base64)
-                        logger.info(f"✅ Base64 validation passed, decoded size: {len(test_decode)} bytes")
-                        
-                        # Return cleaned base64
-                        result['qris_base64'] = clean_base64
-                        return result
-                        
-                    except Exception as base64_error:
-                        logger.error(f"❌ Base64 validation failed: {base64_error}")
+                        result = json.loads(response_text)
+                    except json.JSONDecodeError as e:
+                        logger.error(f"❌ JSON decode error: {e}")
+                        if attempt < retry_count - 1:
+                            await asyncio.sleep(2)
+                            continue
                         return {
                             "status": "error", 
-                            "message": f"Invalid base64 data from QRIS API"
+                            "message": "Invalid JSON response from QRIS API"
                         }
-                else:
-                    error_msg = result.get('message', 'Unknown error from QRIS API')
-                    logger.error(f"❌ QRIS API Error: {error_msg}")
-                    return {"status": "error", "message": error_msg}
                     
-    except asyncio.TimeoutError:
-        logger.error("⏰ QRIS API request timeout")
-        return {"status": "error", "message": "QRIS API timeout - please try again later"}
-    except aiohttp.ClientError as e:
-        logger.error(f"🔌 QRIS API connection error: {e}")
-        return {"status": "error", "message": f"Connection error: {str(e)}"}
+                    # Check API response
+                    if result.get('status') == 'success' and result.get('qris_base64'):
+                        qris_base64 = result['qris_base64']
+                        
+                        # Validasi dan cleaning base64
+                        clean_base64 = await validate_and_clean_base64(qris_base64)
+                        if clean_base64:
+                            result['qris_base64'] = clean_base64
+                            logger.info(f"✅ QRIS generation successful on attempt {attempt + 1}")
+                            return result
+                        else:
+                            logger.warning(f"⚠️ Invalid base64 on attempt {attempt + 1}, retrying...")
+                            if attempt < retry_count - 1:
+                                await asyncio.sleep(2)
+                                continue
+                            return {
+                                "status": "error", 
+                                "message": "QRIS generated but base64 data is invalid"
+                            }
+                    else:
+                        error_msg = result.get('message', 'Unknown error from QRIS API')
+                        logger.error(f"❌ QRIS API Error: {error_msg}")
+                        if attempt < retry_count - 1:
+                            await asyncio.sleep(2)
+                            continue
+                        return {"status": "error", "message": error_msg}
+                        
+        except asyncio.TimeoutError:
+            logger.error(f"⏰ QRIS API request timeout (attempt {attempt + 1})")
+            if attempt < retry_count - 1:
+                await asyncio.sleep(3)
+                continue
+            return {"status": "error", "message": "QRIS API timeout - please try again later"}
+        except aiohttp.ClientError as e:
+            logger.error(f"🔌 QRIS API connection error (attempt {attempt + 1}): {e}")
+            if attempt < retry_count - 1:
+                await asyncio.sleep(3)
+                continue
+            return {"status": "error", "message": f"Connection error: {str(e)}"}
+        except Exception as e:
+            logger.error(f"💥 Unexpected error generating QRIS (attempt {attempt + 1}): {e}")
+            if attempt < retry_count - 1:
+                await asyncio.sleep(2)
+                continue
+            return {"status": "error", "message": f"Unexpected error: {str(e)}"}
+    
+    return {"status": "error", "message": "All attempts failed"}
+
+async def validate_and_clean_base64(base64_string: str) -> str:
+    """
+    Validasi dan cleaning base64 string dengan multiple fallback methods
+    Returns cleaned base64 string or empty string if invalid
+    """
+    if not base64_string or len(base64_string) < 100:
+        logger.error(f"❌ Base64 too short: {len(base64_string)}")
+        return ""
+    
+    try:
+        # Method 1: Extract base64 if in data URL format
+        clean_base64 = base64_string
+        if "base64," in base64_string:
+            clean_base64 = base64_string.split("base64,")[1]
+        
+        # Method 2: Remove any non-base64 characters
+        import re
+        clean_base64 = re.sub(r'[^a-zA-Z0-9+/=]', '', clean_base64)
+        
+        # Method 3: Add padding if needed
+        padding = 4 - (len(clean_base64) % 4)
+        if padding != 4:
+            clean_base64 += "=" * padding
+        
+        # Test decode dengan multiple approaches
+        test_data = None
+        
+        # Approach 1: Standard decode
+        try:
+            test_data = base64.b64decode(clean_base64, validate=True)
+        except Exception:
+            # Approach 2: Decode with ignore errors
+            try:
+                test_data = base64.b64decode(clean_base64, validate=False)
+            except Exception as e:
+                logger.error(f"❌ Base64 decode failed: {e}")
+                return ""
+        
+        if test_data and len(test_data) > 1000:  # Minimum reasonable size for QRIS
+            logger.info(f"✅ Base64 validation passed: {len(test_data)} bytes")
+            return clean_base64
+        else:
+            logger.error(f"❌ Decoded image too small: {len(test_data) if test_data else 0} bytes")
+            return ""
+            
     except Exception as e:
-        logger.error(f"💥 Unexpected error generating QRIS: {e}")
-        return {"status": "error", "message": f"Unexpected error: {str(e)}"}
+        logger.error(f"❌ Base64 validation error: {e}")
+        return ""
 
 def get_payment_methods() -> List[List[InlineKeyboardButton]]:
     """Daftar metode pembayaran yang tersedia"""
@@ -137,6 +202,126 @@ def get_payment_methods() -> List[List[InlineKeyboardButton]]:
         [InlineKeyboardButton("🏦 Transfer Bank (Manual)", callback_data="payment_transfer")],
         [InlineKeyboardButton("🔙 Kembali", callback_data="topup_cancel")]
     ]
+
+async def save_qris_image(base64_data: str, topup_id: int) -> bool:
+    """
+    Save QRIS image to file dengan error handling yang robust
+    """
+    try:
+        if not base64_data:
+            logger.error("❌ No base64 data provided")
+            return False
+        
+        # Validate base64 first
+        clean_base64 = await validate_and_clean_base64(base64_data)
+        if not clean_base64:
+            logger.error("❌ Invalid base64 data for saving")
+            return False
+        
+        # Decode base64
+        image_data = base64.b64decode(clean_base64)
+        
+        # Save to file
+        filename = f"qris_{topup_id}.png"
+        filepath = os.path.join("qris_images", filename)
+        
+        # Ensure directory exists
+        os.makedirs("qris_images", exist_ok=True)
+        
+        with open(filepath, "wb") as f:
+            f.write(image_data)
+        
+        logger.info(f"💾 QRIS image saved: {filepath} ({len(image_data)} bytes)")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Error saving QRIS image: {e}")
+        return False
+
+async def send_qris_to_user(context: ContextTypes.DEFAULT_TYPE, chat_id: int, 
+                          base64_data: str, caption: str, topup_id: int) -> bool:
+    """
+    Send QRIS image to user dengan multiple fallback methods
+    """
+    try:
+        if not base64_data:
+            logger.error("❌ No base64 data for sending QRIS")
+            return False
+        
+        # Method 1: Try to save and send as file
+        if await save_qris_image(base64_data, topup_id):
+            filepath = os.path.join("qris_images", f"qris_{topup_id}.png")
+            try:
+                with open(filepath, "rb") as photo:
+                    await context.bot.send_photo(
+                        chat_id=chat_id,
+                        photo=photo,
+                        caption=caption,
+                        parse_mode='Markdown'
+                    )
+                logger.info("✅ QRIS sent as file successfully")
+                return True
+            except Exception as e:
+                logger.warning(f"⚠️ Could not send as file: {e}")
+        
+        # Method 2: Try direct base64 send
+        try:
+            clean_base64 = await validate_and_clean_base64(base64_data)
+            if clean_base64:
+                image_data = base64.b64decode(clean_base64)
+                
+                # Use temp file for sending
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp_file:
+                    tmp_file.write(image_data)
+                    tmp_file.flush()
+                    
+                    with open(tmp_file.name, "rb") as photo:
+                        await context.bot.send_photo(
+                            chat_id=chat_id,
+                            photo=photo,
+                            caption=caption,
+                            parse_mode='Markdown'
+                        )
+                
+                # Clean up temp file
+                os.unlink(tmp_file.name)
+                logger.info("✅ QRIS sent via temp file successfully")
+                return True
+                
+        except Exception as e:
+            logger.error(f"❌ Error sending QRIS via temp file: {e}")
+        
+        # Method 3: Send as document if image fails
+        try:
+            clean_base64 = await validate_and_clean_base64(base64_data)
+            if clean_base64:
+                image_data = base64.b64decode(clean_base64)
+                
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp_file:
+                    tmp_file.write(image_data)
+                    tmp_file.flush()
+                    
+                    with open(tmp_file.name, "rb") as document:
+                        await context.bot.send_document(
+                            chat_id=chat_id,
+                            document=document,
+                            filename=f"qris_{topup_id}.png",
+                            caption=caption,
+                            parse_mode='Markdown'
+                        )
+                
+                os.unlink(tmp_file.name)
+                logger.info("✅ QRIS sent as document successfully")
+                return True
+                
+        except Exception as e:
+            logger.error(f"❌ Error sending QRIS as document: {e}")
+        
+        return False
+        
+    except Exception as e:
+        logger.error(f"💥 Unexpected error in send_qris_to_user: {e}")
+        return False
 
 # ==================== TOPUP MENU & CONVERSATION ====================
 async def show_topup_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -384,7 +569,7 @@ async def handle_payment_method(update: Update, context: ContextTypes.DEFAULT_TY
         return ConversationHandler.END
 
 async def process_qris_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Proses pembayaran dengan QRIS - FIXED VERSION"""
+    """Proses pembayaran dengan QRIS - COMPLETELY FIXED VERSION"""
     try:
         query = update.callback_query
         user = query.from_user
@@ -393,48 +578,33 @@ async def process_qris_payment(update: Update, context: ContextTypes.DEFAULT_TYP
         unique_code = context.user_data.get('unique_code', 0)
         
         # Tampilkan pesan sedang memproses
-        await query.edit_message_text(
+        processing_msg = await query.edit_message_text(
             "🔄 **Membuat QRIS...**\n\n"
             f"• Nominal: Rp {unique_amount:,}\n"
-            f"• Sedang menghubungi server QRIS...",
+            f"• Sedang menghubungi server QRIS...\n"
+            f"⏱️ Mohon tunggu sebentar",
             parse_mode='Markdown'
         )
         
         logger.info(f"🔗 Processing QRIS payment for amount: {unique_amount}")
         
-        # Generate QRIS dengan timeout
-        try:
-            qris_result = await asyncio.wait_for(
-                generate_qris_code(unique_amount), 
-                timeout=30
-            )
-        except asyncio.TimeoutError:
-            logger.error("⏰ QRIS generation timeout")
-            await query.edit_message_text(
-                "❌ **Timeout membuat QRIS**\n\n"
-                "Server QRIS tidak merespons dalam waktu yang ditentukan.\n\n"
-                "Silakan coba lagi atau gunakan metode transfer manual.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔄 Coba Lagi", callback_data="topup_menu")],
-                    [InlineKeyboardButton("🏦 Transfer Manual", callback_data="payment_transfer")],
-                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
-                ])
-            )
-            return ConversationHandler.END
+        # Generate QRIS dengan retry mechanism
+        qris_result = await generate_qris_code(unique_amount, retry_count=3)
         
-        logger.info(f"📊 QRIS Result Status: {qris_result.get('status')}")
+        logger.info(f"📊 Final QRIS Result Status: {qris_result.get('status')}")
         
         if qris_result.get('status') == 'success':
             qris_base64 = qris_result.get('qris_base64', '')
             
-            # Validasi base64 string
-            if not qris_base64 or len(qris_base64) < 100:
-                logger.error(f"❌ Invalid QRIS base64 data length: {len(qris_base64)}")
-                await query.edit_message_text(
+            # Validasi final base64
+            if not qris_base64:
+                logger.error("❌ Empty QRIS base64 after generation")
+                await processing_msg.edit_text(
                     "❌ **Gagal membuat QRIS**\n\n"
-                    "Data QRIS yang diterima tidak valid.\n\n"
-                    "Silakan gunakan metode transfer manual.",
+                    "Data QRIS yang dihasilkan tidak valid.\n\n"
+                    "Silakan coba lagi atau gunakan metode transfer manual.",
                     reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔄 Coba Lagi", callback_data="payment_qris")],
                         [InlineKeyboardButton("🏦 Transfer Manual", callback_data="payment_transfer")],
                         [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
                     ])
@@ -455,7 +625,7 @@ async def process_qris_payment(update: Update, context: ContextTypes.DEFAULT_TYP
             logger.info(f"💾 Topup saved to database: ID {topup_id}")
             
             # Text untuk caption
-            text = (
+            caption_text = (
                 f"✅ **QRIS BERHASIL DIBUAT**\n\n"
                 f"📊 **Detail Pembayaran:**\n"
                 f"• Nominal: Rp {amount:,}\n"
@@ -470,132 +640,122 @@ async def process_qris_payment(update: Update, context: ContextTypes.DEFAULT_TYP
                 f"⏰ QRIS berlaku 24 jam"
             )
             
-            # Method: Save to temporary file and send
-            try:
-                # Clean base64 string
-                clean_base64 = qris_base64
-                if "base64," in qris_base64:
-                    clean_base64 = qris_base64.split("base64,")[1]
-                
-                logger.info(f"🔧 Base64 length: {len(clean_base64)}")
-                
-                # Validasi base64 dengan mencoba decode
-                try:
-                    # Tambahkan padding jika diperlukan
-                    padding = 4 - (len(clean_base64) % 4)
-                    if padding != 4:
-                        clean_base64 += "=" * padding
-                    
-                    image_data = base64.b64decode(clean_base64)
-                    logger.info(f"🔧 Decoded image size: {len(image_data)} bytes")
-                    
-                    if len(image_data) < 1000:
-                        raise ValueError("Decoded image too small")
-                        
-                except Exception as decode_error:
-                    logger.error(f"❌ Base64 decode error: {decode_error}")
-                    raise ValueError(f"Invalid base64 data: {decode_error}")
-                
-                # Create temporary file
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as temp_file:
-                    temp_file.write(image_data)
-                    temp_path = temp_file.name
-                
-                logger.info(f"🔧 Temporary file created: {temp_path}")
-                
-                # Send as file
-                with open(temp_path, 'rb') as photo:
-                    await query.message.reply_photo(
-                        photo=photo,
-                        caption=text,
-                        parse_mode='Markdown',
-                        reply_markup=InlineKeyboardMarkup([
-                            [InlineKeyboardButton("🔄 Cek Status", callback_data=f"check_topup_{topup_id}")],
-                            [InlineKeyboardButton("💸 Top Up Lagi", callback_data="topup_menu")],
-                            [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
-                        ])
-                    )
-                
-                logger.info("✅ QRIS image sent successfully via temporary file")
-                
-                # Hapus pesan processing
-                await query.delete_message()
-                
-                # Clean up temporary file
-                try:
-                    os.unlink(temp_path)
-                    logger.info("✅ Temporary file cleaned up")
-                except Exception as cleanup_error:
-                    logger.warning(f"⚠️ Could not delete temp file: {cleanup_error}")
-                
-            except Exception as e:
-                logger.error(f"❌ Error sending QRIS photo: {e}")
-                
-                # Fallback: Kirim pesan tanpa gambar
-                fallback_text = (
-                    f"✅ **QRIS BERHASIL DIBUAT - SCAN MANUAL**\n\n"
-                    f"📊 **Detail Pembayaran:**\n"
+            # Update processing message
+            await processing_msg.edit_text(
+                "🔄 **Mengirim QRIS...**\n\n"
+                f"QRIS berhasil dibuat, sedang mengirim...",
+                parse_mode='Markdown'
+            )
+            
+            # Kirim QRIS ke user
+            qris_sent = await send_qris_to_user(
+                context=context,
+                chat_id=user.id,
+                base64_data=qris_base64,
+                caption=caption_text,
+                topup_id=topup_id
+            )
+            
+            if qris_sent:
+                # Success message
+                success_text = (
+                    f"✅ **TOP UP DIBUAT**\n\n"
+                    f"📊 **Detail Transaksi:**\n"
+                    f"• ID: `{topup_id}`\n"
                     f"• Nominal: Rp {amount:,}\n"
-                    f"• Kode Unik: +{unique_code}\n"
-                    f"• **Total: Rp {unique_amount:,}**\n"
-                    f"• ID Transaksi: `{topup_id}`\n\n"
-                    f"**INSTRUKSI BAYAR:**\n"
-                    f"1. Buka aplikasi mobile banking/e-wallet Anda\n"
-                    f"2. Pilih bayar dengan QRIS\n"
-                    f"3. Input nominal: **Rp {unique_amount:,}**\n"
-                    f"4. Selesaikan pembayaran\n\n"
-                    f"⚠️ **Pastikan nominal tepat!**\n"
-                    f"⏰ Kode berlaku 24 jam"
+                    f"• Total Bayar: Rp {unique_amount:,}\n"
+                    f"• Metode: QRIS\n\n"
+                    f"✅ QRIS telah dikirim. Silakan scan dan bayar.\n\n"
+                    f"💰 Saldo akan otomatis bertambah setelah pembayaran terverifikasi."
                 )
                 
-                await query.edit_message_text(
-                    fallback_text,
-                    parse_mode='Markdown',
+                await processing_msg.edit_text(
+                    success_text,
                     reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔄 Cek Status", callback_data=f"check_topup_{topup_id}")],
+                        [InlineKeyboardButton("📋 Lihat Riwayat", callback_data="topup_history")],
                         [InlineKeyboardButton("💸 Top Up Lagi", callback_data="topup_menu")],
+                        [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
+                    ]),
+                    parse_mode='Markdown'
+                )
+                
+                # Notify admin
+                await notify_admin_about_topup(context, topup_id, user, amount, unique_amount, "QRIS")
+                
+            else:
+                # Failed to send QRIS
+                logger.error("❌ Failed to send QRIS image to user")
+                await processing_msg.edit_text(
+                    "❌ **Gagal Mengirim QRIS**\n\n"
+                    "QRIS berhasil dibuat tetapi gagal dikirim.\n\n"
+                    "Silakan gunakan metode transfer manual atau coba lagi.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔄 Coba Lagi", callback_data="payment_qris")],
+                        [InlineKeyboardButton("🏦 Transfer Manual", callback_data="payment_transfer")],
                         [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
                     ])
                 )
-            
-            # Notifikasi admin
-            await notify_admin_new_topup(context, topup_id, user, amount, unique_amount, 'qris')
-            
+                
         else:
-            error_msg = qris_result.get('message', 'Unknown error from QRIS API')
-            logger.error(f"❌ QRIS Generation Failed: {error_msg}")
+            # QRIS generation failed
+            error_message = qris_result.get('message', 'Unknown error')
+            logger.error(f"❌ QRIS generation failed: {error_message}")
             
-            await query.edit_message_text(
+            error_text = (
                 f"❌ **GAGAL MEMBUAT QRIS**\n\n"
-                f"**Error:** {error_msg}\n\n"
-                f"Silakan coba metode pembayaran lain.",
+                f"**Error:** {error_message}\n\n"
+                f"Silakan coba lagi atau gunakan metode transfer manual."
+            )
+            
+            await processing_msg.edit_text(
+                error_text,
                 reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Coba Lagi", callback_data="payment_qris")],
                     [InlineKeyboardButton("🏦 Transfer Manual", callback_data="payment_transfer")],
-                    [InlineKeyboardButton("🔄 Coba Lagi", callback_data="topup_menu")],
                     [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
                 ]),
                 parse_mode='Markdown'
             )
             
     except Exception as e:
-        logger.error(f"❌ Error in process_qris_payment: {e}", exc_info=True)
-        await query.edit_message_text(
-            "❌ Terjadi error saat membuat QRIS. Silakan coba lagi.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔄 Coba Lagi", callback_data="topup_menu")],
-                [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
-            ])
+        logger.error(f"💥 Unexpected error in process_qris_payment: {e}", exc_info=True)
+        error_msg = (
+            "❌ **Terjadi Error Tidak Terduga**\n\n"
+            "Silakan coba lagi atau gunakan metode transfer manual."
         )
+        
+        try:
+            await query.edit_message_text(
+                error_msg,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Coba Lagi", callback_data="topup_menu")],
+                    [InlineKeyboardButton("🏦 Transfer Manual", callback_data="payment_transfer")],
+                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
+                ])
+            )
+        except:
+            await context.bot.send_message(
+                chat_id=user.id,
+                text=error_msg,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Coba Lagi", callback_data="topup_menu")],
+                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
+                ])
+            )
+    
+    return ConversationHandler.END
 
 async def process_transfer_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Proses pembayaran dengan transfer manual"""
+    query = update.callback_query
+    await query.answer()
+    
+    user = query.from_user
+    amount = context.user_data.get('topup_amount', 0)
+    unique_amount = context.user_data.get('unique_amount', 0)
+    unique_code = context.user_data.get('unique_code', 0)
+    
     try:
-        query = update.callback_query
-        user = query.from_user
-        amount = context.user_data.get('topup_amount', 0)
-        unique_amount = context.user_data.get('unique_amount', 0)
-        unique_code = context.user_data.get('unique_code', 0)
-        
         # Simpan topup ke database
         user_id = database.get_or_create_user(str(user.id), user.username or "", user.full_name)
         topup_id = database.create_topup(
@@ -607,402 +767,14 @@ async def process_transfer_payment(update: Update, context: ContextTypes.DEFAULT
             status='pending'
         )
         
-        logger.info(f"💾 Transfer topup saved to database: ID {topup_id}")
-        
-        # Informasi rekening (dari config)
-        bank_info = getattr(config, 'BANK_ACCOUNTS', [{
-            'bank': 'BCA',
-            'number': '1234567890', 
-            'name': 'Nama Pemilik Rekening'
-        }])
-        
-        bank_text = "\n".join([f"• {acc['bank']}: `{acc['number']}` a.n {acc['name']}" for acc in bank_info])
-        
-        text = (
-            f"🏦 **TRANSFER MANUAL**\n\n"
-            f"📊 **Detail Pembayaran:**\n"
-            f"• Nominal: Rp {amount:,}\n"
-            f"• Kode Unik: +{unique_code}\n"
-            f"• **Total: Rp {unique_amount:,}**\n"
-            f"• ID Transaksi: `{topup_id}`\n\n"
-            f"**REKENING TUJUAN:**\n"
-            f"{bank_text}\n\n"
-            f"**INSTRUKSI:**\n"
-            f"1. Transfer tepat **Rp {unique_amount:,}** ke rekening di atas\n"
-            f"2. Screenshot/simpan bukti transfer\n"
-            f"3. Upload bukti transfer dengan tombol di bawah\n\n"
-            f"⚠️ **Pastikan nominal transfer tepat!**"
-        )
-        
-        await query.edit_message_text(
-            text,
-            parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📎 Upload Bukti Transfer", callback_data=f"upload_proof_{topup_id}")],
-                [InlineKeyboardButton("💸 Top Up Lagi", callback_data="topup_menu")],
-                [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
-            ])
-        )
-        
-        # Notifikasi admin
-        await notify_admin_new_topup(context, topup_id, user, amount, unique_amount, 'transfer')
-        
-    except Exception as e:
-        logger.error(f"❌ Error in process_transfer_payment: {e}", exc_info=True)
-        await query.edit_message_text(
-            "❌ Terjadi error. Silakan coba lagi.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔄 Coba Lagi", callback_data="topup_menu")],
-                [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
-            ])
-        )
+        # Informasi rekening bank
+        bank_info = """
+🏦 **TRANSFER MANUAL**
 
-async def handle_proof_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk upload bukti transfer"""
-    try:
-        query = update.callback_query
-        await query.answer()
-        
-        data = query.data
-        topup_id = int(data.split("_")[2])
-        
-        context.user_data['upload_topup_id'] = topup_id
-        
-        await query.edit_message_text(
-            "📎 **UPLOAD BUKTI TRANSFER**\n\n"
-            "Silakan upload screenshot/foto bukti transfer Anda.\n\n"
-            "⚠️ Pastikan bukti transfer jelas terbaca:\n"
-            "• Nominal transfer\n"
-            "• Nama pengirim\n"
-            "• Waktu transfer\n\n"
-            "Kirim foto sebagai file (bukan sebagai gambar yang dikompres).",
-            parse_mode='Markdown'
-        )
-        
-        return UPLOADING_PROOF
-        
-    except Exception as e:
-        logger.error(f"❌ Error in handle_proof_upload: {e}", exc_info=True)
-        await query.message.reply_text("❌ Terjadi error. Silakan coba lagi.")
-        return ConversationHandler.END
+**Detail Pembayaran:**
+• Nominal: Rp {amount:,}
+• Kode Unik: +{unique_code}
+• **Total Transfer: Rp {total_amount:,}**
+• ID Transaksi: `{topup_id}`
 
-async def handle_proof_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk menerima foto bukti transfer"""
-    try:
-        user = update.message.from_user
-        topup_id = context.user_data.get('upload_topup_id')
-        
-        if not topup_id:
-            await update.message.reply_text(
-                "❌ Sesi upload bukti tidak valid. Silakan mulai ulang dari menu top up.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("💸 Top Up Lagi", callback_data="topup_menu")]
-                ])
-            )
-            return ConversationHandler.END
-        
-        # Check if message contains photo
-        if not update.message.photo:
-            await update.message.reply_text(
-                "❌ Harap kirim foto bukti transfer yang valid.\n\n"
-                "Pastikan Anda mengirim sebagai file/foto, bukan sebagai dokumen yang dikompres.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📎 Upload Bukti", callback_data=f"upload_proof_{topup_id}")]
-                ])
-            )
-            return UPLOADING_PROOF
-        
-        # Update topup request dengan proof info
-        try:
-            database.update_topup_status(topup_id, 'pending', f"Proof uploaded at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            logger.info(f"📸 Proof uploaded for topup ID: {topup_id}")
-        except Exception as e:
-            logger.error(f"❌ Error updating proof for topup {topup_id}: {e}")
-        
-        # Confirm receipt
-        await update.message.reply_text(
-            "✅ **BUKTI TRANSFER DITERIMA**\n\n"
-            "Terima kasih! Bukti transfer Anda telah kami terima.\n\n"
-            "🕒 **Proses verifikasi:**\n"
-            "• Admin akan memverifikasi dalam 1-10 menit\n"
-            "• Anda akan mendapat notifikasi saat saldo ditambahkan\n"
-            "• Jika ada masalah, admin akan menghubungi Anda\n\n"
-            "Silakan tunggu konfirmasi selanjutnya.",
-            parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔄 Cek Status", callback_data=f"check_topup_{topup_id}")],
-                [InlineKeyboardButton("💸 Top Up Lagi", callback_data="topup_menu")],
-                [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
-            ])
-        )
-        
-        # Notify admin about proof upload
-        admin_ids = getattr(config, 'ADMIN_TELEGRAM_IDS', [])
-        for admin_id in admin_ids:
-            try:
-                await context.bot.send_message(
-                    chat_id=admin_id,
-                    text=f"📎 Bukti transfer diterima untuk TopUp ID: {topup_id}\nUser: {user.full_name} (@{user.username})",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("👀 Lihat TopUp", callback_data=f"admin_view_topup_{topup_id}")]
-                    ])
-                )
-                logger.info(f"📢 Notified admin {admin_id} about proof upload")
-            except Exception as e:
-                logger.error(f"❌ Failed to notify admin about proof: {e}")
-        
-        return ConversationHandler.END
-        
-    except Exception as e:
-        logger.error(f"❌ Error in handle_proof_photo: {e}")
-        await update.message.reply_text(
-            "❌ Terjadi error saat mengupload bukti. Silakan coba lagi.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔄 Coba Lagi", callback_data="topup_menu")]
-            ])
-        )
-        return ConversationHandler.END
-
-async def notify_admin_new_topup(context: ContextTypes.DEFAULT_TYPE, topup_id: int, user: Any, 
-                                amount: float, unique_amount: float, method: str):
-    """Notify admin about new topup request"""
-    try:
-        admin_ids = getattr(config, 'ADMIN_TELEGRAM_IDS', [])
-        
-        message = (
-            f"🆕 **PERMINTAAN TOP UP BARU**\n\n"
-            f"• User: {user.full_name} (@{user.username})\n"
-            f"• User ID: `{user.id}`\n"
-            f"• Nominal: Rp {amount:,}\n"
-            f"• Total Bayar: Rp {unique_amount:,}\n"
-            f"• Metode: {method.upper()}\n"
-            f"• TopUp ID: `{topup_id}`\n"
-            f"• Waktu: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        )
-        
-        for admin_id in admin_ids:
-            try:
-                await context.bot.send_message(
-                    chat_id=admin_id,
-                    text=message,
-                    parse_mode='Markdown',
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("✅ Approve", callback_data=f"admin_approve_topup_{topup_id}")],
-                        [InlineKeyboardButton("❌ Reject", callback_data=f"admin_reject_topup_{topup_id}")]
-                    ])
-                )
-                logger.info(f"📢 Notified admin {admin_id} about new topup")
-            except Exception as e:
-                logger.error(f"❌ Failed to notify admin {admin_id}: {e}")
-                
-    except Exception as e:
-        logger.error(f"❌ Error in notify_admin_new_topup: {e}")
-
-async def show_topup_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show user's topup history"""
-    try:
-        query = update.callback_query
-        await query.answer()
-        user = query.from_user
-        
-        # Get topup history from database
-        topup_history = database.get_topup_history(str(user.id))
-        
-        if not topup_history:
-            text = (
-                "📋 **RIWAYAT TOP UP**\n\n"
-                "Anda belum memiliki riwayat top up.\n\n"
-                "Gunakan menu Top Up untuk melakukan pengisian saldo pertama kali."
-            )
-        else:
-            text = "📋 **RIWAYAT TOP UP**\n\n"
-            for topup in topup_history[:10]:  # Show last 10
-                status_emoji = {
-                    'approved': '✅',
-                    'pending': '⏳',
-                    'rejected': '❌'
-                }.get(topup['status'], '❓')
-                
-                amount = topup['amount']
-                created_at = topup['created_at'][:16] if 'created_at' in topup else 'N/A'
-                
-                text += (
-                    f"{status_emoji} **Rp {amount:,.0f}**\n"
-                    f"📅 {created_at} | {topup['status'].upper()}\n"
-                    f"────────────────────\n"
-                )
-            
-            text += f"\nTotal: {len(topup_history)} top up"
-        
-        await query.edit_message_text(
-            text,
-            parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("💸 Top Up Lagi", callback_data="topup_menu")],
-                [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
-            ])
-        )
-        
-    except Exception as e:
-        logger.error(f"❌ Error in show_topup_history: {e}")
-        if hasattr(update, 'callback_query'):
-            await update.callback_query.message.reply_text("❌ Gagal memuat riwayat top up.")
-
-async def show_pending_topups(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show pending topups for admin"""
-    try:
-        query = update.callback_query
-        await query.answer()
-        user = query.from_user
-        
-        # Check if user is admin
-        admin_ids = getattr(config, 'ADMIN_TELEGRAM_IDS', [])
-        if str(user.id) not in admin_ids:
-            await query.answer("❌ Hanya admin yang bisa mengakses!", show_alert=True)
-            return
-        
-        # Get pending topups
-        pending_topups = database.get_pending_topups()
-        
-        if not pending_topups:
-            text = "✅ **Tidak ada top up yang menunggu approval.**"
-        else:
-            text = f"⏳ **TOP UP MENUNGGU APPROVAL**\n\n"
-            for topup in pending_topups[:10]:  # Show first 10
-                text += (
-                    f"💰 **Rp {topup['amount']:,.0f}**\n"
-                    f"👤 {topup['full_name']} (@{topup['username']})\n"
-                    f"🆔 User: `{topup['user_id']}` | TopUp ID: `{topup['id']}`\n"
-                    f"📅 {topup['created_at'][:16]}\n"
-                )
-                
-                text += "────────────────────\n"
-            
-            text += f"\nTotal menunggu: {len(pending_topups)} top up"
-        
-        await query.edit_message_text(
-            text,
-            parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔄 Refresh", callback_data="topup_pending_list")],
-                [InlineKeyboardButton("👑 Admin Panel", callback_data="main_menu_admin")],
-                [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
-            ])
-        )
-        
-    except Exception as e:
-        logger.error(f"❌ Error in show_pending_topups: {e}")
-        if hasattr(update, 'callback_query'):
-            await update.callback_query.message.reply_text("❌ Gagal memuat daftar top up pending.")
-
-async def check_topup_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Check status of specific topup"""
-    try:
-        query = update.callback_query
-        await query.answer()
-        
-        data = query.data
-        topup_id = int(data.split("_")[2])
-        
-        # Get topup details from database
-        topup = database.get_topup_by_id(topup_id)
-        
-        if not topup:
-            await query.edit_message_text(
-                "❌ Top up tidak ditemukan.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("💸 Top Up Lagi", callback_data="topup_menu")],
-                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
-                ])
-            )
-            return
-        
-        status_emoji = {
-            'approved': '✅',
-            'pending': '⏳',
-            'rejected': '❌'
-        }.get(topup['status'], '❓')
-        
-        text = (
-            f"📊 **STATUS TOP UP**\n\n"
-            f"🆔 **ID Transaksi:** `{topup['id']}`\n"
-            f"💰 **Nominal:** Rp {topup['amount']:,}\n"
-            f"💳 **Metode:** {topup.get('payment_method', 'N/A').upper()}\n"
-            f"📅 **Waktu:** {topup['created_at'][:16]}\n"
-            f"🎯 **Status:** {status_emoji} {topup['status'].upper()}\n"
-        )
-        
-        if topup['status'] == 'approved':
-            text += f"\n✅ **Saldo sudah ditambahkan ke akun Anda!**"
-        elif topup['status'] == 'pending':
-            text += f"\n⏳ **Menunggu konfirmasi admin...**"
-        elif topup['status'] == 'rejected':
-            text += f"\n❌ **Top up ditolak. Hubungi admin untuk info lebih lanjut.**"
-        
-        keyboard = [
-            [InlineKeyboardButton("🔄 Refresh Status", callback_data=f"check_topup_{topup_id}")],
-            [InlineKeyboardButton("💸 Top Up Lagi", callback_data="topup_menu")],
-            [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
-        ]
-        
-        await query.edit_message_text(
-            text,
-            parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        
-    except Exception as e:
-        logger.error(f"❌ Error in check_topup_status: {e}")
-        await query.message.reply_text("❌ Gagal memeriksa status top up.")
-
-# ==================== CONVERSATION HANDLER SETUP ====================
-def get_topup_conversation_handler():
-    """Get the complete topup conversation handler"""
-    return ConversationHandler(
-        entry_points=[
-            CallbackQueryHandler(show_topup_menu, pattern="^topup_menu$"),
-            CallbackQueryHandler(show_topup_menu, pattern="^topup_start$"),
-            CommandHandler("topup", show_topup_menu)
-        ],
-        states={
-            SELECTING_AMOUNT: [
-                CallbackQueryHandler(topup_amount_handler, pattern="^topup_amount_"),
-                CallbackQueryHandler(topup_amount_handler, pattern="^topup_custom$"),
-                CallbackQueryHandler(topup_amount_handler, pattern="^topup_history$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_custom_amount)
-            ],
-            SELECTING_PAYMENT_METHOD: [
-                CallbackQueryHandler(handle_payment_method, pattern="^payment_"),
-                CallbackQueryHandler(show_topup_menu, pattern="^topup_cancel$")
-            ],
-            UPLOADING_PROOF: [
-                MessageHandler(filters.PHOTO, handle_proof_photo),
-                CallbackQueryHandler(handle_proof_upload, pattern="^upload_proof_")
-            ]
-        },
-        fallbacks=[
-            CallbackQueryHandler(show_topup_menu, pattern="^topup_menu$"),
-            CallbackQueryHandler(show_topup_menu, pattern="^topup_start$"),
-            CommandHandler("cancel", show_topup_menu),
-            CommandHandler("start", show_topup_menu)
-        ],
-        allow_reentry=True
-    )
-
-def get_topup_handlers():
-    """Get additional topup callback handlers"""
-    return [
-        CallbackQueryHandler(show_topup_history, pattern="^topup_history$"),
-        CallbackQueryHandler(show_pending_topups, pattern="^topup_pending_list$"),
-        CallbackQueryHandler(handle_proof_upload, pattern="^upload_proof_"),
-        CallbackQueryHandler(check_topup_status, pattern="^check_topup_"),
-        CallbackQueryHandler(show_topup_menu, pattern="^topup_start$"),
-        CallbackQueryHandler(show_topup_menu, pattern="^topup_menu$")
-    ]
-
-# ==================== COMPATIBILITY WITH MAIN.PY ====================
-async def topup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk command /topup"""
-    await show_topup_menu(update, context)
-
-print("✅ topup_handler.py loaded successfully - Ready to use!")
+**Rekening Tujuan:**
