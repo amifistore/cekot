@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Bot Telegram Full Feature - FINAL FIXED VERSION
+Complete dengan semua fitur: Topup, Order, Stok, Admin, dan Database
 """
 
 import logging
@@ -43,7 +44,8 @@ try:
         broadcast_handler,
         cek_user_handler,
         jadikan_admin_handler,
-        topup_list_handler
+        topup_list_handler,
+        approve_topup_handler
     )
     ADMIN_AVAILABLE = True
     print("✅ Admin handler loaded successfully")
@@ -67,6 +69,7 @@ except Exception as e:
     cek_user_handler = CommandHandler("cek_user", admin_menu)
     jadikan_admin_handler = CommandHandler("jadikan_admin", admin_menu)
     topup_list_handler = CommandHandler("topup_list", admin_menu)
+    approve_topup_handler = CallbackQueryHandler(admin_menu, pattern="^admin_")
 
 # Stok Handler
 try:
@@ -78,7 +81,10 @@ except Exception as e:
     STOK_AVAILABLE = False
     
     async def stock_akrab_callback(update, context):
-        await update.callback_query.message.reply_text("❌ Fitur stok sedang dalam perbaikan.")
+        if hasattr(update, 'callback_query'):
+            await update.callback_query.message.reply_text("❌ Fitur stok sedang dalam perbaikan.")
+        else:
+            await update.message.reply_text("❌ Fitur stok sedang dalam perbaikan.")
     
     async def stock_command(update, context):
         await update.message.reply_text("❌ Fitur stok sedang dalam perbaikan.")
@@ -87,7 +93,8 @@ except Exception as e:
 try:
     from order_handler import (
         get_conversation_handler as get_order_conversation_handler,
-        menu_handler as order_menu_handler
+        menu_handler as order_menu_handler,
+        order_callback_handler
     )
     ORDER_AVAILABLE = True
     print("✅ Order handler loaded successfully")
@@ -103,6 +110,9 @@ except Exception as e:
             await update.callback_query.message.reply_text("❌ Fitur order sedang dalam perbaikan.")
         else:
             await update.message.reply_text("❌ Fitur order sedang dalam perbaikan.")
+    
+    async def order_callback_handler(update, context):
+        await update.callback_query.answer("❌ Fitur order sedang dalam perbaikan.", show_alert=True)
 
 # Topup Handler
 try:
@@ -131,7 +141,7 @@ except Exception as e:
     def get_topup_conversation_handler():
         return None
     
-    def get_topup_handlers() -> List:
+    def get_topup_handlers():
         return []
 
 # ==================== LOGGING SETUP ====================
@@ -521,7 +531,7 @@ async def post_init(application: Application):
         
         stats_info = (
             f"📈 Bot Statistics:\n"
-            f"• Users: {stats['total_users']}\n"
+            f"• Total Users: {stats['total_users']}\n"
             f"• Active Users: {stats['active_users']}\n"
             f"• Products: {stats['active_products']}\n"
             f"• Revenue: Rp {stats['total_revenue']:,.0f}\n"
@@ -529,9 +539,22 @@ async def post_init(application: Application):
         )
         
         print("=" * 50)
+        print("🤖 BOT STARTUP SUCCESSFUL")
+        print("=" * 50)
         print(status_info)
         print(stats_info)
         print("=" * 50)
+        
+        # Send startup message to admin
+        for admin_id in ADMIN_IDS:
+            try:
+                await application.bot.send_message(
+                    chat_id=admin_id,
+                    text=f"🤖 Bot started successfully!\n\n{status_info}\n{stats_info}",
+                    parse_mode='Markdown'
+                )
+            except Exception as e:
+                logger.error(f"Failed to send startup message to admin {admin_id}: {e}")
         
     except Exception as e:
         logger.error(f"Error in post_init: {e}")
@@ -612,13 +635,27 @@ def main():
         
         # 5. CALLBACK QUERY HANDLERS
         application.add_handler(CallbackQueryHandler(main_menu_handler, pattern="^main_menu_"))
+        
         if ADMIN_AVAILABLE:
             application.add_handler(CallbackQueryHandler(admin_callback_handler, pattern="^admin_"))
+            application.add_handler(CallbackQueryHandler(approve_topup_handler, pattern="^admin_approve_topup_"))
         
-        # 6. FALLBACK HANDLER (PRIORITAS TERENDAH)
+        if ORDER_AVAILABLE:
+            application.add_handler(CallbackQueryHandler(order_callback_handler, pattern="^order_"))
+        
+        if STOK_AVAILABLE:
+            application.add_handler(CallbackQueryHandler(stock_akrab_callback, pattern="^stock_"))
+        
+        # 6. TOPUP CALLBACK HANDLERS
+        if TOPUP_AVAILABLE:
+            application.add_handler(CallbackQueryHandler(show_topup_menu, pattern="^topup_menu$"))
+            application.add_handler(CallbackQueryHandler(show_topup_history, pattern="^topup_history$"))
+            application.add_handler(CallbackQueryHandler(show_pending_topups, pattern="^topup_pending_list$"))
+        
+        # 7. FALLBACK HANDLER (PRIORITAS TERENDAH)
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_message))
         
-        # 7. ERROR HANDLER
+        # 8. ERROR HANDLER
         application.add_error_handler(error_handler)
         
         logger.info("✅ All handlers registered successfully")
@@ -630,13 +667,28 @@ def main():
         if os.name == 'nt':  # Windows
             asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
         
+        print("=" * 60)
+        print("🤖 BOT TELAH SIAP!")
+        print("=" * 60)
+        print("Fitur yang aktif:")
+        print(f"• Topup: {'✅' if TOPUP_AVAILABLE else '❌'}")
+        print(f"• Order: {'✅' if ORDER_AVAILABLE else '❌'}")
+        print(f"• Admin: {'✅' if ADMIN_AVAILABLE else '❌'}")
+        print(f"• Stok:  {'✅' if STOK_AVAILABLE else '❌'}")
+        print("=" * 60)
+        
         application.run_polling(
             allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True
+            drop_pending_updates=True,
+            timeout=30
         )
         
+    except KeyboardInterrupt:
+        logger.info("🛑 Bot stopped by user")
+        print("\n🛑 Bot stopped successfully!")
     except Exception as e:
         logger.critical(f"❌ Failed to start bot: {e}")
+        print(f"❌ CRITICAL ERROR: {e}")
         sys.exit(1)
 
 if __name__ == '__main__':
