@@ -573,32 +573,72 @@ def main():
         application.add_handler(CallbackQueryHandler(main_menu_handler, pattern="^main_menu_"))
         
         # 5. ADMIN CALLBACK HANDLERS
+                # 3. ADMIN COMMAND HANDLERS
         if ADMIN_AVAILABLE:
-            application.add_handler(CallbackQueryHandler(admin_callback_handler, pattern="^admin_"))
+            application.add_handler(CommandHandler("admin", admin_command))
             application.add_handler(CommandHandler("broadcast", broadcast_handler))
-            application.add_handler(CommandHandler("topup_list", topup_list_handler))
             application.add_handler(CommandHandler("cek_user", cek_user_handler))
+            application.add_handler(CommandHandler("topup_list", topup_list_handler))
             application.add_handler(CommandHandler("jadikan_admin", jadikan_admin_handler))
             print("✅ Admin command handlers registered")
+            
+            # Admin callback handlers
+            application.add_handler(CallbackQueryHandler(admin_callback_handler, pattern="^admin_"))
+            print("✅ Admin callback handlers registered")
+
+        # 4. BASIC COMMAND HANDLERS
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(CommandHandler("saldo", saldo_command))
         
+        # Handler untuk command yang tergantung module availability
+        if TOPUP_AVAILABLE:
+            application.add_handler(CommandHandler("topup", topup_command_handler))
+        
+        if STOK_AVAILABLE:
+            application.add_handler(CommandHandler("stock", stock_command_handler))
+            
+        if ORDER_AVAILABLE:
+            application.add_handler(CommandHandler("order", order_command))
+        
+        print("✅ Basic command handlers registered")
+
+        # 5. CALLBACK QUERY HANDLERS (MAIN MENU)
+        application.add_handler(CallbackQueryHandler(main_menu_handler, pattern="^main_menu_"))
+        application.add_handler(CallbackQueryHandler(show_topup_menu, pattern="^topup_menu$"))
+        
+        # Stok callback handler
+        if STOK_AVAILABLE:
+            application.add_handler(CallbackQueryHandler(stock_akrab_callback, pattern="^stock_"))
+        
+        print("✅ Callback query handlers registered")
+
         # 6. FALLBACK HANDLERS
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_message))
+        application.add_handler(MessageHandler(filters.ALL, unknown_message))
+        
+        print("✅ Fallback handlers registered")
+
+        # 7. ERROR HANDLER
         application.add_error_handler(error_handler)
-        
-        print("✅ All handlers registered successfully")
-        
+        print("✅ Error handler registered")
+
         # ==================== START BOT ====================
-        print("🚀 Starting bot polling...")
+        print("🎯 Starting bot polling...")
+        print("🤖 Bot is now running...")
+        
+        # Start polling
         application.run_polling(
             allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True,
             timeout=30,
-            drop_pending_updates=True
+            pool_timeout=30
         )
         
     except Exception as e:
-        logger.error(f"❌ Failed to start bot: {e}")
-        print(f"❌ Bot startup failed: {e}")
-        sys.exit(1)
+        logger.critical(f"❌ Failed to start bot: {e}")
+        print(f"❌ CRITICAL ERROR: {e}")
+        traceback.print_exc()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
