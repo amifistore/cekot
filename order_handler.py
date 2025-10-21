@@ -359,29 +359,32 @@ async def show_order_history(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         user_id = str(query.from_user.id)
         
-        # Get last 10 orders from database using database module
-        orders = database.get_user_orders(user_id, limit=10)
+        # Get last 10 orders from database
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""
+            SELECT id, product_name, customer_input, price, status, created_at, sn
+            FROM orders 
+            WHERE user_id = ? 
+            ORDER BY created_at DESC 
+            LIMIT 10
+        """, (user_id,))
+        orders = c.fetchall()
+        conn.close()
 
         if not orders:
             msg = "📋 *RIWAYAT ORDER*\n\nAnda belum memiliki riwayat order."
         else:
             msg = "📋 *RIWAYAT ORDER TERAKHIR*\n\n"
             for order in orders:
-                order_id = order['id']
-                product_name = order['product_name']
-                customer_input = order['customer_input']
-                price = order['price']
-                status = order['status']
-                created_at = order['created_at']
-                
+                order_id, product_name, target, price, status, created_at, sn = order
                 status_emoji = {
                     'completed': '✅',
                     'pending': '⏳', 
                     'failed': '❌',
                     'processing': '🔄',
                     'refunded': '💸',
-                    'partial': '⚠️',
-                    'cancelled': '🚫'
+                    'partial': '⚠️'
                 }.get(status, '❓')
                 
                 # Format timestamp
@@ -392,13 +395,13 @@ async def show_order_history(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     order_time = str(created_at)[:5]
                     order_date = str(created_at)
                 
-                # Truncate long product names
-                display_name = product_name[:30] + "..." if len(product_name) > 30 else product_name
+                # Display SN if available
+                sn_display = f"\n🔢 SN: `{sn}`" if sn else ""
                 
                 msg += (
-                    f"{status_emoji} *{display_name}*\n"
-                    f"📮 Tujuan: `{customer_input}`\n"
-                    f"💰 Rp {price:,}\n"
+                    f"{status_emoji} *{product_name}*\n"
+                    f"📮 Tujuan: `{target}`\n"
+                    f"💰 Rp {price:,}{sn_display}\n"
                     f"📅 {order_date} {order_time} | {status.upper()}\n"
                     f"────────────────────\n"
                 )
@@ -823,13 +826,13 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return MENU
 
 async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Process the actual order - FIXED VERSION dengan transaksi yang benar"""
+    """Process the actual order - FIXED VERSION tanpa kolom cost & profit"""
     try:
         user_id = str(update.callback_query.from_user.id)
         product = context.user_data.get('selected_product', {})
         target = context.user_data.get('target', '')
         
-        # Create order in database - FIXED: menggunakan parameter yang benar
+        # Create order in database - menggunakan database module
         order_id = database.create_order(
             user_id=user_id,
             product_code=product['code'],
