@@ -1,8 +1,15 @@
-# database.py - Complete Database Management System - FIXED & READY FOR RELEASE
+#!/usr/bin/env python3
+"""
+Database Management System - FIXED VERSION
+Dengan improved locking mechanism dan error handling
+"""
+
 import sqlite3
 import logging
 import os
 import json
+import time
+import random
 from datetime import datetime, timedelta
 from contextlib import contextmanager
 from typing import Dict, List, Optional, Any, Union
@@ -24,27 +31,77 @@ class DatabaseManager:
         if not hasattr(self, '_initialized'):
             self.db_path = db_path
             self._initialized = True
+            self._connection_lock = threading.Lock()  # Additional lock for connection management
             self.init_database()
 
     @contextmanager
     def get_connection(self):
-        """Context manager for database connections dengan error handling dan connection pooling"""
-        conn = sqlite3.connect(self.db_path, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA cache_size = -64000")
-        conn.execute("PRAGMA synchronous = NORMAL")
+        """Context manager for database connections dengan retry mechanism"""
+        max_retries = 5
+        retry_delay = 0.1
+        conn = None
         
-        try:
-            yield conn
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            logger.error(f"Database error: {e}", exc_info=True)
-            raise
-        finally:
-            conn.close()
+        for attempt in range(max_retries):
+            try:
+                with self._connection_lock:
+                    conn = sqlite3.connect(
+                        self.db_path, 
+                        check_same_thread=False,
+                        timeout=30.0  # Increased timeout
+                    )
+                    conn.row_factory = sqlite3.Row
+                    # Optimized PRAGMA settings
+                    conn.execute("PRAGMA foreign_keys = ON")
+                    conn.execute("PRAGMA journal_mode = WAL")
+                    conn.execute("PRAGMA cache_size = -10000")  # Reduced cache size
+                    conn.execute("PRAGMA synchronous = NORMAL")
+                    conn.execute("PRAGMA busy_timeout = 10000")  # 10 second busy timeout
+                    conn.execute("PRAGMA temp_store = MEMORY")
+                    conn.execute("PRAGMA mmap_size = 268435456")  # 256MB mmap
+                
+                yield conn
+                
+                # Commit only if no exception
+                if conn:
+                    conn.commit()
+                break
+                
+            except sqlite3.OperationalError as e:
+                if conn:
+                    try:
+                        conn.rollback()
+                    except:
+                        pass
+                    finally:
+                        conn.close()
+                        conn = None
+                
+                if "locked" in str(e).lower() and attempt < max_retries - 1:
+                    wait_time = retry_delay * (2 ** attempt) + random.uniform(0, 0.1)
+                    logger.warning(f"Database locked, retry {attempt + 1}/{max_retries} in {wait_time:.2f}s")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    logger.error(f"Database operational error after {attempt + 1} attempts: {e}")
+                    raise
+                    
+            except Exception as e:
+                if conn:
+                    try:
+                        conn.rollback()
+                    except:
+                        pass
+                    finally:
+                        conn.close()
+                        conn = None
+                logger.error(f"Unexpected database error: {e}")
+                raise
+                
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
 
     def init_database(self):
         """Initialize semua tabel database dengan schema lengkap dan constraints"""
@@ -231,7 +288,10 @@ class DatabaseManager:
                 ]
                 
                 for index in indexes:
-                    cursor.execute(index)
+                    try:
+                        cursor.execute(index)
+                    except Exception as e:
+                        logger.warning(f"Could not create index {index}: {e}")
                 
                 # Insert default settings
                 default_settings = [
@@ -258,59 +318,78 @@ class DatabaseManager:
     # ==================== USER MANAGEMENT ====================
     def get_or_create_user(self, user_id: str, username: str = "", full_name: str = "") -> Dict[str, Any]:
         """Get existing user or create new one dengan update data"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Check if user exists
-            cursor.execute(
-                'SELECT * FROM users WHERE user_id = ?', 
-                (str(user_id),)
-            )
-            user = cursor.fetchone()
-            
-            if user:
-                if user['is_banned']:
-                    raise PermissionError(f"User {user_id} is banned. Reason: {user['ban_reason']}")
-                
-                # Update user info jika berubah
-                update_fields = []
-                params = []
-                
-                if username and username != user['username']:
-                    update_fields.append("username = ?")
-                    params.append(username)
-                
-                if full_name and full_name != user['full_name']:
-                    update_fields.append("full_name = ?")
-                    params.append(full_name)
-                
-                if update_fields:
-                    update_fields.append("last_active = ?")
-                    params.extend([datetime.now(), str(user_id)])
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                with self.get_connection() as conn:
+                    cursor = conn.cursor()
                     
-                    update_query = f"UPDATE users SET {', '.join(update_fields)} WHERE user_id = ?"
-                    cursor.execute(update_query, params)
-                    logger.info(f"📝 User updated: {user_id} - {full_name}")
-            else:
-                # Create new user
-                cursor.execute(
-                    'INSERT INTO users (user_id, username, full_name) VALUES (?, ?, ?)',
-                    (str(user_id), username, full_name)
-                )
-                logger.info(f"👤 New user created: {user_id} - {full_name}")
-            
-            # Return user data
-            cursor.execute('SELECT * FROM users WHERE user_id = ?', (str(user_id),))
-            result = cursor.fetchone()
-            return dict(result) if result else {}
+                    # Check if user exists
+                    cursor.execute(
+                        'SELECT * FROM users WHERE user_id = ?', 
+                        (str(user_id),)
+                    )
+                    user = cursor.fetchone()
+                    
+                    if user:
+                        if user['is_banned']:
+                            raise PermissionError(f"User {user_id} is banned. Reason: {user['ban_reason']}")
+                        
+                        # Update user info jika berubah
+                        update_fields = []
+                        params = []
+                        
+                        if username and username != user['username']:
+                            update_fields.append("username = ?")
+                            params.append(username)
+                        
+                        if full_name and full_name != user['full_name']:
+                            update_fields.append("full_name = ?")
+                            params.append(full_name)
+                        
+                        if update_fields:
+                            update_fields.append("last_active = ?")
+                            params.extend([datetime.now(), str(user_id)])
+                            
+                            update_query = f"UPDATE users SET {', '.join(update_fields)} WHERE user_id = ?"
+                            cursor.execute(update_query, params)
+                            logger.info(f"📝 User updated: {user_id} - {full_name}")
+                    else:
+                        # Create new user
+                        cursor.execute(
+                            'INSERT INTO users (user_id, username, full_name) VALUES (?, ?, ?)',
+                            (str(user_id), username, full_name)
+                        )
+                        logger.info(f"👤 New user created: {user_id} - {full_name}")
+                    
+                    # Return user data
+                    cursor.execute('SELECT * FROM users WHERE user_id = ?', (str(user_id),))
+                    result = cursor.fetchone()
+                    return dict(result) if result else {}
+                    
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e).lower() and attempt < max_retries - 1:
+                    wait_time = 0.1 * (2 ** attempt)
+                    logger.warning(f"User operation locked, retrying... Attempt {attempt + 1}")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    raise
+            except Exception as e:
+                logger.error(f"Error in get_or_create_user for {user_id}: {e}")
+                raise
 
     def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
         """Get user data by ID"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT * FROM users WHERE user_id = ?', (str(user_id),))
-            result = cursor.fetchone()
-            return dict(result) if result else None
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM users WHERE user_id = ?', (str(user_id),))
+                result = cursor.fetchone()
+                return dict(result) if result else None
+        except Exception as e:
+            logger.error(f"Error getting user {user_id}: {e}")
+            return None
 
     def get_user_balance(self, user_id: str) -> float:
         """Get user balance dengan error handling"""
@@ -322,684 +401,1009 @@ class DatabaseManager:
             return 0.0
 
     def update_user_balance(self, user_id: str, amount: float, note: str = "") -> bool:
-        """Update user balance dengan validation dan logging"""
+        """Update user balance dengan validation dan logging - FIXED VERSION"""
+        max_retries = 3
+        
+        for attempt in range(max_retries):
+            try:
+                with self.get_connection() as conn:
+                    cursor = conn.cursor()
+                    
+                    # Check if user exists and not banned
+                    cursor.execute(
+                        'SELECT balance, is_banned FROM users WHERE user_id = ?', 
+                        (str(user_id),)
+                    )
+                    user = cursor.fetchone()
+                    
+                    if not user:
+                        raise ValueError(f"User {user_id} not found")
+                    
+                    if user['is_banned']:
+                        raise PermissionError(f"User {user_id} is banned")
+                    
+                    new_balance = user['balance'] + amount
+                    if new_balance < 0:
+                        raise ValueError("Insufficient balance")
+                    
+                    cursor.execute(
+                        'UPDATE users SET balance = ?, last_active = ? WHERE user_id = ?',
+                        (new_balance, datetime.now(), str(user_id))
+                    )
+                    
+                    # Log the balance change - simplified to avoid nested transactions
+                    if amount > 0:
+                        cursor.execute(
+                            'UPDATE users SET total_topups = total_topups + 1 WHERE user_id = ?',
+                            (str(user_id),)
+                        )
+                        log_message = f"Balance increased: {amount:,.0f} - {note}"
+                    else:
+                        log_message = f"Balance decreased: {amount:,.0f} - {note}"
+                    
+                    # Simplified logging to avoid nested transactions
+                    try:
+                        cursor.execute('''
+                            INSERT INTO system_logs (level, module, message, user_id)
+                            VALUES (?, ?, ?, ?)
+                        ''', ('INFO', 'BALANCE_UPDATE', f"User {user_id}: {log_message}", user_id))
+                    except Exception as log_error:
+                        logger.warning(f"Could not log balance update: {log_error}")
+                    
+                    logger.info(f"💰 Balance updated: {user_id} -> {amount:,.0f} | New balance: {new_balance:,.0f}")
+                    return True
+                    
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e).lower() and attempt < max_retries - 1:
+                    wait_time = 0.1 * (2 ** attempt)
+                    logger.warning(f"Balance update locked, retrying... Attempt {attempt + 1}")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    logger.error(f"Error updating balance for {user_id} after {attempt + 1} attempts: {e}")
+                    raise
+            except Exception as e:
+                logger.error(f"Error updating balance for {user_id}: {e}")
+                raise
+        
+        return False
+
+    def get_user_stats(self, user_id: str) -> Dict[str, Any]:
+        """Get comprehensive user statistics"""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 
-                # Check if user exists and not banned
-                cursor.execute(
-                    'SELECT balance, is_banned FROM users WHERE user_id = ?', 
-                    (str(user_id),)
-                )
-                user = cursor.fetchone()
+                cursor.execute('''
+                    SELECT 
+                        u.*,
+                        COUNT(DISTINCT o.id) as successful_orders,
+                        COUNT(DISTINCT t.id) as successful_topups,
+                        SUM(CASE WHEN o.status = 'completed' THEN o.price ELSE 0 END) as total_success_spent,
+                        COUNT(DISTINCT CASE WHEN o.status = 'completed' THEN o.id ELSE NULL END) as total_success_orders
+                    FROM users u
+                    LEFT JOIN orders o ON u.user_id = o.user_id
+                    LEFT JOIN transactions t ON u.user_id = t.user_id AND t.status = 'completed' AND t.type = 'topup'
+                    WHERE u.user_id = ?
+                    GROUP BY u.user_id
+                ''', (str(user_id),))
                 
-                if not user:
-                    raise ValueError(f"User {user_id} not found")
+                result = cursor.fetchone()
                 
-                if user['is_banned']:
-                    raise PermissionError(f"User {user_id} is banned")
-                
-                new_balance = user['balance'] + amount
-                if new_balance < 0:
-                    raise ValueError("Insufficient balance")
-                
-                cursor.execute(
-                    'UPDATE users SET balance = ?, last_active = ? WHERE user_id = ?',
-                    (new_balance, datetime.now(), str(user_id))
-                )
-                
-                # Log the balance change
-                if amount > 0:
-                    cursor.execute(
-                        'UPDATE users SET total_topups = total_topups + 1 WHERE user_id = ?',
-                        (str(user_id),)
-                    )
-                    log_message = f"Balance increased: {amount:,.0f} - {note}"
-                else:
-                    log_message = f"Balance decreased: {amount:,.0f} - {note}"
-                
-                self.add_system_log('INFO', 'BALANCE_UPDATE', f"User {user_id}: {log_message}", user_id)
-                logger.info(f"💰 Balance updated: {user_id} -> {amount:,.0f} | New balance: {new_balance:,.0f}")
-                return True
-                
+                if result:
+                    # Calculate success rate
+                    total_orders = result['total_orders'] or 0
+                    success_orders = result['total_success_orders'] or 0
+                    success_rate = (success_orders / total_orders * 100) if total_orders > 0 else 0
+                    
+                    return {
+                        'user_id': result['user_id'],
+                        'username': result['username'],
+                        'full_name': result['full_name'],
+                        'balance': result['balance'],
+                        'total_orders': total_orders,
+                        'total_spent': result['total_spent'],
+                        'total_topups': result['total_topups'],
+                        'successful_orders': success_orders,
+                        'successful_topups': result['successful_topups'],
+                        'total_success_spent': result['total_success_spent'] or 0,
+                        'success_rate': round(success_rate, 2),
+                        'registered_at': result['registered_at'],
+                        'last_active': result['last_active'],
+                        'is_banned': result['is_banned']
+                    }
+                return {}
         except Exception as e:
-            logger.error(f"Error updating balance for {user_id}: {e}")
-            raise
-
-    def get_user_stats(self, user_id: str) -> Dict[str, Any]:
-        """Get comprehensive user statistics"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                SELECT 
-                    u.*,
-                    COUNT(DISTINCT o.id) as successful_orders,
-                    COUNT(DISTINCT t.id) as successful_topups,
-                    SUM(CASE WHEN o.status = 'completed' THEN o.price ELSE 0 END) as total_success_spent,
-                    COUNT(DISTINCT CASE WHEN o.status = 'completed' THEN o.id ELSE NULL END) as total_success_orders
-                FROM users u
-                LEFT JOIN orders o ON u.user_id = o.user_id
-                LEFT JOIN transactions t ON u.user_id = t.user_id AND t.status = 'completed' AND t.type = 'topup'
-                WHERE u.user_id = ?
-                GROUP BY u.user_id
-            ''', (str(user_id),))
-            
-            result = cursor.fetchone()
-            
-            if result:
-                # Calculate success rate
-                total_orders = result['total_orders'] or 0
-                success_orders = result['total_success_orders'] or 0
-                success_rate = (success_orders / total_orders * 100) if total_orders > 0 else 0
-                
-                return {
-                    'user_id': result['user_id'],
-                    'username': result['username'],
-                    'full_name': result['full_name'],
-                    'balance': result['balance'],
-                    'total_orders': total_orders,
-                    'total_spent': result['total_spent'],
-                    'total_topups': result['total_topups'],
-                    'successful_orders': success_orders,
-                    'successful_topups': result['successful_topups'],
-                    'total_success_spent': result['total_success_spent'] or 0,
-                    'success_rate': round(success_rate, 2),
-                    'registered_at': result['registered_at'],
-                    'last_active': result['last_active'],
-                    'is_banned': result['is_banned'],
-                    'level': result['level']
-                }
+            logger.error(f"Error getting user stats for {user_id}: {e}")
             return {}
 
-    def update_user_last_active(self, user_id: str):
-        """Update user last active timestamp"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                'UPDATE users SET last_active = ? WHERE user_id = ?',
-                (datetime.now(), str(user_id))
-            )
+    def get_user_info(self, user_id: str) -> Dict[str, Any]:
+        """Get user info untuk admin panel"""
+        return self.get_user(user_id) or {}
+
+    def get_recent_users(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """Get recent active users untuk admin panel"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT user_id, username, full_name, balance, last_active, registered_at
+                    FROM users 
+                    WHERE is_banned = 0
+                    ORDER BY last_active DESC 
+                    LIMIT ?
+                ''', (limit,))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Error getting recent users: {e}")
+            return []
+
+    def get_active_users(self, days: int = 30) -> List[Dict[str, Any]]:
+        """Get active users dalam X hari terakhir"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cutoff_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+                cursor.execute('''
+                    SELECT user_id, username, full_name, balance, last_active
+                    FROM users 
+                    WHERE last_active >= ? AND is_banned = 0
+                    ORDER BY last_active DESC
+                ''', (cutoff_date,))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Error getting active users: {e}")
+            return []
+
+    def count_inactive_users(self, days: int = 30) -> int:
+        """Count inactive users (tidak aktif dalam X hari)"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cutoff_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+                cursor.execute('''
+                    SELECT COUNT(*) as count
+                    FROM users 
+                    WHERE last_active < ? AND is_banned = 0
+                ''', (cutoff_date,))
+                result = cursor.fetchone()
+                return result['count'] if result else 0
+        except Exception as e:
+            logger.error(f"Error counting inactive users: {e}")
+            return 0
+
+    def delete_inactive_users(self, days: int = 30) -> int:
+        """Delete inactive users dan return count yang dihapus"""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                with self.get_connection() as conn:
+                    cursor = conn.cursor()
+                    cutoff_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+                    
+                    # Get users to delete for logging
+                    cursor.execute('''
+                        SELECT user_id, username, full_name, last_active
+                        FROM users 
+                        WHERE last_active < ? AND is_banned = 0
+                    ''', (cutoff_date,))
+                    users_to_delete = cursor.fetchall()
+                    
+                    if not users_to_delete:
+                        return 0
+                    
+                    # Delete users
+                    cursor.execute('''
+                        DELETE FROM users 
+                        WHERE last_active < ? AND is_banned = 0
+                    ''', (cutoff_date,))
+                    
+                    deleted_count = len(users_to_delete)
+                    
+                    # Log the cleanup
+                    for user in users_to_delete:
+                        try:
+                            cursor.execute('''
+                                INSERT INTO system_logs (level, module, message)
+                                VALUES (?, ?, ?)
+                            ''', ('INFO', 'CLEANUP_USER', 
+                                f"Deleted inactive user: {user['user_id']} - {user['full_name']} "
+                                f"(Last active: {user['last_active']})"))
+                        except Exception as log_error:
+                            logger.warning(f"Could not log user cleanup: {log_error}")
+                    
+                    logger.info(f"🧹 Deleted {deleted_count} inactive users")
+                    return deleted_count
+                    
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e).lower() and attempt < max_retries - 1:
+                    wait_time = 0.1 * (2 ** attempt)
+                    logger.warning(f"Delete inactive users locked, retrying... Attempt {attempt + 1}")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    logger.error(f"Error deleting inactive users after {attempt + 1} attempts: {e}")
+                    return 0
+            except Exception as e:
+                logger.error(f"Error deleting inactive users: {e}")
+                return 0
+        
+        return 0
 
     # ==================== PRODUCT MANAGEMENT ====================
-    def get_products_by_category(self, category: str = None) -> List[Dict[str, Any]]:
-        """Get products by category"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            if category:
-                cursor.execute('''
-                    SELECT * FROM products 
-                    WHERE category = ? AND status = 'active' AND gangguan = 0 AND kosong = 0
-                    ORDER BY price
-                ''', (category,))
-            else:
-                cursor.execute('''
-                    SELECT * FROM products 
-                    WHERE status = 'active' AND gangguan = 0 AND kosong = 0
-                    ORDER BY category, price
-                ''')
-            
-            return [dict(row) for row in cursor.fetchall()]
+    def get_products_by_category(self, category: str = None, status: str = 'active') -> List[Dict[str, Any]]:
+        """Get products filtered by category and status"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                if category:
+                    cursor.execute('''
+                        SELECT * FROM products 
+                        WHERE category = ? AND status = ?
+                        ORDER BY name ASC
+                    ''', (category, status))
+                else:
+                    cursor.execute('''
+                        SELECT * FROM products 
+                        WHERE status = ?
+                        ORDER BY category, name ASC
+                    ''', (status,))
+                
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Error getting products by category: {e}")
+            return []
 
-    def get_product_categories(self) -> List[str]:
-        """Get list of product categories"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT DISTINCT category FROM products 
-                WHERE status = 'active' AND gangguan = 0 AND kosong = 0
-                ORDER BY category
-            ''')
-            return [row[0] for row in cursor.fetchall()]
-
-    def get_product_by_code(self, product_code: str) -> Optional[Dict[str, Any]]:
+    def get_product(self, product_code: str) -> Optional[Dict[str, Any]]:
         """Get product by code"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT * FROM products WHERE code = ?', (product_code,))
-            result = cursor.fetchone()
-            return dict(result) if result else None
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM products WHERE code = ?', (product_code,))
+                result = cursor.fetchone()
+                return dict(result) if result else None
+        except Exception as e:
+            logger.error(f"Error getting product {product_code}: {e}")
+            return None
 
-    def update_product_stock(self, product_code: str, new_stock: int):
-        """Update product stock"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                'UPDATE products SET stock = ?, updated_at = ? WHERE code = ?',
-                (new_stock, datetime.now(), product_code)
-            )
+    def update_product(self, product_code: str, **kwargs) -> bool:
+        """Update product data"""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                with self.get_connection() as conn:
+                    cursor = conn.cursor()
+                    
+                    valid_fields = ['name', 'price', 'status', 'description', 'category', 
+                                  'provider', 'gangguan', 'kosong', 'stock']
+                    update_fields = []
+                    params = []
+                    
+                    for field, value in kwargs.items():
+                        if field in valid_fields:
+                            update_fields.append(f"{field} = ?")
+                            params.append(value)
+                    
+                    if not update_fields:
+                        return False
+                    
+                    update_fields.append("updated_at = ?")
+                    params.extend([datetime.now(), product_code])
+                    
+                    query = f"UPDATE products SET {', '.join(update_fields)} WHERE code = ?"
+                    cursor.execute(query, params)
+                    
+                    logger.info(f"📦 Product updated: {product_code}")
+                    return True
+                    
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e).lower() and attempt < max_retries - 1:
+                    wait_time = 0.1 * (2 ** attempt)
+                    logger.warning(f"Product update locked, retrying... Attempt {attempt + 1}")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    logger.error(f"Error updating product {product_code} after {attempt + 1} attempts: {e}")
+                    return False
+            except Exception as e:
+                logger.error(f"Error updating product {product_code}: {e}")
+                return False
+        
+        return False
 
-    # ==================== TOPUP MANAGEMENT - ENHANCED ====================
-    def add_pending_topup(self, user_id: str, amount: float, proof_text: str = "", 
-                         unique_code: int = 0, payment_method: str = "", total_amount: float = 0) -> int:
-        """Add pending topup request dengan informasi lengkap"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Get user info
-            cursor.execute('SELECT username, full_name FROM users WHERE user_id = ?', (user_id,))
-            user_info = cursor.fetchone()
-            username = user_info['username'] if user_info else None
-            full_name = user_info['full_name'] if user_info else None
-            
-            # If total_amount not provided, use amount + unique_code
-            if total_amount == 0 and unique_code > 0:
-                total_amount = amount + unique_code
-            elif total_amount == 0:
-                total_amount = amount
-            
-            cursor.execute('''
-                INSERT INTO topup_requests 
-                (user_id, username, full_name, amount, proof_image, unique_code, payment_method, total_amount, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (user_id, username, full_name, amount, proof_text, unique_code, payment_method, total_amount, datetime.now()))
-            
-            topup_id = cursor.lastrowid
-            logger.info(f"💳 Topup request created: ID {topup_id} for user {user_id} - Amount: {amount}")
-            
-            return topup_id
+    def count_inactive_products(self) -> int:
+        """Count inactive products"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT COUNT(*) as count FROM products WHERE status = "inactive"')
+                result = cursor.fetchone()
+                return result['count'] if result else 0
+        except Exception as e:
+            logger.error(f"Error counting inactive products: {e}")
+            return 0
+
+    def delete_inactive_products(self) -> int:
+        """Delete inactive products dan return count yang dihapus"""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                with self.get_connection() as conn:
+                    cursor = conn.cursor()
+                    
+                    # Get products to delete for logging
+                    cursor.execute('SELECT code, name FROM products WHERE status = "inactive"')
+                    products_to_delete = cursor.fetchall()
+                    
+                    if not products_to_delete:
+                        return 0
+                    
+                    # Delete products
+                    cursor.execute('DELETE FROM products WHERE status = "inactive"')
+                    
+                    deleted_count = len(products_to_delete)
+                    
+                    # Log the cleanup
+                    for product in products_to_delete:
+                        try:
+                            cursor.execute('''
+                                INSERT INTO system_logs (level, module, message)
+                                VALUES (?, ?, ?)
+                            ''', ('INFO', 'CLEANUP_PRODUCT', 
+                                f"Deleted inactive product: {product['code']} - {product['name']}"))
+                        except Exception as log_error:
+                            logger.warning(f"Could not log product cleanup: {log_error}")
+                    
+                    logger.info(f"🧹 Deleted {deleted_count} inactive products")
+                    return deleted_count
+                    
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e).lower() and attempt < max_retries - 1:
+                    wait_time = 0.1 * (2 ** attempt)
+                    logger.warning(f"Delete products locked, retrying... Attempt {attempt + 1}")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    logger.error(f"Error deleting inactive products after {attempt + 1} attempts: {e}")
+                    return 0
+            except Exception as e:
+                logger.error(f"Error deleting inactive products: {e}")
+                return 0
+        
+        return 0
+
+    # ==================== TOPUP MANAGEMENT ====================
+    def create_topup_request(self, user_id: str, amount: float, payment_method: str = "", proof_image: str = "") -> int:
+        """Create new topup request"""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                with self.get_connection() as conn:
+                    cursor = conn.cursor()
+                    
+                    # Get user info
+                    user = self.get_user(user_id)
+                    if not user:
+                        raise ValueError(f"User {user_id} not found")
+                    
+                    # Generate unique code
+                    unique_code = int(datetime.now().timestamp() % 1000)
+                    total_amount = amount + unique_code
+                    
+                    cursor.execute('''
+                        INSERT INTO topup_requests 
+                        (user_id, username, full_name, amount, proof_image, unique_code, payment_method, total_amount)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        str(user_id), user.get('username'), user.get('full_name'), 
+                        amount, proof_image, unique_code, payment_method, total_amount
+                    ))
+                    
+                    topup_id = cursor.lastrowid
+                    logger.info(f"💳 Topup request created: ID {topup_id} for user {user_id} - Amount: {amount:,.0f}")
+                    return topup_id
+                    
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e).lower() and attempt < max_retries - 1:
+                    wait_time = 0.1 * (2 ** attempt)
+                    logger.warning(f"Create topup locked, retrying... Attempt {attempt + 1}")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    logger.error(f"Error creating topup request after {attempt + 1} attempts: {e}")
+                    raise
+            except Exception as e:
+                logger.error(f"Error creating topup request: {e}")
+                raise
+        
+        raise Exception("Failed to create topup request after retries")
 
     def get_pending_topups(self) -> List[Dict[str, Any]]:
         """Get all pending topup requests"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT * FROM topup_requests 
-                WHERE status = 'pending'
-                ORDER BY created_at DESC
-            ''')
-            return [dict(row) for row in cursor.fetchall()]
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT * FROM topup_requests 
+                    WHERE status = 'pending'
+                    ORDER BY created_at ASC
+                ''')
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Error getting pending topups: {e}")
+            return []
 
     def get_topup_by_id(self, topup_id: int) -> Optional[Dict[str, Any]]:
         """Get topup request by ID"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT * FROM topup_requests WHERE id = ?', (topup_id,))
-            result = cursor.fetchone()
-            return dict(result) if result else None
-
-    def get_topup_history(self, user_id: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """Get user's topup history"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT * FROM topup_requests 
-                WHERE user_id = ? 
-                ORDER BY created_at DESC 
-                LIMIT ?
-            ''', (str(user_id), limit))
-            return [dict(row) for row in cursor.fetchall()]
-
-    def update_topup_status(self, topup_id: int, status: str, admin_notes: str = ""):
-        """Update topup status"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                'UPDATE topup_requests SET status = ?, updated_at = ?, admin_notes = ? WHERE id = ?',
-                (status, datetime.now(), admin_notes, topup_id)
-            )
-            logger.info(f"📝 Topup {topup_id} status updated to {status}")
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM topup_requests WHERE id = ?', (topup_id,))
+                result = cursor.fetchone()
+                return dict(result) if result else None
+        except Exception as e:
+            logger.error(f"Error getting topup {topup_id}: {e}")
+            return None
 
     def approve_topup(self, topup_id: int, admin_id: str) -> bool:
-        """Approve a topup request"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            
+        """Approve topup request dan tambahkan saldo - FIXED VERSION"""
+        max_retries = 5  # Increased retries for critical operation
+        
+        for attempt in range(max_retries):
             try:
-                # Get topup details
-                cursor.execute('SELECT user_id, amount FROM topup_requests WHERE id = ?', (topup_id,))
-                result = cursor.fetchone()
-                
-                if not result:
+                with self.get_connection() as conn:
+                    cursor = conn.cursor()
+                    
+                    # Get topup details
+                    topup = self.get_topup_by_id(topup_id)
+                    if not topup:
+                        raise ValueError(f"Topup {topup_id} not found")
+                    
+                    if topup['status'] != 'pending':
+                        raise ValueError(f"Topup {topup_id} already processed")
+                    
+                    # Update topup status first
+                    cursor.execute('''
+                        UPDATE topup_requests 
+                        SET status = 'approved', updated_at = ?, admin_notes = ?
+                        WHERE id = ?
+                    ''', (datetime.now(), f"Approved by admin {admin_id}", topup_id))
+                    
+                    # Add balance to user using the safe method
+                    success = self.update_user_balance(topup['user_id'], topup['amount'], f"Topup approved - ID: {topup_id}")
+                    
+                    if not success:
+                        raise Exception("Failed to update user balance")
+                    
+                    # Create transaction record
+                    cursor.execute('''
+                        INSERT INTO transactions (user_id, type, amount, status, details, completed_at)
+                        VALUES (?, 'topup', ?, 'completed', ?, ?)
+                    ''', (topup['user_id'], topup['amount'], f"Topup approved - ID: {topup_id}", datetime.now()))
+                    
+                    logger.info(f"✅ Topup approved: ID {topup_id} for user {topup['user_id']}")
+                    return True
+                    
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e).lower() and attempt < max_retries - 1:
+                    wait_time = 0.2 * (2 ** attempt)  # Longer wait for critical operations
+                    logger.warning(f"Approve topup locked, retrying... Attempt {attempt + 1}")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    logger.error(f"Error approving topup {topup_id} after {attempt + 1} attempts: {e}")
                     return False
-                
-                user_id = result['user_id']
-                amount = result['amount']
-                
-                # Update user balance
-                self.update_user_balance(user_id, amount, f"Topup approved by admin {admin_id}")
-                
-                # Update topup status
-                cursor.execute(
-                    'UPDATE topup_requests SET status = ?, updated_at = ? WHERE id = ?',
-                    ('approved', datetime.now(), topup_id)
-                )
-                
-                # Add transaction record
-                cursor.execute('''
-                    INSERT INTO transactions (user_id, type, amount, status, details)
-                    VALUES (?, 'topup', ?, 'completed', ?)
-                ''', (user_id, amount, f'Topup approved by admin {admin_id}'))
-                
-                # Log admin action
-                self.log_admin_action(admin_id, "APPROVE_TOPUP", f"Topup ID: {topup_id}, Amount: {amount}")
-                
-                logger.info(f"✅ Topup {topup_id} approved by admin {admin_id}")
-                return True
-                
             except Exception as e:
                 logger.error(f"Error approving topup {topup_id}: {e}")
                 return False
+        
+        return False
 
     def reject_topup(self, topup_id: int, admin_id: str) -> bool:
-        """Reject a topup request"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            
+        """Reject topup request"""
+        max_retries = 3
+        for attempt in range(max_retries):
             try:
-                cursor.execute(
-                    'UPDATE topup_requests SET status = ?, updated_at = ? WHERE id = ?',
-                    ('rejected', datetime.now(), topup_id)
-                )
-                
-                # Log admin action
-                self.log_admin_action(admin_id, "REJECT_TOPUP", f"Topup ID: {topup_id}")
-                
-                logger.info(f"❌ Topup {topup_id} rejected by admin {admin_id}")
-                return True
-                
+                with self.get_connection() as conn:
+                    cursor = conn.cursor()
+                    
+                    cursor.execute('''
+                        UPDATE topup_requests 
+                        SET status = 'rejected', updated_at = ?, admin_notes = ?
+                        WHERE id = ?
+                    ''', (datetime.now(), f"Rejected by admin {admin_id}", topup_id))
+                    
+                    logger.info(f"❌ Topup rejected: ID {topup_id}")
+                    return True
+                    
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e).lower() and attempt < max_retries - 1:
+                    wait_time = 0.1 * (2 ** attempt)
+                    logger.warning(f"Reject topup locked, retrying... Attempt {attempt + 1}")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    logger.error(f"Error rejecting topup {topup_id} after {attempt + 1} attempts: {e}")
+                    return False
             except Exception as e:
                 logger.error(f"Error rejecting topup {topup_id}: {e}")
                 return False
+        
+        return False
 
     # ==================== ORDER MANAGEMENT ====================
-    def create_order(self, user_id: str, product_code: str, product_name: str, 
-                    price: float, customer_input: str = "") -> int:
+    def create_order(self, user_id: str, product_code: str, customer_input: str) -> int:
         """Create new order"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                INSERT INTO orders (user_id, product_code, product_name, price, customer_input)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (user_id, product_code, product_name, price, customer_input))
-            
-            order_id = cursor.lastrowid
-            
-            # Update user stats
-            cursor.execute(
-                'UPDATE users SET total_orders = total_orders + 1, last_active = ? WHERE user_id = ?',
-                (datetime.now(), user_id)
-            )
-            
-            self.add_system_log('INFO', 'ORDER_CREATED', f"Order {order_id} created for user {user_id}", user_id)
-            logger.info(f"🛒 Order created: {order_id} for user {user_id} - Product: {product_code}")
-            
-            return order_id
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                with self.get_connection() as conn:
+                    cursor = conn.cursor()
+                    
+                    # Get product details
+                    product = self.get_product(product_code)
+                    if not product:
+                        raise ValueError(f"Product {product_code} not found")
+                    
+                    if product['status'] != 'active':
+                        raise ValueError(f"Product {product_code} is not active")
+                    
+                    # Check user balance
+                    user_balance = self.get_user_balance(user_id)
+                    if user_balance < product['price']:
+                        raise ValueError("Insufficient balance")
+                    
+                    # Deduct balance
+                    success = self.update_user_balance(user_id, -product['price'], f"Order product: {product['name']}")
+                    if not success:
+                        raise Exception("Failed to deduct balance")
+                    
+                    # Create order
+                    cursor.execute('''
+                        INSERT INTO orders 
+                        (user_id, product_code, product_name, price, customer_input, status)
+                        VALUES (?, ?, ?, ?, ?, 'pending')
+                    ''', (str(user_id), product_code, product['name'], product['price'], customer_input))
+                    
+                    order_id = cursor.lastrowid
+                    
+                    # Update user stats
+                    cursor.execute('''
+                        UPDATE users 
+                        SET total_orders = total_orders + 1, 
+                            total_spent = total_spent + ?,
+                            last_active = ?
+                        WHERE user_id = ?
+                    ''', (product['price'], datetime.now(), str(user_id)))
+                    
+                    logger.info(f"🛒 Order created: ID {order_id} for user {user_id} - Product: {product['name']}")
+                    return order_id
+                    
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e).lower() and attempt < max_retries - 1:
+                    wait_time = 0.1 * (2 ** attempt)
+                    logger.warning(f"Create order locked, retrying... Attempt {attempt + 1}")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    logger.error(f"Error creating order after {attempt + 1} attempts: {e}")
+                    raise
+            except Exception as e:
+                logger.error(f"Error creating order: {e}")
+                raise
+        
+        raise Exception("Failed to create order after retries")
 
-    def update_order_status(self, order_id: int, status: str, note: str = "", 
-                           provider_order_id: str = "", sn: str = ""):
+    def update_order_status(self, order_id: int, status: str, sn: str = "", note: str = "") -> bool:
         """Update order status"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            update_fields = ["status = ?"]
-            params = [status]
-            
-            if note:
-                update_fields.append("note = ?")
-                params.append(note)
-            
-            if provider_order_id:
-                update_fields.append("provider_order_id = ?")
-                params.append(provider_order_id)
-            
-            if sn:
-                update_fields.append("sn = ?")
-                params.append(sn)
-            
-            if status == 'completed':
-                update_fields.append("completed_at = ?")
-                params.append(datetime.now())
-            elif status == 'processing':
-                update_fields.append("processed_at = ?")
-                params.append(datetime.now())
-            
-            params.append(order_id)
-            
-            query = f"UPDATE orders SET {', '.join(update_fields)} WHERE id = ?"
-            cursor.execute(query, params)
-            
-            # If order completed, update user spent
-            if status == 'completed':
-                cursor.execute('SELECT user_id, price FROM orders WHERE id = ?', (order_id,))
-                order = cursor.fetchone()
-                if order:
-                    cursor.execute(
-                        'UPDATE users SET total_spent = total_spent + ? WHERE user_id = ?',
-                        (order['price'], order['user_id'])
-                    )
-            
-            logger.info(f"📦 Order {order_id} status updated to {status}")
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                with self.get_connection() as conn:
+                    cursor = conn.cursor()
+                    
+                    update_fields = ["status = ?"]
+                    params = [status]
+                    
+                    if sn:
+                        update_fields.append("sn = ?")
+                        params.append(sn)
+                    
+                    if note:
+                        update_fields.append("note = ?")
+                        params.append(note)
+                    
+                    if status == 'completed':
+                        update_fields.append("completed_at = ?")
+                        params.append(datetime.now())
+                    elif status == 'processing':
+                        update_fields.append("processed_at = ?")
+                        params.append(datetime.now())
+                    
+                    params.append(order_id)
+                    
+                    query = f"UPDATE orders SET {', '.join(update_fields)} WHERE id = ?"
+                    cursor.execute(query, params)
+                    
+                    logger.info(f"📦 Order {order_id} status updated to: {status}")
+                    return True
+                    
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e).lower() and attempt < max_retries - 1:
+                    wait_time = 0.1 * (2 ** attempt)
+                    logger.warning(f"Update order status locked, retrying... Attempt {attempt + 1}")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    logger.error(f"Error updating order {order_id} after {attempt + 1} attempts: {e}")
+                    return False
+            except Exception as e:
+                logger.error(f"Error updating order {order_id}: {e}")
+                return False
+        
+        return False
 
-    def get_user_orders(self, user_id: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """Get user's order history"""
-        with self.get_connection() as conn:
+    # ==================== STATISTICS & ANALYTICS ====================
+    def get_bot_statistics(self) -> Dict[str, Any]:
+        """Get comprehensive bot statistics"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Basic counts
+                cursor.execute('SELECT COUNT(*) as total_users FROM users WHERE is_banned = 0')
+                total_users = cursor.fetchone()['total_users']
+                
+                cursor.execute('''
+                    SELECT COUNT(*) as active_users FROM users 
+                    WHERE last_active >= datetime('now', '-30 days') AND is_banned = 0
+                ''')
+                active_users = cursor.fetchone()['active_users']
+                
+                cursor.execute('SELECT COUNT(*) as active_products FROM products WHERE status = "active"')
+                active_products = cursor.fetchone()['active_products']
+                
+                cursor.execute('SELECT COUNT(*) as pending_topups FROM topup_requests WHERE status = "pending"')
+                pending_topups = cursor.fetchone()['pending_topups']
+                
+                # Financial stats
+                cursor.execute('SELECT SUM(balance) as total_balance FROM users WHERE is_banned = 0')
+                total_balance = cursor.fetchone()['total_balance'] or 0
+                
+                cursor.execute('SELECT SUM(total_spent) as total_revenue FROM users')
+                total_revenue = cursor.fetchone()['total_revenue'] or 0
+                
+                # Today's stats
+                today = datetime.now().strftime('%Y-%m-%d')
+                cursor.execute('''
+                    SELECT COUNT(*) as new_users_today FROM users 
+                    WHERE date(registered_at) = ?
+                ''', (today,))
+                new_users_today = cursor.fetchone()['new_users_today']
+                
+                cursor.execute('''
+                    SELECT COUNT(*) as orders_today FROM orders 
+                    WHERE date(created_at) = ?
+                ''', (today,))
+                orders_today = cursor.fetchone()['orders_today']
+                
+                cursor.execute('''
+                    SELECT SUM(price) as revenue_today FROM orders 
+                    WHERE date(created_at) = ? AND status = 'completed'
+                ''', (today,))
+                revenue_today = cursor.fetchone()['revenue_today'] or 0
+                
+                # Order success rate
+                cursor.execute('SELECT COUNT(*) as total_orders FROM orders')
+                total_orders = cursor.fetchone()['total_orders'] or 0
+                
+                cursor.execute('SELECT COUNT(*) as success_orders FROM orders WHERE status = "completed"')
+                success_orders = cursor.fetchone()['success_orders'] or 0
+                
+                success_rate = (success_orders / total_orders * 100) if total_orders > 0 else 0
+                
+                # Topup stats
+                cursor.execute('SELECT SUM(amount) as total_topup FROM transactions WHERE type = "topup" AND status = "completed"')
+                total_topup = cursor.fetchone()['total_topup'] or 0
+                
+                return {
+                    'total_users': total_users,
+                    'active_users': active_users,
+                    'active_products': active_products,
+                    'pending_topups': pending_topups,
+                    'total_balance': total_balance,
+                    'total_revenue': total_revenue,
+                    'new_users_today': new_users_today,
+                    'orders_today': orders_today,
+                    'revenue_today': revenue_today,
+                    'total_orders': total_orders,
+                    'success_orders': success_orders,
+                    'success_rate': round(success_rate, 2),
+                    'total_topup': total_topup,
+                    'last_update': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                }
+        except Exception as e:
+            logger.error(f"Error getting bot statistics: {e}")
+            # Return default values
+            return {
+                'total_users': 0,
+                'active_users': 0,
+                'active_products': 0,
+                'pending_topups': 0,
+                'total_balance': 0,
+                'total_revenue': 0,
+                'new_users_today': 0,
+                'orders_today': 0,
+                'revenue_today': 0,
+                'total_orders': 0,
+                'success_orders': 0,
+                'success_rate': 0,
+                'total_topup': 0,
+                'last_update': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            }
+
+    def get_user_statistics(self) -> Dict[str, Any]:
+        """Get user statistics untuk admin panel"""
+        stats = self.get_bot_statistics()
+        
+        # Additional user stats
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Count admins (you might want to get this from config or separate table)
+                cursor.execute('SELECT COUNT(*) as total_admins FROM users WHERE level >= 10')
+                total_admins = cursor.fetchone()['total_admins']
+                
+                stats['total_admins'] = total_admins
+                return stats
+        except Exception as e:
+            logger.error(f"Error getting user statistics: {e}")
+            stats['total_admins'] = 0
+            return stats
+
+    # ==================== ADMIN MANAGEMENT ====================
+    def is_user_admin(self, user_id: str) -> bool:
+        """Check if user is admin (basic implementation)"""
+        # This is a basic implementation. You might want to store admin status in database
+        # For now, we'll check against level field
+        user = self.get_user(user_id)
+        return user and user.get('level', 0) >= 10 if user else False
+
+    def make_user_admin(self, user_id: str) -> bool:
+        """Make user an admin"""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                with self.get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute('''
+                        UPDATE users SET level = 10 WHERE user_id = ?
+                    ''', (str(user_id),))
+                    
+                    logger.info(f"👑 User {user_id} promoted to admin")
+                    return True
+                    
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e).lower() and attempt < max_retries - 1:
+                    wait_time = 0.1 * (2 ** attempt)
+                    logger.warning(f"Make admin locked, retrying... Attempt {attempt + 1}")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    logger.error(f"Error making user {user_id} admin after {attempt + 1} attempts: {e}")
+                    return False
+            except Exception as e:
+                logger.error(f"Error making user {user_id} admin: {e}")
+                return False
+        
+        return False
+
+    def remove_user_admin(self, user_id: str) -> bool:
+        """Remove admin privileges from user"""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                with self.get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute('''
+                        UPDATE users SET level = 1 WHERE user_id = ?
+                    ''', (str(user_id),))
+                    
+                    logger.info(f"👑 User {user_id} admin privileges removed")
+                    return True
+                    
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e).lower() and attempt < max_retries - 1:
+                    wait_time = 0.1 * (2 ** attempt)
+                    logger.warning(f"Remove admin locked, retrying... Attempt {attempt + 1}")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    logger.error(f"Error removing admin from user {user_id} after {attempt + 1} attempts: {e}")
+                    return False
+            except Exception as e:
+                logger.error(f"Error removing admin from user {user_id}: {e}")
+                return False
+        
+        return False
+
+    # ==================== LOGGING ====================
+    def add_system_log(self, level: str, module: str, message: str, user_id: str = None):
+        """Add system log entry - SIMPLIFIED VERSION to avoid nested transactions"""
+        try:
+            # Use a separate connection for logging to avoid transaction conflicts
+            conn = sqlite3.connect(self.db_path, timeout=10.0)
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT * FROM orders 
-                WHERE user_id = ? 
-                ORDER BY created_at DESC 
-                LIMIT ?
-            ''', (str(user_id), limit))
-            return [dict(row) for row in cursor.fetchall()]
+                INSERT INTO system_logs (level, module, message, user_id)
+                VALUES (?, ?, ?, ?)
+            ''', (level, module, message, user_id))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            # If logging fails, just print to console
+            print(f"LOG [{level}] {module}: {message} (User: {user_id}) - DB Error: {e}")
 
-    def get_order_by_id(self, order_id: int) -> Optional[Dict[str, Any]]:
-        """Get order by ID"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT * FROM orders WHERE id = ?', (order_id,))
-            result = cursor.fetchone()
-            return dict(result) if result else None
-
-    # ==================== LOGGING SYSTEM ====================
-    def log_admin_action(self, admin_id: str, action: str, details: str = "", 
-                        target_type: str = None, target_id: str = None):
-        """Log admin action untuk audit trail"""
-        with self.get_connection() as conn:
+    def add_admin_log(self, admin_id: str, action: str, target_type: str = None, target_id: str = None, details: str = None):
+        """Add admin action log - SIMPLIFIED VERSION"""
+        try:
+            # Use a separate connection for logging to avoid transaction conflicts
+            conn = sqlite3.connect(self.db_path, timeout=10.0)
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO admin_logs (admin_id, action, target_type, target_id, details)
                 VALUES (?, ?, ?, ?, ?)
-            ''', (str(admin_id), action, target_type, target_id, details))
-            
-            logger.info(f"👑 Admin action: {admin_id} - {action} - {details}")
+            ''', (admin_id, action, target_type, target_id, details))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"ADMIN LOG: {admin_id} - {action} - {target_type} - {target_id} - {details} - DB Error: {e}")
 
-    def add_system_log(self, level: str, module: str, message: str, 
-                      details: str = "", user_id: str = None):
-        """Add system log"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT INTO system_logs (level, module, message, details, user_id)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (level, module, message, details, user_id))
+    # ==================== UTILITY METHODS ====================
+    def add_user_balance(self, user_id: str, amount: float) -> bool:
+        """Add balance to user (for admin)"""
+        return self.update_user_balance(user_id, amount, "Admin manual adjustment")
 
-    # ==================== STATISTICS & REPORTING ====================
-    def get_bot_statistics(self) -> Dict[str, Any]:
-        """Get comprehensive bot statistics"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Basic counts
-            cursor.execute("SELECT COUNT(*) FROM users")
-            total_users = cursor.fetchone()[0]
-            
-            cursor.execute("SELECT COUNT(*) FROM users WHERE is_banned = 0")
-            active_users = cursor.fetchone()[0]
-            
-            cursor.execute("SELECT COUNT(*) FROM products WHERE status = 'active'")
-            active_products = cursor.fetchone()[0]
-            
-            cursor.execute("SELECT COUNT(*) FROM orders WHERE status = 'completed'")
-            completed_orders = cursor.fetchone()[0]
-            
-            cursor.execute("SELECT SUM(price) FROM orders WHERE status = 'completed'")
-            total_revenue = cursor.fetchone()[0] or 0
-            
-            cursor.execute("SELECT COUNT(*) FROM topup_requests WHERE status = 'pending'")
-            pending_topups = cursor.fetchone()[0]
-            
-            cursor.execute("SELECT COUNT(*) FROM orders WHERE status = 'pending'")
-            pending_orders = cursor.fetchone()[0]
-            
-            # Today's stats
-            today = datetime.now().strftime('%Y-%m-%d')
-            cursor.execute("SELECT COUNT(*) FROM users WHERE DATE(registered_at) = ?", (today,))
-            new_users_today = cursor.fetchone()[0]
-            
-            cursor.execute("SELECT COUNT(*) FROM orders WHERE DATE(created_at) = ? AND status = 'completed'", (today,))
-            orders_today = cursor.fetchone()[0]
-            
-            cursor.execute("SELECT SUM(price) FROM orders WHERE DATE(created_at) = ? AND status = 'completed'", (today,))
-            revenue_today = cursor.fetchone()[0] or 0
-            
-            # Total topups approved
-            cursor.execute("SELECT COUNT(*) FROM topup_requests WHERE status = 'approved'")
-            total_topups = cursor.fetchone()[0]
-            
-            cursor.execute("SELECT SUM(amount) FROM topup_requests WHERE status = 'approved'")
-            total_topup_amount = cursor.fetchone()[0] or 0
-            
-            return {
-                'total_users': total_users,
-                'active_users': active_users,
-                'active_products': active_products,
-                'completed_orders': completed_orders,
-                'total_revenue': total_revenue,
-                'pending_topups': pending_topups,
-                'pending_orders': pending_orders,
-                'new_users_today': new_users_today,
-                'orders_today': orders_today,
-                'revenue_today': revenue_today,
-                'total_topups': total_topups,
-                'total_topup_amount': total_topup_amount
-            }
+    def subtract_user_balance(self, user_id: str, amount: float) -> bool:
+        """Subtract balance from user (for admin)"""
+        return self.update_user_balance(user_id, -amount, "Admin manual adjustment")
 
-    def get_user_leaderboard(self, limit: int = 10) -> List[Dict[str, Any]]:
-        """Get user leaderboard by total spent"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT user_id, username, full_name, total_spent, total_orders, level
-                FROM users 
-                WHERE is_banned = 0
-                ORDER BY total_spent DESC
-                LIMIT ?
-            ''', (limit,))
-            return [dict(row) for row in cursor.fetchall()]
+    def get_all_users(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Get all users dengan pagination"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT user_id, username, full_name, balance, last_active, registered_at, is_banned
+                    FROM users 
+                    ORDER BY registered_at DESC 
+                    LIMIT ?
+                ''', (limit,))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Error getting all users: {e}")
+            return []
 
-    # ==================== SETTINGS MANAGEMENT ====================
-    def get_setting(self, key: str, default: str = None) -> str:
-        """Get setting value"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT value FROM settings WHERE key = ?', (key,))
-            result = cursor.fetchone()
-            return result['value'] if result else default
-
-    def update_setting(self, key: str, value: str):
-        """Update setting value"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT OR REPLACE INTO settings (key, value, updated_at)
-                VALUES (?, ?, ?)
-            ''', (key, value, datetime.now()))
-
-    # ==================== NOTIFICATION SYSTEM ====================
-    def add_notification(self, user_id: str, title: str, message: str, notification_type: str = 'info'):
-        """Add notification for user"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT INTO notifications (user_id, title, message, type)
-                VALUES (?, ?, ?, ?)
-            ''', (str(user_id), title, message, notification_type))
-
-    def get_unread_notifications(self, user_id: str) -> List[Dict[str, Any]]:
-        """Get user's unread notifications"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT * FROM notifications 
-                WHERE user_id = ? AND is_read = 0
-                ORDER BY created_at DESC
-            ''', (str(user_id),))
-            return [dict(row) for row in cursor.fetchall()]
-
-    def mark_notification_read(self, notification_id: int):
-        """Mark notification as read"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                UPDATE notifications SET is_read = 1 WHERE id = ?
-            ''', (notification_id,))
-
-    # ==================== ADVANCED QUERIES ====================
-    def get_daily_stats(self, days: int = 7) -> List[Dict[str, Any]]:
-        """Get daily statistics for the last N days"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT 
-                    DATE(created_at) as date,
-                    COUNT(*) as order_count,
-                    SUM(price) as revenue,
-                    COUNT(DISTINCT user_id) as unique_users
-                FROM orders 
-                WHERE status = 'completed' AND created_at >= DATE('now', ?)
-                GROUP BY DATE(created_at)
-                ORDER BY date DESC
-            ''', (f'-{days} days',))
-            
-            return [dict(row) for row in cursor.fetchall()]
-
-    def get_popular_products(self, limit: int = 10) -> List[Dict[str, Any]]:
-        """Get most popular products"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT 
-                    p.code,
-                    p.name,
-                    p.category,
-                    COUNT(o.id) as order_count,
-                    SUM(o.price) as total_revenue
-                FROM products p
-                LEFT JOIN orders o ON p.code = o.product_code AND o.status = 'completed'
-                GROUP BY p.code, p.name, p.category
-                ORDER BY order_count DESC, total_revenue DESC
-                LIMIT ?
-            ''', (limit,))
-            
-            return [dict(row) for row in cursor.fetchall()]
-
-# ==================== GLOBAL INSTANCE & COMPATIBILITY FUNCTIONS ====================
-
+# ==================== MODULE-LEVEL FUNCTIONS ====================
 # Create global instance
-db_manager = DatabaseManager()
+_db_manager = DatabaseManager()
 
-# Compatibility functions for existing code
+# Export module-level functions for backward compatibility
 def init_database():
-    """Initialize database - compatibility function"""
-    return db_manager.init_database()
+    return _db_manager.init_database()
 
-def get_or_create_user(user_id: str, username: str = "", full_name: str = "") -> str:
-    """Get or create user - compatibility function"""
-    user_data = db_manager.get_or_create_user(user_id, username, full_name)
-    return user_data.get('user_id', user_id) if user_data else user_id
+def get_or_create_user(user_id: str, username: str = "", full_name: str = ""):
+    return _db_manager.get_or_create_user(user_id, username, full_name)
 
-def get_user_saldo(user_id: str) -> float:
-    """Get user balance - compatibility function"""
-    return db_manager.get_user_balance(user_id)
+def get_user(user_id: str):
+    return _db_manager.get_user(user_id)
 
-def get_current_timestamp() -> str:
-    """Get current timestamp - compatibility function"""
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+def get_user_saldo(user_id: str):
+    return _db_manager.get_user_balance(user_id)
 
-def add_pending_topup(user_id: str, amount: float, proof_text: str = "") -> int:
-    """Add pending topup - compatibility function"""
-    return db_manager.add_pending_topup(user_id, amount, proof_text)
+def get_user_info(user_id: str):
+    return _db_manager.get_user_info(user_id)
 
-def get_pending_topups() -> List[Dict[str, Any]]:
-    """Get pending topups - compatibility function"""
-    return db_manager.get_pending_topups()
+def get_user_balance(user_id: str):
+    return _db_manager.get_user_balance(user_id)
 
-def approve_topup(topup_id: int, admin_id: str) -> bool:
-    """Approve topup - compatibility function"""
-    return db_manager.approve_topup(topup_id, admin_id)
+def update_user_balance(user_id: str, amount: float, note: str = ""):
+    return _db_manager.update_user_balance(user_id, amount, note)
 
-def reject_topup(topup_id: int, admin_id: str) -> bool:
-    """Reject topup - compatibility function"""
-    return db_manager.reject_topup(topup_id, admin_id)
+def add_user_balance(user_id: str, amount: float):
+    return _db_manager.add_user_balance(user_id, amount)
 
-def log_admin_action(admin_id: str, action: str, details: str = ""):
-    """Log admin action - compatibility function"""
-    return db_manager.log_admin_action(admin_id, action, details)
+def subtract_user_balance(user_id: str, amount: float):
+    return _db_manager.subtract_user_balance(user_id, amount)
 
-def get_bot_statistics() -> Dict[str, Any]:
-    """Get bot statistics - compatibility function"""
-    return db_manager.get_bot_statistics()
+def get_recent_users(limit: int = 20):
+    return _db_manager.get_recent_users(limit)
 
-# Product management compatibility functions
-def get_products_by_category(category: str = None) -> List[Dict[str, Any]]:
-    """Get products by category - compatibility function"""
-    return db_manager.get_products_by_category(category)
+def get_active_users(days: int = 30):
+    return _db_manager.get_active_users(days)
 
-def get_product_categories() -> List[str]:
-    """Get product categories - compatibility function"""
-    return db_manager.get_product_categories()
+def count_inactive_users(days: int = 30):
+    return _db_manager.count_inactive_users(days)
 
-def get_product_by_id(product_code: str) -> Optional[Dict[str, Any]]:
-    """Get product by code - compatibility function"""
-    return db_manager.get_product_by_code(product_code)
+def delete_inactive_users(days: int = 30):
+    return _db_manager.delete_inactive_users(days)
 
-def update_product_stock(product_code: str, new_stock: int):
-    """Update product stock - compatibility function"""
-    return db_manager.update_product_stock(product_code, new_stock)
+def get_products_by_category(category: str = None, status: str = 'active'):
+    return _db_manager.get_products_by_category(category, status)
 
-# ==================== NEW COMPATIBILITY FUNCTIONS FOR TOPUP ====================
-def create_topup(user_id: str, amount: float, unique_code: int, total_amount: float, 
-                method: str, status: str = 'pending') -> int:
-    """Create topup request - compatibility function for topup_handler"""
-    return db_manager.add_pending_topup(
-        user_id=user_id, 
-        amount=amount, 
-        unique_code=unique_code, 
-        payment_method=method, 
-        total_amount=total_amount
-    )
+def get_product(product_code: str):
+    return _db_manager.get_product(product_code)
 
-def get_topup_history(user_id: str, limit: int = 10) -> List[Dict[str, Any]]:
-    """Get user's topup history - compatibility function"""
-    return db_manager.get_topup_history(user_id, limit)
+def update_product(product_code: str, **kwargs):
+    return _db_manager.update_product(product_code, **kwargs)
 
-def update_topup_status(topup_id: int, status: str, admin_notes: str = ""):
-    """Update topup status - compatibility function"""
-    return db_manager.update_topup_status(topup_id, status, admin_notes)
+def count_inactive_products():
+    return _db_manager.count_inactive_products()
 
-def get_topup_by_id(topup_id: int) -> Optional[Dict[str, Any]]:
-    """Get topup by ID - compatibility function"""
-    return db_manager.get_topup_by_id(topup_id)
+def delete_inactive_products():
+    return _db_manager.delete_inactive_products()
 
-# Order management compatibility functions
-def create_order(user_id: str, product_code: str, product_name: str, 
-                price: float, customer_input: str = "") -> int:
-    """Create order - compatibility function"""
-    return db_manager.create_order(user_id, product_code, product_name, price, customer_input)
+def create_topup_request(user_id: str, amount: float, payment_method: str = "", proof_image: str = ""):
+    return _db_manager.create_topup_request(user_id, amount, payment_method, proof_image)
 
-def update_order_status(order_id: int, status: str, note: str = "", 
-                       provider_order_id: str = "", sn: str = ""):
-    """Update order status - compatibility function"""
-    return db_manager.update_order_status(order_id, status, note, provider_order_id, sn)
+def get_pending_topups():
+    return _db_manager.get_pending_topups()
 
-def get_user_orders(user_id: str, limit: int = 10) -> List[Dict[str, Any]]:
-    """Get user orders - compatibility function"""
-    return db_manager.get_user_orders(user_id, limit)
+def get_topup_by_id(topup_id: int):
+    return _db_manager.get_topup_by_id(topup_id)
 
-def get_order_by_id(order_id: int) -> Optional[Dict[str, Any]]:
-    """Get order by ID - compatibility function"""
-    return db_manager.get_order_by_id(order_id)
+def approve_topup(topup_id: int, admin_id: str):
+    return _db_manager.approve_topup(topup_id, admin_id)
 
-# User management compatibility functions
-def get_user_stats(user_id: str) -> Dict[str, Any]:
-    """Get user statistics - compatibility function"""
-    return db_manager.get_user_stats(user_id)
+def reject_topup(topup_id: int, admin_id: str):
+    return _db_manager.reject_topup(topup_id, admin_id)
 
-def update_user_last_active(user_id: str):
-    """Update user last active - compatibility function"""
-    return db_manager.update_user_last_active(user_id)
+def create_order(user_id: str, product_code: str, customer_input: str):
+    return _db_manager.create_order(user_id, product_code, customer_input)
 
-# Settings compatibility functions
-def get_setting(key: str, default: str = None) -> str:
-    """Get setting - compatibility function"""
-    return db_manager.get_setting(key, default)
+def update_order_status(order_id: int, status: str, sn: str = "", note: str = ""):
+    return _db_manager.update_order_status(order_id, status, sn, note)
 
-def update_setting(key: str, value: str):
-    """Update setting - compatibility function"""
-    return db_manager.update_setting(key, value)
+def get_bot_statistics():
+    return _db_manager.get_bot_statistics()
 
-print("✅ database.py loaded successfully - All features ready for release!")
+def get_user_statistics():
+    return _db_manager.get_user_statistics()
+
+def is_user_admin(user_id: str):
+    return _db_manager.is_user_admin(user_id)
+
+def make_user_admin(user_id: str):
+    return _db_manager.make_user_admin(user_id)
+
+def remove_user_admin(user_id: str):
+    return _db_manager.remove_user_admin(user_id)
+
+def add_system_log(level: str, module: str, message: str, user_id: str = None):
+    return _db_manager.add_system_log(level, module, message, user_id)
+
+def add_admin_log(admin_id: str, action: str, target_type: str = None, target_id: str = None, details: str = None):
+    return _db_manager.add_admin_log(admin_id, action, target_type, target_id, details)
+
+def get_all_users(limit: int = 100):
+    return _db_manager.get_all_users(limit)
+
+# Export the manager for advanced usage
+def get_db_manager():
+    return _db_manager
+
+if __name__ == "__main__":
+    # Test the database
+    print("🧪 Testing database...")
+    db = DatabaseManager()
+    print("✅ Database initialized successfully!")
+    
+    # Test user creation
+    user = db.get_or_create_user("test_user", "testuser", "Test User")
+    print(f"✅ User test: {user}")
+    
+    # Test statistics
+    stats = db.get_bot_statistics()
+    print(f"✅ Statistics: {stats}")
