@@ -352,48 +352,54 @@ async def get_stock_from_database(update: Update, context: ContextTypes.DEFAULT_
     await safe_edit_message_text(query, msg, parse_mode='Markdown', reply_markup=reply_markup)
 
 async def show_order_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show user's order history"""
+    """Show user's order history - FIXED VERSION"""
     query = update.callback_query
     await query.answer()
     
     try:
         user_id = str(query.from_user.id)
         
-        # Get last 10 orders from database
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("""
-            SELECT id, product_name, customer_input, price, status, created_at 
-            FROM orders 
-            WHERE user_id = ? 
-            ORDER BY created_at DESC 
-            LIMIT 10
-        """, (user_id,))
-        orders = c.fetchall()
-        conn.close()
+        # Get last 10 orders from database using database module
+        orders = database.get_user_orders(user_id, limit=10)
 
         if not orders:
             msg = "📋 *RIWAYAT ORDER*\n\nAnda belum memiliki riwayat order."
         else:
             msg = "📋 *RIWAYAT ORDER TERAKHIR*\n\n"
             for order in orders:
-                order_id, product_name, target, price, status, created_at = order
+                order_id = order['id']
+                product_name = order['product_name']
+                customer_input = order['customer_input']
+                price = order['price']
+                status = order['status']
+                created_at = order['created_at']
+                
                 status_emoji = {
                     'completed': '✅',
                     'pending': '⏳', 
                     'failed': '❌',
                     'processing': '🔄',
-                    'refunded': '💸'
+                    'refunded': '💸',
+                    'partial': '⚠️',
+                    'cancelled': '🚫'
                 }.get(status, '❓')
                 
                 # Format timestamp
-                order_time = created_at.split(' ')[1][:5] if ' ' in created_at else created_at
+                if ' ' in str(created_at):
+                    order_time = str(created_at).split(' ')[1][:5]
+                    order_date = str(created_at).split(' ')[0]
+                else:
+                    order_time = str(created_at)[:5]
+                    order_date = str(created_at)
+                
+                # Truncate long product names
+                display_name = product_name[:30] + "..." if len(product_name) > 30 else product_name
                 
                 msg += (
-                    f"{status_emoji} *{product_name}*\n"
-                    f"📮 Tujuan: `{target}`\n"
+                    f"{status_emoji} *{display_name}*\n"
+                    f"📮 Tujuan: `{customer_input}`\n"
                     f"💰 Rp {price:,}\n"
-                    f"🕒 {order_time} | {status.upper()}\n"
+                    f"📅 {order_date} {order_time} | {status.upper()}\n"
                     f"────────────────────\n"
                 )
             
@@ -817,13 +823,13 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return MENU
 
 async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Process the actual order - FIXED VERSION"""
+    """Process the actual order - FIXED VERSION dengan transaksi yang benar"""
     try:
         user_id = str(update.callback_query.from_user.id)
         product = context.user_data.get('selected_product', {})
         target = context.user_data.get('target', '')
         
-        # Create order in database - FIXED: remove order_id parameter
+        # Create order in database - FIXED: menggunakan parameter yang benar
         order_id = database.create_order(
             user_id=user_id,
             product_code=product['code'],
@@ -831,40 +837,68 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
         if order_id:
-            # Update order status to processing
-            database.update_order_status(order_id, 'processing')
+            logger.info(f"Order created successfully: ID {order_id}")
             
-            # Here you would typically call your provider API
-            # For now, we'll simulate API call
+            # Simulate API call to provider
             await asyncio.sleep(2)
             
-            # Simulate successful order
-            database.update_order_status(order_id, 'completed', sn=f"SN{order_id:06d}")
+            # Simulate successful order with random SN
+            import random
+            sn_number = random.randint(100000, 999999)
+            sn = f"SN{sn_number}"
             
-            # Get updated balance
-            new_saldo = database.get_user_saldo(user_id)
-            
-            # Send success message
-            success_text = (
-                f"✅ **ORDER BERHASIL!**\n\n"
-                f"📦 Produk: {product['name']}\n"
-                f"📮 Tujuan: `{target}`\n"
-                f"💰 Harga: Rp {product['price']:,}\n"
-                f"📋 Order ID: `{order_id}`\n"
-                f"💳 Sisa Saldo: Rp {new_saldo:,}\n\n"
-                f"Terima kasih telah berbelanja! 🛍️"
+            # Update order status to completed dengan SN
+            success = database.update_order_status(
+                order_id=order_id, 
+                status='completed', 
+                sn=sn,
+                note="Order berhasil diproses"
             )
             
-            await update.callback_query.message.reply_text(
-                success_text,
-                parse_mode='Markdown',
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🛒 Beli Lagi", callback_data="menu_order")],
-                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
-                ])
-            )
+            if success:
+                # Get updated balance
+                new_saldo = database.get_user_saldo(user_id)
+                
+                # Log transaction
+                database.add_system_log(
+                    level='INFO',
+                    module='ORDER',
+                    message=f"Order completed: {order_id} - {product['name']} to {target}",
+                    user_id=user_id
+                )
+                
+                # Send success message
+                success_text = (
+                    f"✅ **ORDER BERHASIL!**\n\n"
+                    f"📦 Produk: {product['name']}\n"
+                    f"📮 Tujuan: `{target}`\n"
+                    f"💰 Harga: Rp {product['price']:,}\n"
+                    f"📋 Order ID: `{order_id}`\n"
+                    f"🔢 SN: `{sn}`\n"
+                    f"💳 Sisa Saldo: Rp {new_saldo:,}\n\n"
+                    f"Terima kasih telah berbelanja! 🛍️"
+                )
+                
+                await update.callback_query.message.reply_text(
+                    success_text,
+                    parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🛒 Beli Lagi", callback_data="menu_order")],
+                        [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
+                    ])
+                )
+            else:
+                # If update status failed, set to failed
+                database.update_order_status(order_id, 'failed', note="Gagal update status order")
+                await update.callback_query.message.reply_text(
+                    "❌ Gagal memproses order. Silakan hubungi admin.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
+                    ])
+                )
             
         else:
+            logger.error(f"Failed to create order for user {user_id}")
             await update.callback_query.message.reply_text(
                 "❌ Gagal membuat order. Silakan coba lagi.",
                 reply_markup=InlineKeyboardMarkup([
@@ -878,6 +912,19 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         logger.error(f"Error in process_order: {e}")
+        
+        # Try to log the error
+        try:
+            user_id = str(update.callback_query.from_user.id)
+            database.add_system_log(
+                level='ERROR',
+                module='ORDER',
+                message=f"Order processing failed: {str(e)}",
+                user_id=user_id
+            )
+        except:
+            pass
+            
         await update.callback_query.message.reply_text(
             "❌ Terjadi error saat memproses order. Silakan coba lagi.",
             reply_markup=InlineKeyboardMarkup([
