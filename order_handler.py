@@ -150,7 +150,7 @@ async def menu_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [
             [InlineKeyboardButton("🛒 Beli Produk", callback_data="menu_order")],
             [InlineKeyboardButton("💳 Cek Saldo", callback_data="menu_saldo")],
-            [InlineKeyboardButton("💸 Top Up Saldo", callback_data="topup_start")],  # DIUBAH: menu_topup -> topup_start
+            [InlineKeyboardButton("💸 Top Up Saldo", callback_data="topup_start")],
             [InlineKeyboardButton("📊 Cek Stok", callback_data="menu_stock")],
             [InlineKeyboardButton("📋 Riwayat Order", callback_data="menu_history")],
             [InlineKeyboardButton("📞 Bantuan", callback_data="menu_help")]
@@ -199,7 +199,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 query,
                 f"💳 *SALDO ANDA*\n\nSaldo: *Rp {saldo:,.0f}*\n\nGunakan menu Top Up untuk menambah saldo.",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("💸 Top Up Saldo", callback_data="topup_start")],  # DIUBAH: menu_topup -> topup_start
+                    [InlineKeyboardButton("💸 Top Up Saldo", callback_data="topup_start")],
                     [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
                 ]),
                 parse_mode="Markdown"
@@ -229,7 +229,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return MENU
         elif data == "menu_topup":
-            # Biarkan topup handler yang menangani melalui callback pattern
             await query.answer("🔄 Membuka menu topup...")
             return MENU
         elif data == "menu_stock":
@@ -364,7 +363,7 @@ async def show_order_history(update: Update, context: ContextTypes.DEFAULT_TYPE)
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("""
-            SELECT order_id, product_name, target, price, status, created_at 
+            SELECT id, product_name, customer_input, price, status, created_at 
             FROM orders 
             WHERE user_id = ? 
             ORDER BY created_at DESC 
@@ -380,10 +379,11 @@ async def show_order_history(update: Update, context: ContextTypes.DEFAULT_TYPE)
             for order in orders:
                 order_id, product_name, target, price, status, created_at = order
                 status_emoji = {
-                    'success': '✅',
+                    'completed': '✅',
                     'pending': '⏳', 
                     'failed': '❌',
-                    'processing': '🔄'
+                    'processing': '🔄',
+                    'refunded': '💸'
                 }.get(status, '❓')
                 
                 # Format timestamp
@@ -817,30 +817,20 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return MENU
 
 async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Process the actual order"""
+    """Process the actual order - FIXED VERSION"""
     try:
         user_id = str(update.callback_query.from_user.id)
         product = context.user_data.get('selected_product', {})
         target = context.user_data.get('target', '')
         
-        # Generate order ID
-        order_id = str(uuid.uuid4())[:8].upper()
-        
-        # Create order in database
-        success = database.create_order(
-            order_id=order_id,
+        # Create order in database - FIXED: remove order_id parameter
+        order_id = database.create_order(
             user_id=user_id,
             product_code=product['code'],
-            product_name=product['name'],
-            target=target,
-            price=product['price'],
-            status='pending'
+            customer_input=target
         )
         
-        if success:
-            # Deduct balance
-            database.update_user_saldo(user_id, -product['price'])
-            
+        if order_id:
             # Update order status to processing
             database.update_order_status(order_id, 'processing')
             
@@ -849,7 +839,7 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await asyncio.sleep(2)
             
             # Simulate successful order
-            database.update_order_status(order_id, 'success')
+            database.update_order_status(order_id, 'completed', sn=f"SN{order_id:06d}")
             
             # Get updated balance
             new_saldo = database.get_user_saldo(user_id)
