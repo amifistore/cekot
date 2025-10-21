@@ -5,6 +5,7 @@ import aiohttp
 import asyncio
 import sqlite3
 import re
+import time
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -90,7 +91,133 @@ class KhfyPayAPI:
             logger.error(f"Error checking KhfyPay order status: {e}")
             return None
 
-# ==================== EXISTING FUNCTIONS (TIDAK DIUBAH) ====================
+# ==================== WEBHOOK STATUS SYNC FUNCTIONS ====================
+
+def update_order_status_from_webhook(reffid, status, keterangan=None, sn=None):
+    """Update order status based on webhook data"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        # Map webhook status to internal status
+        status_mapping = {
+            'SUKSES': 'completed',
+            'GAGAL': 'failed',
+            'PENDING': 'pending',
+            'PROSES': 'processing',
+            'REFUND': 'refunded'
+        }
+        
+        internal_status = status_mapping.get(status.upper(), status.lower())
+        
+        # Update order status
+        update_query = """
+            UPDATE orders 
+            SET status = ?, updated_at = ?, note = COALESCE(?, note)
+            WHERE provider_order_id = ?
+        """
+        update_params = [internal_status, datetime.now(), keterangan, reffid]
+        
+        if sn:
+            update_query = """
+                UPDATE orders 
+                SET status = ?, updated_at = ?, note = COALESCE(?, note), sn = ?
+                WHERE provider_order_id = ?
+            """
+            update_params = [internal_status, datetime.now(), keterangan, sn, reffid]
+        
+        c.execute(update_query, update_params)
+        
+        # If order failed and needs refund, process refund
+        if internal_status == 'failed':
+            c.execute("""
+                SELECT user_id, price FROM orders 
+                WHERE provider_order_id = ? AND status_refund = 0
+            """, (reffid,))
+            order_data = c.fetchone()
+            
+            if order_data:
+                user_id, price = order_data
+                # Refund user balance
+                c.execute("""
+                    UPDATE users SET saldo = saldo + ? 
+                    WHERE user_id = ?
+                """, (price, user_id))
+                # Mark as refunded
+                c.execute("""
+                    UPDATE orders SET status_refund = 1 
+                    WHERE provider_order_id = ?
+                """, (reffid,))
+                logger.info(f"Refund processed for order {reffid}: user {user_id} amount {price}")
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"Order status updated: {reffid} -> {internal_status}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error updating order status from webhook: {e}")
+        return False
+
+def get_order_by_reffid(reffid):
+    """Get order details by reffid"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""
+            SELECT id, user_id, product_name, customer_input, price, status, 
+                   provider_order_id, created_at, sn, note
+            FROM orders 
+            WHERE provider_order_id = ?
+        """, (reffid,))
+        order = c.fetchone()
+        conn.close()
+        return order
+    except Exception as e:
+        logger.error(f"Error getting order by reffid: {e}")
+        return None
+
+async def notify_user_order_update(context, user_id, order_data):
+    """Notify user about order status update"""
+    try:
+        order_id, _, product_name, target, price, status, provider_id, created_at, sn, note = order_data
+        
+        status_emoji = {
+            'completed': '✅',
+            'pending': '⏳', 
+            'failed': '❌',
+            'processing': '🔄',
+            'refunded': '💸',
+            'partial': '⚠️'
+        }.get(status, '❓')
+        
+        message = (
+            f"{status_emoji} *UPDATE STATUS ORDER*\n\n"
+            f"📦 *Produk:* {product_name}\n"
+            f"📮 *Tujuan:* `{target}`\n"
+            f"💰 *Harga:* Rp {price:,}\n"
+            f"🆔 *Ref ID:* `{provider_id}`\n"
+            f"📊 *Status:* {status.upper()}\n"
+        )
+        
+        if sn:
+            message += f"🔢 *SN:* `{sn}`\n"
+        if note:
+            message += f"📝 *Keterangan:* {note}\n"
+        
+        message += f"\n⏰ *Update:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=message,
+            parse_mode='Markdown'
+        )
+        
+    except Exception as e:
+        logger.error(f"Error notifying user about order update: {e}")
+
+# ==================== UTILITY FUNCTIONS ====================
 
 async def safe_edit_message_text(callback_query, *args, **kwargs):
     """Safely edit message text with error handling"""
@@ -127,13 +254,68 @@ async def safe_reply_message(update, *args, **kwargs):
         logger.error(f"Error replying to message: {e}")
         return False
 
+def validate_phone_number(phone):
+    """Validate phone number format"""
+    # Remove non-digit characters
+    phone = re.sub(r'\D', '', phone)
+    
+    # Check if it's a valid Indonesian phone number
+    if phone.startswith('0'):
+        phone = '62' + phone[1:]
+    elif phone.startswith('8'):
+        phone = '62' + phone
+    elif phone.startswith('+62'):
+        phone = phone[1:]
+    
+    # Validate length
+    if len(phone) < 10 or len(phone) > 14:
+        return None
+    
+    return phone
+
+def validate_pulsa_target(phone, product_code):
+    """Validate pulsa target"""
+    phone = validate_phone_number(phone)
+    if not phone:
+        return None
+    
+    # Additional validation for specific products
+    if product_code.startswith('TS'):
+        # Telkomsel validation
+        if not phone.startswith('62852') and not phone.startswith('62853') and not phone.startswith('62811') and not phone.startswith('62812') and not phone.startswith('62813') and not phone.startswith('62821') and not phone.startswith('62822') and not phone.startswith('62823'):
+            return None
+    elif product_code.startswith('AX'):
+        # AXIS validation
+        if not phone.startswith('62838') and not phone.startswith('62839') and not phone.startswith('62837'):
+            return None
+    elif product_code.startswith('XL'):
+        # XL validation
+        if not phone.startswith('62817') and not phone.startswith('62818') and not phone.startswith('62819') and not phone.startswith('62859'):
+            return None
+    elif product_code.startswith('IN'):
+        # Indosat validation
+        if not phone.startswith('62814') and not phone.startswith('62815') and not phone.startswith('62816') and not phone.startswith('62855') and not phone.startswith('62856') and not phone.startswith('62857') and not phone.startswith('62858'):
+            return None
+    elif product_code.startswith('SM'):
+        # Smartfren validation
+        if not phone.startswith('62888') and not phone.startswith('62889'):
+            return None
+    elif product_code.startswith('3'):
+        # Three validation
+        if not phone.startswith('62895') and not phone.startswith('62896') and not phone.startswith('62897') and not phone.startswith('62898') and not phone.startswith('62899'):
+            return None
+    
+    return phone
+
+# ==================== PRODUCT MANAGEMENT ====================
+
 def get_grouped_products():
-    """Get products grouped by category from database - TAMPILKAN SEMUA PRODUK"""
+    """Get products grouped by category from database"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("""
-            SELECT code, name, price, category, description, status, gangguan, kosong, stock
+            SELECT code, name, price, category, description, status, gangguan, kosong, stock, minimal, maksimal
             FROM products 
             WHERE status='active'
             ORDER BY category, name ASC
@@ -141,30 +323,12 @@ def get_grouped_products():
         products = c.fetchall()
         conn.close()
 
-        logger.info(f"Found {len(products)} active products in database (including out-of-stock)")
+        logger.info(f"Found {len(products)} active products in database")
         
         groups = {}
-        for code, name, price, category, description, status, gangguan, kosong, stock in products:
-            # Use category from database, fallback to code-based grouping
+        for code, name, price, category, description, status, gangguan, kosong, stock, minimal, maksimal in products:
+            # Use category from database
             group = category or "Lainnya"
-            
-            # Additional grouping for specific product codes
-            if code.startswith("BPAL"):
-                group = "BPAL (Bonus Akrab L)"
-            elif code.startswith("BPAXXL"):
-                group = "BPAXXL (Bonus Akrab XXL)"
-            elif code.startswith("XLA"):
-                group = "XLA (Umum)"
-            elif "pulsa" in name.lower():
-                group = "Pulsa"
-            elif "data" in name.lower() or "internet" in name.lower() or "kuota" in name.lower():
-                group = "Internet"
-            elif "listrik" in name.lower() or "pln" in name.lower():
-                group = "Listrik"
-            elif "game" in name.lower():
-                group = "Game"
-            elif "emoney" in name.lower() or "gopay" in name.lower() or "dana" in name.lower():
-                group = "E-Money"
             
             if group not in groups:
                 groups[group] = []
@@ -177,7 +341,9 @@ def get_grouped_products():
                 'description': description,
                 'stock': stock,
                 'gangguan': gangguan,
-                'kosong': kosong
+                'kosong': kosong,
+                'minimal': minimal,
+                'maksimal': maksimal
             })
         
         # Sort groups alphabetically
@@ -190,6 +356,40 @@ def get_grouped_products():
     except Exception as e:
         logger.error(f"Error getting grouped products from database: {e}")
         return {}
+
+def get_product_by_code(product_code):
+    """Get product details by code"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""
+            SELECT code, name, price, category, description, status, gangguan, kosong, stock, minimal, maksimal
+            FROM products 
+            WHERE code = ? AND status = 'active'
+        """, (product_code,))
+        product = c.fetchone()
+        conn.close()
+        
+        if product:
+            return {
+                'code': product[0],
+                'name': product[1],
+                'price': product[2],
+                'category': product[3],
+                'description': product[4],
+                'status': product[5],
+                'gangguan': product[6],
+                'kosong': product[7],
+                'stock': product[8],
+                'minimal': product[9],
+                'maksimal': product[10]
+            }
+        return None
+    except Exception as e:
+        logger.error(f"Error getting product by code: {e}")
+        return None
+
+# ==================== MAIN MENU & NAVIGATION ====================
 
 async def menu_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show main menu"""
@@ -334,6 +534,8 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return MENU
 
+# ==================== STOCK & HISTORY ====================
+
 async def show_stock_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show stock menu"""
     query = update.callback_query
@@ -416,7 +618,7 @@ async def get_stock_from_database(update: Update, context: ContextTypes.DEFAULT_
     await safe_edit_message_text(query, msg, parse_mode='Markdown', reply_markup=reply_markup)
 
 async def show_order_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show user's order history - FIXED VERSION"""
+    """Show user's order history"""
     query = update.callback_query
     await query.answer()
     
@@ -490,8 +692,10 @@ async def show_order_history(update: Update, context: ContextTypes.DEFAULT_TYPE)
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
         )
 
+# ==================== ORDER FLOW ====================
+
 async def show_group_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show product groups menu from database - SEMUA PRODUK DITAMPILKAN"""
+    """Show product groups menu from database"""
     try:
         query = update.callback_query
         await query.answer()
@@ -513,103 +717,53 @@ async def show_group_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return MENU
         
         # Calculate total products
-        total_products = sum(len(group_products) for group_products in groups.values())
-        logger.info(f"Showing {len(groups)} groups with {total_products} products")
+        total_products = sum(len(products) for products in groups.values())
         
-        # Create keyboard with better formatting
         keyboard = []
-        for group, group_products in groups.items():
-            # Count products by status
-            total_in_group = len(group_products)
-            available_in_group = sum(1 for p in group_products if p.get('stock', 0) > 0 and p.get('gangguan', 0) == 0 and p.get('kosong', 0) == 0)
-            gangguan_in_group = sum(1 for p in group_products if p.get('gangguan', 0) == 1)
-            kosong_in_group = sum(1 for p in group_products if p.get('kosong', 0) == 1)
-            
-            # Create button text with emoji based on availability
-            if gangguan_in_group > 0:
-                button_text = f"🚧 {group}"
-            elif kosong_in_group == total_in_group:
-                button_text = f"🔴 {group}"
-            elif available_in_group == total_in_group:
-                button_text = f"🟢 {group}"
-            elif available_in_group > 0:
-                button_text = f"🟡 {group}"
-            else:
-                button_text = f"🔴 {group}"
-            
-            # Add product count
-            button_text += f" ({len(group_products)})"
-            
-            # Clean group name for callback data
-            clean_group = re.sub(r'[^a-zA-Z0-9_]', '', group.replace(' ', '_'))
-            callback_data = f"group_{clean_group}"[:64]
-                
-            keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+        for group_name in groups.keys():
+            product_count = len(groups[group_name])
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"{group_name} ({product_count})", 
+                    callback_data=f"group_{group_name}"
+                )
+            ])
         
-        # Add navigation buttons
-        keyboard.append([InlineKeyboardButton("🔄 Refresh", callback_data="menu_order")])
         keyboard.append([InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        # Create safe message text
-        message_text = (
-            "📦 PILIH KATEGORI PRODUK\n\n"
-            f"📊 Ditemukan {total_products} produk dalam {len(groups)} kategori\n\n"
-            "🟢 Semua tersedia | 🟡 Sebagian tersedia | 🔴 Habis/Kosong | 🚧 Gangguan\n\n"
-            "ℹ️ Produk dengan stok kosong tetap bisa dipesan untuk testing\n\n"
-            "Silakan pilih kategori produk:"
-        )
-        
-        logger.info(f"Sending group menu with {len(keyboard)} buttons")
-        
         await safe_edit_message_text(
             query,
-            message_text,
+            f"📦 *PILIH KATEGORI PRODUK*\n\n"
+            f"Total {total_products} produk aktif tersedia\n\n"
+            f"Pilih kategori:",
             reply_markup=reply_markup,
-            parse_mode='Markdown'
+            parse_mode="Markdown"
         )
         
         return CHOOSING_GROUP
         
     except Exception as e:
         logger.error(f"Error in show_group_menu: {e}")
-        await safe_edit_message_text(
-            query,
-            "❌ Terjadi error saat memuat kategori produk. Silakan coba lagi.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔄 Coba Lagi", callback_data="menu_order")],
-                [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
-            ])
-        )
+        await safe_reply_message(update, "❌ Error memuat kategori produk. Silakan coba lagi.")
         return MENU
 
-async def show_products_in_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show products in selected group"""
     query = update.callback_query
     await query.answer()
     
-    group_name_encoded = query.data.replace('group_', '')
-    
     try:
+        data = query.data
+        group_name = data.replace('group_', '')
+        
         groups = get_grouped_products()
-        group_name = None
-        
-        # Find the actual group name
-        for gname in groups.keys():
-            clean_gname = re.sub(r'[^a-zA-Z0-9_]', '', gname.replace(' ', '_'))
-            if clean_gname == group_name_encoded:
-                group_name = gname
-                break
-        
-        if not group_name or group_name not in groups:
+        if group_name not in groups:
             await safe_edit_message_text(
                 query,
-                "❌ Kategori produk tidak ditemukan.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📦 Kategori Lain", callback_data="menu_order")],
-                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
-                ])
+                "❌ Kategori tidak ditemukan.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
             )
             return MENU
         
@@ -617,115 +771,167 @@ async def show_products_in_group(update: Update, context: ContextTypes.DEFAULT_T
         context.user_data['current_group'] = group_name
         context.user_data['current_products'] = products
         
-        # Create product buttons
+        # Create pagination if needed
+        page = context.user_data.get('product_page', 0)
+        start_idx = page * PRODUCTS_PER_PAGE
+        end_idx = start_idx + PRODUCTS_PER_PAGE
+        page_products = products[start_idx:end_idx]
+        
         keyboard = []
-        for product in products:
-            # Product status indicator
-            if product.get('gangguan') == 1:
+        for product in page_products:
+            # Add status indicator
+            if product['gangguan'] == 1:
                 status_emoji = "🚧"
-            elif product.get('kosong') == 1:
+            elif product['kosong'] == 1:
                 status_emoji = "🔴"
-            elif product.get('stock', 0) > 10:
+            elif product['stock'] > 10:
                 status_emoji = "🟢"
-            elif product.get('stock', 0) > 0:
+            elif product['stock'] > 0:
                 status_emoji = "🟡"
             else:
                 status_emoji = "🔴"
             
             button_text = f"{status_emoji} {product['name']} - Rp {product['price']:,}"
-            callback_data = f"product_{product['code']}"
-            
-            keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"product_{product['code']}")])
         
         # Add navigation buttons
-        keyboard.append([InlineKeyboardButton("🔙 Kembali ke Kategori", callback_data="menu_order")])
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton("⬅️ Sebelumnya", callback_data="prev_page"))
+        
+        if end_idx < len(products):
+            nav_buttons.append(InlineKeyboardButton("Selanjutnya ➡️", callback_data="next_page"))
+        
+        if nav_buttons:
+            keyboard.append(nav_buttons)
+        
+        keyboard.append([InlineKeyboardButton("🔙 Kembali ke Kategori", callback_data="back_to_groups")])
         keyboard.append([InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        message_text = (
-            f"📦 **PRODUK {group_name.upper()}**\n\n"
-            f"🟢 Tersedia | 🟡 Sedikit | 🔴 Habis/Kosong | 🚧 Gangguan\n\n"
-            f"Silakan pilih produk:"
-        )
+        total_pages = (len(products) + PRODUCTS_PER_PAGE - 1) // PRODUCTS_PER_PAGE
+        page_info = f" (Halaman {page + 1}/{total_pages})" if total_pages > 1 else ""
         
         await safe_edit_message_text(
             query,
-            message_text,
+            f"📦 *PRODUK {group_name.upper()}*{page_info}\n\n"
+            f"Pilih produk yang ingin dibeli:\n\n"
+            f"🟢 Tersedia | 🟡 Sedikit | 🔴 Habis | 🚧 Gangguan",
             reply_markup=reply_markup,
-            parse_mode='Markdown'
+            parse_mode="Markdown"
         )
         
         return CHOOSING_PRODUCT
         
     except Exception as e:
-        logger.error(f"Error in show_products_in_group: {e}")
+        logger.error(f"Error in show_products: {e}")
         await safe_edit_message_text(
             query,
-            "❌ Terjadi error saat memuat produk. Silakan coba lagi.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Kembali ke Kategori", callback_data="menu_order")],
-                [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
-            ])
+            "❌ Error memuat produk. Silakan coba lagi.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
         )
         return MENU
+
+async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle product pagination"""
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    current_page = context.user_data.get('product_page', 0)
+    
+    if data == 'next_page':
+        context.user_data['product_page'] = current_page + 1
+    elif data == 'prev_page':
+        context.user_data['product_page'] = max(0, current_page - 1)
+    
+    return await show_products(update, context)
 
 async def select_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle product selection"""
     query = update.callback_query
     await query.answer()
     
-    product_code = query.data.replace('product_', '')
-    
     try:
-        products = context.user_data.get('current_products', [])
-        selected_product = None
+        data = query.data
+        product_code = data.replace('product_', '')
         
-        for product in products:
-            if product['code'] == product_code:
-                selected_product = product
-                break
-        
-        if not selected_product:
+        product = get_product_by_code(product_code)
+        if not product:
             await safe_edit_message_text(
                 query,
                 "❌ Produk tidak ditemukan.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 Kembali ke Produk", callback_data=f"group_{context.user_data.get('current_group', '').replace(' ', '_')}")],
-                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
-                ])
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
             )
             return MENU
         
-        # Store selected product in context
-        context.user_data['selected_product'] = selected_product
+        # Check product availability
+        if product['kosong'] == 1:
+            await safe_edit_message_text(
+                query,
+                f"❌ *{product['name']}*\n\n"
+                f"Produk sedang kosong/tidak tersedia.\n\n"
+                f"Silakan pilih produk lain.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 Kembali ke Produk", callback_data=f"group_{product['category']}")],
+                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
+                ]),
+                parse_mode="Markdown"
+            )
+            return CHOOSING_PRODUCT
         
-        # Check product status
-        status_msg = ""
-        if selected_product.get('gangguan') == 1:
-            status_msg = "🚧 **Produk sedang gangguan** - Mungkin terjadi delay"
-        elif selected_product.get('kosong') == 1:
-            status_msg = "🔴 **Produk kosong** - Tidak bisa dipesan sementara"
-        elif selected_product.get('stock', 0) <= 0:
-            status_msg = "🔴 **Stok habis** - Tidak bisa dipesan sementara"
-        else:
-            status_msg = "🟢 **Produk tersedia** - Bisa dipesan"
+        if product['gangguan'] == 1:
+            await safe_edit_message_text(
+                query,
+                f"🚧 *{product['name']}*\n\n"
+                f"Produk sedang mengalami gangguan.\n\n"
+                f"Silakan pilih produk lain atau coba lagi nanti.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 Kembali ke Produk", callback_data=f"group_{product['category']}")],
+                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
+                ]),
+                parse_mode="Markdown"
+            )
+            return CHOOSING_PRODUCT
         
-        message_text = (
-            f"📦 **{selected_product['name']}**\n\n"
-            f"💰 Harga: Rp {selected_product['price']:,}\n"
-            f"📝 Deskripsi: {selected_product.get('description', 'Tidak ada deskripsi')}\n"
-            f"📊 Status: {status_msg}\n\n"
-            f"Silakan masukkan nomor tujuan:\n"
-            f"• Contoh: 081234567890\n"
-            f"• Pastikan nomor benar\n\n"
-            f"❌ Ketik /cancel untuk membatalkan"
-        )
+        if product['stock'] <= 0:
+            await safe_edit_message_text(
+                query,
+                f"🔴 *{product['name']}*\n\n"
+                f"Stok produk habis.\n\n"
+                f"Silakan pilih produk lain.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 Kembali ke Produk", callback_data=f"group_{product['category']}")],
+                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
+                ]),
+                parse_mode="Markdown"
+            )
+            return CHOOSING_PRODUCT
+        
+        # Store selected product
+        context.user_data['selected_product'] = product
+        
+        # Ask for target
+        target_example = "Contoh: 081234567890"
+        if product['code'].startswith('PLN'):
+            target_example = "Contoh: 123456789012345 (ID Pelanggan PLN)"
+        elif product['code'].startswith('VOUCHER'):
+            target_example = "Contoh: 1234567890 (ID Game)"
         
         await safe_edit_message_text(
             query,
-            message_text,
-            parse_mode='Markdown'
+            f"🛒 *PILIHAN PRODUK*\n\n"
+            f"📦 {product['name']}\n"
+            f"💰 Harga: Rp {product['price']:,}\n"
+            f"📝 {product['description'] or 'Tidak ada deskripsi'}\n\n"
+            f"📮 *Masukkan nomor tujuan:*\n"
+            f"{target_example}",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Kembali ke Produk", callback_data=f"group_{product['category']}")],
+                [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
+            ]),
+            parse_mode="Markdown"
         )
         
         return ENTER_TUJUAN
@@ -734,134 +940,106 @@ async def select_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in select_product: {e}")
         await safe_edit_message_text(
             query,
-            "❌ Terjadi error saat memilih produk. Silakan coba lagi.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Kembali ke Produk", callback_data=f"group_{context.user_data.get('current_group', '').replace(' ', '_')}")],
-                [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
-            ])
+            "❌ Error memilih produk. Silakan coba lagi.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
         )
         return MENU
 
-async def enter_tujuan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Process target number input"""
+async def receive_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive and validate target input"""
     try:
         target = update.message.text.strip()
+        product = context.user_data.get('selected_product')
         
-        # Basic validation
-        if not target:
-            await update.message.reply_text(
-                "❌ Nomor tujuan tidak boleh kosong. Silakan masukkan nomor:",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 Kembali ke Menu", callback_data="menu_main")]
-                ])
-            )
-            return ENTER_TUJUAN
-        
-        # Simple phone number validation (basic check)
-        if not re.match(r'^[0-9+]{10,15}$', target.replace(' ', '').replace('-', '')):
-            await update.message.reply_text(
-                "❌ Format nomor tidak valid. Silakan masukkan nomor yang benar:\n"
-                "Contoh: 081234567890 atau +6281234567890",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 Kembali ke Menu", callback_data="menu_main")]
-                ])
-            )
-            return ENTER_TUJUAN
-        
-        # Store target in context
-        context.user_data['target'] = target
-        
-        # Get selected product
-        product = context.user_data.get('selected_product', {})
-        
-        # Check user balance
-        user_id = str(update.message.from_user.id)
-        saldo = database.get_user_saldo(user_id)
-        
-        if saldo < product.get('price', 0):
-            await update.message.reply_text(
-                f"❌ Saldo tidak mencukupi!\n\n"
-                f"💰 Saldo Anda: Rp {saldo:,}\n"
-                f"💳 Harga produk: Rp {product.get('price', 0):,}\n"
-                f"📊 Kekurangan: Rp {product.get('price', 0) - saldo:,}\n\n"
-                f"Silakan top up saldo terlebih dahulu.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("💸 Top Up Saldo", callback_data="topup_start")],
-                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
-                ])
-            )
+        if not product:
+            await safe_reply_message(update, "❌ Sesi telah berakhir. Silakan mulai ulang dari menu.")
             return MENU
         
+        # Validate target based on product type
+        validated_target = None
+        if product['code'].startswith(('TS', 'AX', 'XL', 'IN', 'SM', '3')):  # Pulsa/Data
+            validated_target = validate_pulsa_target(target, product['code'])
+        elif product['code'].startswith('PLN'):  # PLN
+            validated_target = re.sub(r'\D', '', target)
+            if len(validated_target) < 10 or len(validated_target) > 20:
+                validated_target = None
+        else:  # Other products
+            validated_target = target.strip()
+        
+        if not validated_target:
+            await safe_reply_message(
+                update,
+                f"❌ Format tujuan tidak valid!\n\n"
+                f"Produk: {product['name']}\n"
+                f"Tujuan: {target}\n\n"
+                f"Silakan masukkan format yang benar."
+            )
+            return ENTER_TUJUAN
+        
+        # Store validated target
+        context.user_data['order_target'] = validated_target
+        
         # Show confirmation
-        status_info = ""
-        if product.get('gangguan') == 1:
-            status_info = "🚧 **PERINGATAN:** Produk sedang gangguan, mungkin terjadi delay"
-        elif product.get('kosong') == 1 or product.get('stock', 0) <= 0:
-            status_info = "🔴 **PERINGATAN:** Produk kosong/habis, mungkin gagal"
-        else:
-            status_info = "🟢 Produk tersedia"
-        
-        message_text = (
-            f"✅ **KONFIRMASI ORDER**\n\n"
-            f"📦 Produk: {product['name']}\n"
-            f"💰 Harga: Rp {product['price']:,}\n"
-            f"📮 Tujuan: `{target}`\n"
-            f"💳 Saldo: Rp {saldo:,}\n"
-            f"💰 Sisa: Rp {saldo - product['price']:,}\n\n"
-            f"{status_info}\n\n"
-            f"Apakah Anda yakin ingin melanjutkan?"
-        )
-        
         keyboard = [
-            [InlineKeyboardButton("✅ Ya, Lanjutkan", callback_data="confirm_order")],
-            [InlineKeyboardButton("❌ Batalkan", callback_data="cancel_order")]
+            [
+                InlineKeyboardButton("✅ Konfirmasi Order", callback_data="confirm_order"),
+                InlineKeyboardButton("❌ Batalkan", callback_data="cancel_order")
+            ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.message.reply_text(
-            message_text,
+        await safe_reply_message(
+            update,
+            f"📋 *KONFIRMASI ORDER*\n\n"
+            f"📦 *Produk:* {product['name']}\n"
+            f"📮 *Tujuan:* `{validated_target}`\n"
+            f"💰 *Harga:* Rp {product['price']:,}\n\n"
+            f"💰 *Saldo Anda:* Rp {database.get_user_saldo(str(update.effective_user.id)):,}\n\n"
+            f"Apakah Anda yakin ingin melanjutkan?",
             reply_markup=reply_markup,
-            parse_mode='Markdown'
+            parse_mode="Markdown"
         )
         
         return CONFIRM_ORDER
         
     except Exception as e:
-        logger.error(f"Error in enter_tujuan: {e}")
-        await update.message.reply_text(
-            "❌ Terjadi error. Silakan coba lagi.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
-            ])
-        )
+        logger.error(f"Error in receive_target: {e}")
+        await safe_reply_message(update, "❌ Error memproses tujuan. Silakan coba lagi.")
         return MENU
 
-async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle order confirmation"""
+async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Process order with webhook synchronization"""
     query = update.callback_query
     await query.answer()
     
+    user_data = context.user_data
+    product_data = user_data.get('selected_product')
+    target = user_data.get('order_target')
+    
+    if not product_data or not target:
+        await safe_edit_message_text(
+            query,
+            "❌ Data order tidak lengkap. Silakan ulangi dari awal.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
+        )
+        return MENU
+    
     try:
         user_id = str(query.from_user.id)
-        product = context.user_data.get('selected_product', {})
-        target = context.user_data.get('target', '')
+        username = query.from_user.username or ""
+        full_name = query.from_user.full_name or ""
         
-        if not product or not target:
-            await safe_edit_message_text(
-                query,
-                "❌ Data order tidak lengkap. Silakan ulangi dari awal.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
-                ])
-            )
-            return MENU
-        
-        # Check balance again
+        # Get user balance
         saldo = database.get_user_saldo(user_id)
-        if saldo < product.get('price', 0):
+        product_price = product_data['price']
+        
+        if saldo < product_price:
             await safe_edit_message_text(
                 query,
-                f"❌ Saldo tidak mencukupi!\n\n"
+                f"❌ Saldo tidak cukup!\n\n"
+                f"💰 Saldo Anda: Rp {saldo:,}\n"
+                f"💳 Harga produk: Rp {product_price:,}\n"
+                f"🔶 Kekurangan: Rp {product_price - saldo:,}\n\n"
                 f"Silakan top up saldo terlebih dahulu.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("💸 Top Up Saldo", callback_data="topup_start")],
@@ -870,308 +1048,221 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return MENU
         
-        # Show processing message
-        await safe_edit_message_text(
-            query,
-            "🔄 **Memproses order Anda...**\n\n"
-            "Mohon tunggu sebentar...",
-            parse_mode='Markdown'
-        )
-        
-        return await process_order(update, context)
-        
-    except Exception as e:
-        logger.error(f"Error in confirm_order: {e}")
-        await safe_edit_message_text(
-            query,
-            "❌ Terjadi error saat konfirmasi order. Silakan coba lagi.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
-            ])
-        )
-        return MENU
-
-# ==================== UPDATED PROCESS ORDER WITH KHFYPAY ====================
-
-async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Process the actual order with KhfyPay integration"""
-    try:
-        user_id = str(update.callback_query.from_user.id)
-        product = context.user_data.get('selected_product', {})
-        target = context.user_data.get('target', '')
-        
-        # Create order in our database first
-        order_id = database.create_order(
-            user_id=user_id,
-            product_code=product['code'],
-            customer_input=target
-        )
-        
-        if not order_id:
-            await update.callback_query.message.reply_text(
-                "❌ Gagal membuat order. Silakan coba lagi.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
-                ])
+        # Initialize KhfyPay API
+        api_key = getattr(config, 'KHFYPAY_API_KEY', '')
+        if not api_key:
+            await safe_edit_message_text(
+                query,
+                "❌ Error: API key tidak terkonfigurasi.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
             )
             return MENU
         
-        # Check if KhfyPay API key is available
-        khfy_api_key = getattr(config, 'KHFY_API_KEY', None)
-        
-        if khfy_api_key:
-            # Use KhfyPay API for real processing
-            return await process_order_with_khfypay(update, context, order_id, product, target, user_id)
-        else:
-            # Fallback to simulation mode
-            return await process_order_simulation(update, context, order_id, product, target, user_id)
-        
-    except Exception as e:
-        logger.error(f"Error in process_order: {e}")
-        
-        # Try to log the error
-        try:
-            user_id = str(update.callback_query.from_user.id)
-            database.add_system_log(
-                level='ERROR',
-                module='ORDER',
-                message=f"Order processing failed: {str(e)}",
-                user_id=user_id
-            )
-        except:
-            pass
-            
-        await update.callback_query.message.reply_text(
-            "❌ Terjadi error saat memproses order. Silakan coba lagi.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
-            ])
-        )
-        return MENU
-
-async def process_order_with_khfypay(update: Update, context: ContextTypes.DEFAULT_TYPE, order_id, product, target, user_id):
-    """Process order using KhfyPay API"""
-    try:
-        khfy_api = KhfyPayAPI(api_key=config.KHFY_API_KEY)
+        khfy_api = KhfyPayAPI(api_key)
         
         # Generate unique reffid
         reffid = str(uuid.uuid4())
         
-        # Create order in KhfyPay
-        khfy_result = khfy_api.create_order(
-            product_code=product['code'],
+        # Create order in provider system
+        await safe_edit_message_text(
+            query,
+            f"🔄 *MEMPROSES ORDER*...\n\n"
+            f"📦 {product_data['name']}\n"
+            f"📮 Tujuan: `{target}`\n"
+            f"💰 Rp {product_price:,}\n\n"
+            f"Mohon tunggu...",
+            parse_mode="Markdown"
+        )
+        
+        order_result = khfy_api.create_order(
+            product_code=product_data['code'],
             target=target,
             custom_reffid=reffid
         )
         
-        if khfy_result and khfy_result.get('status') == 'success':
-            # Update our order with provider_order_id
-            conn = sqlite3.connect(DB_PATH)
-            c = conn.cursor()
-            c.execute("""
-                UPDATE orders 
-                SET provider_order_id=?, status='processing', response_data=?
-                WHERE id=?
-            """, (reffid, str(khfy_result), order_id))
-            conn.commit()
-            conn.close()
-            
-            # Log system
-            database.add_system_log(
-                level='INFO',
-                module='KHFY_ORDER',
-                message=f"Order {order_id} sent to KhfyPay with reffid {reffid}",
-                user_id=user_id
+        if not order_result:
+            await safe_edit_message_text(
+                query,
+                "❌ Gagal membuat order di sistem provider. Silakan coba lagi.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
             )
-            
-            await update.callback_query.message.reply_text(
-                f"✅ **Order Diproses!**\n\n"
-                f"📦 {product['name']}\n"
-                f"📮 {target}\n"
-                f"💰 Rp {product['price']:,}\n"
-                f"📋 Order ID: `{order_id}`\n"
-                f"🔗 Ref ID: `{reffid}`\n\n"
-                f"Status akan diupdate otomatis via webhook...",
-                parse_mode='Markdown',
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔄 Cek Status", callback_data=f"check_status_{order_id}")],
-                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
-                ])
-            )
-        else:
-            # Jika gagal di KhfyPay, set status failed
-            error_msg = khfy_result.get('message', 'Unknown error') if khfy_result else 'Connection failed'
-            database.update_order_status(order_id, 'failed', note=f"KhfyPay error: {error_msg}")
-            
-            # Refund balance
-            database.update_user_balance(user_id, product['price'], f"Refund order failed: {order_id}")
-            
-            await update.callback_query.message.reply_text(
-                f"❌ Gagal memproses order di provider.\n\nError: {error_msg}",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
-                ])
-            )
+            return MENU
         
-        context.user_data.clear()
+        # Check order result
+        if order_result.get('status') == 'error':
+            error_msg = order_result.get('message', 'Unknown error')
+            await safe_edit_message_text(
+                query,
+                f"❌ Gagal membuat order:\n{error_msg}",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
+            )
+            return MENU
+        
+        # Deduct balance and save order to database
+        new_saldo = database.update_user_saldo(user_id, -product_price)
+        
+        # Save order to database
+        order_id = database.save_order(
+            user_id=user_id,
+            product_name=product_data['name'],
+            product_code=product_data['code'],
+            customer_input=target,
+            price=product_price,
+            status='pending',  # Initial status, will be updated by webhook
+            provider_order_id=reffid,
+            sn=order_result.get('sn'),  # Serial number if available
+            note=order_result.get('message', 'Order created')
+        )
+        
+        if not order_id:
+            # Refund if failed to save order
+            database.update_user_saldo(user_id, product_price)
+            await safe_edit_message_text(
+                query,
+                "❌ Gagal menyimpan order. Saldo telah dikembalikan.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
+            )
+            return MENU
+        
+        # Prepare success message
+        status_emoji = "⏳"
+        status_text = "PENDING"
+        provider_message = order_result.get('message', 'Order diproses')
+        
+        if order_result.get('status') == 'success':
+            status_emoji = "✅"
+            status_text = "SUKSES"
+            # Update status immediately if success
+            database.update_order_status(order_id, 'completed')
+        
+        success_message = (
+            f"{status_emoji} *ORDER BERHASIL DIBUAT*\n\n"
+            f"📦 *Produk:* {product_data['name']}\n"
+            f"📮 *Tujuan:* `{target}`\n"
+            f"💰 *Harga:* Rp {product_price:,}\n"
+            f"🔗 *Ref ID:* `{reffid}`\n"
+            f"📊 *Status:* {status_text}\n"
+            f"💬 *Pesan:* {provider_message}\n"
+        )
+        
+        if order_result.get('sn'):
+            success_message += f"🔢 *SN:* `{order_result.get('sn')}`\n"
+        
+        success_message += (
+            f"\n💰 *Saldo Baru:* Rp {new_saldo:,}\n"
+            f"⏰ *Waktu:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+            f"📝 Status order akan diperbarui otomatis via webhook."
+        )
+        
+        keyboard = [
+            [InlineKeyboardButton("🛒 Beli Lagi", callback_data="menu_order")],
+            [InlineKeyboardButton("📋 Riwayat Order", callback_data="menu_history")],
+            [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await safe_edit_message_text(
+            query,
+            success_message,
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
+        )
+        
+        # Clean up user data
+        if 'selected_product' in user_data:
+            del user_data['selected_product']
+        if 'order_target' in user_data:
+            del user_data['order_target']
+        if 'product_page' in user_data:
+            del user_data['product_page']
+        if 'current_group' in user_data:
+            del user_data['current_group']
+        if 'current_products' in user_data:
+            del user_data['current_products']
+        
         return MENU
         
     except Exception as e:
-        logger.error(f"Error in process_order_with_khfypay: {e}")
-        
-        # Fallback to simulation
-        return await process_order_simulation(update, context, order_id, product, target, user_id)
-
-async def process_order_simulation(update: Update, context: ContextTypes.DEFAULT_TYPE, order_id, product, target, user_id):
-    """Fallback order processing with simulation"""
-    try:
-        # Simulate API call to provider
-        await asyncio.sleep(2)
-        
-        # Simulate successful order with random SN
-        import random
-        sn_number = random.randint(100000, 999999)
-        sn = f"SN{sn_number}"
-        
-        # Update order status to completed dengan SN
-        success = database.update_order_status(
-            order_id=order_id, 
-            status='completed', 
-            sn=sn,
-            note="Order berhasil diproses (Simulation)"
-        )
-        
-        if success:
-            # Get updated balance
-            new_saldo = database.get_user_saldo(user_id)
-            
-            # Log transaction
-            database.add_system_log(
-                level='INFO',
-                module='ORDER',
-                message=f"Order completed: {order_id} - {product['name']} to {target}",
-                user_id=user_id
-            )
-            
-            # Send success message
-            success_text = (
-                f"✅ **ORDER BERHASIL!**\n\n"
-                f"📦 Produk: {product['name']}\n"
-                f"📮 Tujuan: `{target}`\n"
-                f"💰 Harga: Rp {product['price']:,}\n"
-                f"📋 Order ID: `{order_id}`\n"
-                f"🔢 SN: `{sn}`\n"
-                f"💳 Sisa Saldo: Rp {new_saldo:,}\n\n"
-                f"Terima kasih telah berbelanja! 🛍️"
-            )
-            
-            await update.callback_query.message.reply_text(
-                success_text,
-                parse_mode='Markdown',
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🛒 Beli Lagi", callback_data="menu_order")],
-                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
-                ])
-            )
-        else:
-            database.update_order_status(order_id, 'failed', note="Gagal update status order")
-            await update.callback_query.message.reply_text(
-                "❌ Gagal memproses order. Silakan hubungi admin.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
-                ])
-            )
-        
-        context.user_data.clear()
-        return MENU
-        
-    except Exception as e:
-        logger.error(f"Error in process_order_simulation: {e}")
-        await update.callback_query.message.reply_text(
-            "❌ Terjadi error saat memproses order. Silakan coba lagi.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
-            ])
+        logger.error(f"Error processing order: {e}")
+        await safe_edit_message_text(
+            query,
+            f"❌ Terjadi error saat memproses order:\n{str(e)}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
         )
         return MENU
-
-# ==================== EXISTING FUNCTIONS (TIDAK DIUBAH) ====================
 
 async def cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle order cancellation"""
+    """Cancel order and return to product selection"""
     query = update.callback_query
-    await query.answer()
+    await query.answer("Order dibatalkan")
     
-    # Clear context
-    context.user_data.clear()
+    # Clear user data
+    if 'selected_product' in context.user_data:
+        del context.user_data['selected_product']
+    if 'order_target' in context.user_data:
+        del context.user_data['order_target']
     
-    await safe_edit_message_text(
-        query,
-        "❌ **Order dibatalkan**\n\nKembali ke menu utama.",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
-        ])
-    )
-    
-    return MENU
+    return await show_products(update, context)
 
-async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Cancel the entire conversation"""
-    context.user_data.clear()
-    
-    await update.message.reply_text(
-        "❌ **Dibatalkan**\n\nKembali ke menu utama.",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
-        ])
-    )
-    
-    return ConversationHandler.END
+# ==================== CONVERSATION HANDLER SETUP ====================
 
-def get_conversation_handler():
-    """Return the order conversation handler"""
+def get_order_conversation_handler():
+    """Get order conversation handler"""
     return ConversationHandler(
-        entry_points=[
-            CallbackQueryHandler(menu_main, pattern="^menu_main$"),
-            CallbackQueryHandler(menu_handler, pattern="^menu_"),
-            CommandHandler("order", menu_main),
-            CommandHandler("start", menu_main)
-        ],
+        entry_points=[CallbackQueryHandler(menu_handler, pattern="^menu_order$")],
         states={
-            MENU: [
-                CallbackQueryHandler(menu_handler, pattern="^menu_"),
-                CallbackQueryHandler(show_group_menu, pattern="^menu_order$"),
-            ],
             CHOOSING_GROUP: [
-                CallbackQueryHandler(show_products_in_group, pattern="^group_"),
-                CallbackQueryHandler(show_group_menu, pattern="^menu_order$"),
-                CallbackQueryHandler(menu_main, pattern="^menu_main$"),
+                CallbackQueryHandler(show_products, pattern="^group_"),
+                CallbackQueryHandler(menu_main, pattern="^menu_main$")
             ],
             CHOOSING_PRODUCT: [
                 CallbackQueryHandler(select_product, pattern="^product_"),
-                CallbackQueryHandler(show_group_menu, pattern="^menu_order$"),
-                CallbackQueryHandler(menu_main, pattern="^menu_main$"),
+                CallbackQueryHandler(handle_pagination, pattern="^(next_page|prev_page)$"),
+                CallbackQueryHandler(show_group_menu, pattern="^back_to_groups$"),
+                CallbackQueryHandler(menu_main, pattern="^menu_main$")
             ],
             ENTER_TUJUAN: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, enter_tujuan),
-                CommandHandler("cancel", cancel_conversation),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_target),
+                CallbackQueryHandler(show_products, pattern="^group_"),
+                CallbackQueryHandler(menu_main, pattern="^menu_main$")
             ],
             CONFIRM_ORDER: [
-                CallbackQueryHandler(confirm_order, pattern="^confirm_order$"),
+                CallbackQueryHandler(process_order, pattern="^confirm_order$"),
                 CallbackQueryHandler(cancel_order, pattern="^cancel_order$"),
-                CallbackQueryHandler(menu_main, pattern="^menu_main$"),
+                CallbackQueryHandler(show_products, pattern="^group_"),
+                CallbackQueryHandler(menu_main, pattern="^menu_main$")
             ],
-            ORDER_PROCESSING: [
-                CallbackQueryHandler(process_order, pattern="^process_order$"),
-            ]
         },
         fallbacks=[
-            CommandHandler("cancel", cancel_conversation),
-            CallbackQueryHandler(menu_main, pattern="^menu_main$"),
-            CallbackQueryHandler(cancel_order, pattern="^cancel_order$"),
+            CommandHandler("start", menu_main),
+            CommandHandler("cancel", menu_main),
+            CallbackQueryHandler(menu_main, pattern="^menu_main$")
         ],
-        allow_reentry=True
+        map_to_parent={
+            MENU: MENU,
+        }
     )
 
-# Export the conversation handler
-order_conv_handler = get_conversation_handler()
+# ==================== ERROR HANDLER ====================
+
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle errors in the order handler"""
+    logger.error(f"Exception while handling an update: {context.error}", exc_info=context.error)
+    
+    try:
+        if update and update.callback_query:
+            await safe_edit_message_text(
+                update.callback_query,
+                "❌ Terjadi error yang tidak terduga. Silakan coba lagi atau hubungi admin.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
+            )
+        elif update and update.message:
+            await safe_reply_message(
+                update,
+                "❌ Terjadi error yang tidak terduga. Silakan coba lagi atau hubungi admin.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]])
+            )
+    except Exception as e:
+        logger.error(f"Error in error handler: {e}")
+    
+    return MENU
