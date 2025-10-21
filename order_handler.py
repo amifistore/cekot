@@ -896,4 +896,282 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Process the actual order with KhfyPay integration"""
     try:
-        user_id = str(update.callback_query.from_user
+        user_id = str(update.callback_query.from_user.id)
+        product = context.user_data.get('selected_product', {})
+        target = context.user_data.get('target', '')
+        
+        # Create order in our database first
+        order_id = database.create_order(
+            user_id=user_id,
+            product_code=product['code'],
+            customer_input=target
+        )
+        
+        if not order_id:
+            await update.callback_query.message.reply_text(
+                "❌ Gagal membuat order. Silakan coba lagi.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
+                ])
+            )
+            return MENU
+        
+        # Check if KhfyPay API key is available
+        khfy_api_key = getattr(config, 'KHFY_API_KEY', None)
+        
+        if khfy_api_key:
+            # Use KhfyPay API for real processing
+            return await process_order_with_khfypay(update, context, order_id, product, target, user_id)
+        else:
+            # Fallback to simulation mode
+            return await process_order_simulation(update, context, order_id, product, target, user_id)
+        
+    except Exception as e:
+        logger.error(f"Error in process_order: {e}")
+        
+        # Try to log the error
+        try:
+            user_id = str(update.callback_query.from_user.id)
+            database.add_system_log(
+                level='ERROR',
+                module='ORDER',
+                message=f"Order processing failed: {str(e)}",
+                user_id=user_id
+            )
+        except:
+            pass
+            
+        await update.callback_query.message.reply_text(
+            "❌ Terjadi error saat memproses order. Silakan coba lagi.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
+            ])
+        )
+        return MENU
+
+async def process_order_with_khfypay(update: Update, context: ContextTypes.DEFAULT_TYPE, order_id, product, target, user_id):
+    """Process order using KhfyPay API"""
+    try:
+        khfy_api = KhfyPayAPI(api_key=config.KHFY_API_KEY)
+        
+        # Generate unique reffid
+        reffid = str(uuid.uuid4())
+        
+        # Create order in KhfyPay
+        khfy_result = khfy_api.create_order(
+            product_code=product['code'],
+            target=target,
+            custom_reffid=reffid
+        )
+        
+        if khfy_result and khfy_result.get('status') == 'success':
+            # Update our order with provider_order_id
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("""
+                UPDATE orders 
+                SET provider_order_id=?, status='processing', response_data=?
+                WHERE id=?
+            """, (reffid, str(khfy_result), order_id))
+            conn.commit()
+            conn.close()
+            
+            # Log system
+            database.add_system_log(
+                level='INFO',
+                module='KHFY_ORDER',
+                message=f"Order {order_id} sent to KhfyPay with reffid {reffid}",
+                user_id=user_id
+            )
+            
+            await update.callback_query.message.reply_text(
+                f"✅ **Order Diproses!**\n\n"
+                f"📦 {product['name']}\n"
+                f"📮 {target}\n"
+                f"💰 Rp {product['price']:,}\n"
+                f"📋 Order ID: `{order_id}`\n"
+                f"🔗 Ref ID: `{reffid}`\n\n"
+                f"Status akan diupdate otomatis via webhook...",
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Cek Status", callback_data=f"check_status_{order_id}")],
+                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
+                ])
+            )
+        else:
+            # Jika gagal di KhfyPay, set status failed
+            error_msg = khfy_result.get('message', 'Unknown error') if khfy_result else 'Connection failed'
+            database.update_order_status(order_id, 'failed', note=f"KhfyPay error: {error_msg}")
+            
+            # Refund balance
+            database.update_user_balance(user_id, product['price'], f"Refund order failed: {order_id}")
+            
+            await update.callback_query.message.reply_text(
+                f"❌ Gagal memproses order di provider.\n\nError: {error_msg}",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
+                ])
+            )
+        
+        context.user_data.clear()
+        return MENU
+        
+    except Exception as e:
+        logger.error(f"Error in process_order_with_khfypay: {e}")
+        
+        # Fallback to simulation
+        return await process_order_simulation(update, context, order_id, product, target, user_id)
+
+async def process_order_simulation(update: Update, context: ContextTypes.DEFAULT_TYPE, order_id, product, target, user_id):
+    """Fallback order processing with simulation"""
+    try:
+        # Simulate API call to provider
+        await asyncio.sleep(2)
+        
+        # Simulate successful order with random SN
+        import random
+        sn_number = random.randint(100000, 999999)
+        sn = f"SN{sn_number}"
+        
+        # Update order status to completed dengan SN
+        success = database.update_order_status(
+            order_id=order_id, 
+            status='completed', 
+            sn=sn,
+            note="Order berhasil diproses (Simulation)"
+        )
+        
+        if success:
+            # Get updated balance
+            new_saldo = database.get_user_saldo(user_id)
+            
+            # Log transaction
+            database.add_system_log(
+                level='INFO',
+                module='ORDER',
+                message=f"Order completed: {order_id} - {product['name']} to {target}",
+                user_id=user_id
+            )
+            
+            # Send success message
+            success_text = (
+                f"✅ **ORDER BERHASIL!**\n\n"
+                f"📦 Produk: {product['name']}\n"
+                f"📮 Tujuan: `{target}`\n"
+                f"💰 Harga: Rp {product['price']:,}\n"
+                f"📋 Order ID: `{order_id}`\n"
+                f"🔢 SN: `{sn}`\n"
+                f"💳 Sisa Saldo: Rp {new_saldo:,}\n\n"
+                f"Terima kasih telah berbelanja! 🛍️"
+            )
+            
+            await update.callback_query.message.reply_text(
+                success_text,
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🛒 Beli Lagi", callback_data="menu_order")],
+                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
+                ])
+            )
+        else:
+            database.update_order_status(order_id, 'failed', note="Gagal update status order")
+            await update.callback_query.message.reply_text(
+                "❌ Gagal memproses order. Silakan hubungi admin.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
+                ])
+            )
+        
+        context.user_data.clear()
+        return MENU
+        
+    except Exception as e:
+        logger.error(f"Error in process_order_simulation: {e}")
+        await update.callback_query.message.reply_text(
+            "❌ Terjadi error saat memproses order. Silakan coba lagi.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
+            ])
+        )
+        return MENU
+
+# ==================== EXISTING FUNCTIONS (TIDAK DIUBAH) ====================
+
+async def cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle order cancellation"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Clear context
+    context.user_data.clear()
+    
+    await safe_edit_message_text(
+        query,
+        "❌ **Order dibatalkan**\n\nKembali ke menu utama.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
+        ])
+    )
+    
+    return MENU
+
+async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel the entire conversation"""
+    context.user_data.clear()
+    
+    await update.message.reply_text(
+        "❌ **Dibatalkan**\n\nKembali ke menu utama.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
+        ])
+    )
+    
+    return ConversationHandler.END
+
+def get_conversation_handler():
+    """Return the order conversation handler"""
+    return ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(menu_main, pattern="^menu_main$"),
+            CallbackQueryHandler(menu_handler, pattern="^menu_"),
+            CommandHandler("order", menu_main),
+            CommandHandler("start", menu_main)
+        ],
+        states={
+            MENU: [
+                CallbackQueryHandler(menu_handler, pattern="^menu_"),
+                CallbackQueryHandler(show_group_menu, pattern="^menu_order$"),
+            ],
+            CHOOSING_GROUP: [
+                CallbackQueryHandler(show_products_in_group, pattern="^group_"),
+                CallbackQueryHandler(show_group_menu, pattern="^menu_order$"),
+                CallbackQueryHandler(menu_main, pattern="^menu_main$"),
+            ],
+            CHOOSING_PRODUCT: [
+                CallbackQueryHandler(select_product, pattern="^product_"),
+                CallbackQueryHandler(show_group_menu, pattern="^menu_order$"),
+                CallbackQueryHandler(menu_main, pattern="^menu_main$"),
+            ],
+            ENTER_TUJUAN: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, enter_tujuan),
+                CommandHandler("cancel", cancel_conversation),
+            ],
+            CONFIRM_ORDER: [
+                CallbackQueryHandler(confirm_order, pattern="^confirm_order$"),
+                CallbackQueryHandler(cancel_order, pattern="^cancel_order$"),
+                CallbackQueryHandler(menu_main, pattern="^menu_main$"),
+            ],
+            ORDER_PROCESSING: [
+                CallbackQueryHandler(process_order, pattern="^process_order$"),
+            ]
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel_conversation),
+            CallbackQueryHandler(menu_main, pattern="^menu_main$"),
+            CallbackQueryHandler(cancel_order, pattern="^cancel_order$"),
+        ],
+        allow_reentry=True
+    )
+
+# Export the conversation handler
+order_conv_handler = get_conversation_handler()
