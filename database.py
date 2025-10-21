@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Database Management System - FULL FEATURE FIXED VERSION
-Dengan improved locking mechanism, error handling, dan semua fungsi yang diperlukan
+Database Management System - FULL VERSION SEMPURNA
+Dengan semua fungsi yang diperlukan untuk kompatibilitas dengan topup_handler dan admin_handler
 """
 
 import sqlite3
@@ -773,9 +773,9 @@ class DatabaseManager:
         
         return 0
 
-    # ==================== TOPUP MANAGEMENT ====================
-    def create_topup_request(self, user_id: str, amount: float, payment_method: str = "", proof_image: str = "") -> int:
-        """Create new topup request"""
+    # ==================== TOPUP MANAGEMENT - FIXED VERSION ====================
+    def create_topup_request(self, user_id: str, amount: float, payment_method: str = "", proof_image: str = "", unique_code: int = 0, status: str = "pending") -> int:
+        """Create new topup request dengan semua parameter yang diperlukan"""
         max_retries = 3
         for attempt in range(max_retries):
             try:
@@ -787,21 +787,23 @@ class DatabaseManager:
                     if not user:
                         raise ValueError(f"User {user_id} not found")
                     
-                    # Generate unique code
-                    unique_code = int(datetime.now().timestamp() % 1000)
+                    # Generate unique code jika tidak disediakan
+                    if unique_code == 0:
+                        unique_code = int(datetime.now().timestamp() % 1000)
+                    
                     total_amount = amount + unique_code
                     
                     cursor.execute('''
                         INSERT INTO topup_requests 
-                        (user_id, username, full_name, amount, proof_image, unique_code, payment_method, total_amount)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        (user_id, username, full_name, amount, proof_image, unique_code, payment_method, total_amount, status)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (
                         str(user_id), user.get('username'), user.get('full_name'), 
-                        amount, proof_image, unique_code, payment_method, total_amount
+                        amount, proof_image, unique_code, payment_method, total_amount, status
                     ))
                     
                     topup_id = cursor.lastrowid
-                    logger.info(f"💳 Topup request created: ID {topup_id} for user {user_id} - Amount: {amount:,.0f}")
+                    logger.info(f"💳 Topup request created: ID {topup_id} for user {user_id} - Amount: {amount:,.0f}, Unique Code: {unique_code}")
                     return topup_id
                     
             except sqlite3.OperationalError as e:
@@ -818,6 +820,17 @@ class DatabaseManager:
                 raise
         
         raise Exception("Failed to create topup request after retries")
+
+    def create_topup(self, user_id: str, amount: float, payment_method: str = "", status: str = "pending", unique_code: int = 0) -> int:
+        """Alias untuk create_topup_request dengan parameter yang sesuai untuk topup_handler"""
+        return self.create_topup_request(
+            user_id=user_id,
+            amount=amount,
+            payment_method=payment_method,
+            proof_image="",  # Default empty untuk QRIS
+            unique_code=unique_code,
+            status=status
+        )
 
     def get_pending_topups(self) -> List[Dict[str, Any]]:
         """Get all pending topup requests"""
@@ -1431,13 +1444,13 @@ def count_inactive_products():
 def delete_inactive_products():
     return _db_manager.delete_inactive_products()
 
-def create_topup_request(user_id: str, amount: float, payment_method: str = "", proof_image: str = ""):
-    return _db_manager.create_topup_request(user_id, amount, payment_method, proof_image)
+def create_topup_request(user_id: str, amount: float, payment_method: str = "", proof_image: str = "", unique_code: int = 0, status: str = "pending"):
+    return _db_manager.create_topup_request(user_id, amount, payment_method, proof_image, unique_code, status)
 
-# FIXED: Alias untuk kompatibilitas dengan topup_handler
-def create_topup(user_id: str, amount: float, payment_method: str = "", proof_image: str = ""):
-    """Alias untuk create_topup_request - untuk kompatibilitas dengan topup_handler"""
-    return _db_manager.create_topup_request(user_id, amount, payment_method, proof_image)
+# FIXED: Fungsi create_topup yang menerima semua parameter yang diperlukan oleh topup_handler
+def create_topup(user_id: str, amount: float, payment_method: str = "", status: str = "pending", unique_code: int = 0):
+    """Fungsi create_topup yang kompatibel dengan topup_handler - menerima parameter unique_code"""
+    return _db_manager.create_topup(user_id, amount, payment_method, status, unique_code)
 
 def get_pending_topups():
     return _db_manager.get_pending_topups()
@@ -1519,6 +1532,10 @@ if __name__ == "__main__":
     user = db.get_or_create_user("test_user", "testuser", "Test User")
     print(f"✅ User test: {user}")
     
+    # Test topup creation dengan unique_code
+    topup_id = db.create_topup("test_user", 50000, "QRIS", "pending", 123)
+    print(f"✅ Topup creation test: ID {topup_id}")
+    
     # Test statistics
     stats = db.get_bot_statistics()
     print(f"✅ Statistics: {stats}")
@@ -1530,4 +1547,4 @@ if __name__ == "__main__":
     print(f"✅ Total revenue: {get_total_revenue()}")
     print(f"✅ Pending topups count: {get_pending_topups_count()}")
     
-    print("🚀 Database FULL FEATURE FIXED VERSION ready!")
+    print("🚀 Database FULL VERSION SEMPURNA ready!")
