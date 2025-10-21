@@ -28,6 +28,70 @@ PRODUCTS_PER_PAGE = 8
 # Database path
 DB_PATH = getattr(database, 'DB_PATH', 'bot_database.db')
 
+# ==================== KHFYPAY API INTEGRATION ====================
+
+class KhfyPayAPI:
+    def __init__(self, api_key):
+        self.api_key = api_key
+        self.base_url = "https://panel.khfy-store.com/api_v2"
+    
+    def get_products(self):
+        """Get list products from KhfyPay"""
+        try:
+            url = f"{self.base_url}/list_product"
+            params = {"api_key": self.api_key}
+            
+            response = requests.get(url, params=params, timeout=30)
+            response.raise_for_status()
+            
+            return response.json()
+        except Exception as e:
+            logger.error(f"Error getting KhfyPay products: {e}")
+            return None
+    
+    def create_order(self, product_code, target, custom_reffid=None):
+        """Create new order in KhfyPay"""
+        try:
+            url = f"{self.base_url}/trx"
+            reffid = custom_reffid or str(uuid.uuid4())
+            
+            params = {
+                "produk": product_code,
+                "tujuan": target,
+                "reff_id": reffid,
+                "api_key": self.api_key
+            }
+            
+            response = requests.get(url, params=params, timeout=30)
+            response.raise_for_status()
+            
+            result = response.json()
+            result['reffid'] = reffid  # Tambahkan reffid ke result
+            
+            return result
+        except Exception as e:
+            logger.error(f"Error creating KhfyPay order: {e}")
+            return None
+    
+    def check_order_status(self, reffid):
+        """Check order status by reffid"""
+        try:
+            url = f"{self.base_url}/history"
+            params = {
+                "api_key": self.api_key,
+                "refid": reffid
+            }
+            
+            response = requests.get(url, params=params, timeout=30)
+            response.raise_for_status()
+            
+            return response.json()
+        except Exception as e:
+            logger.error(f"Error checking KhfyPay order status: {e}")
+            return None
+
+# ==================== EXISTING FUNCTIONS (TIDAK DIUBAH) ====================
+
 async def safe_edit_message_text(callback_query, *args, **kwargs):
     """Safely edit message text with error handling"""
     try:
@@ -363,7 +427,7 @@ async def show_order_history(update: Update, context: ContextTypes.DEFAULT_TYPE)
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("""
-            SELECT id, product_name, customer_input, price, status, created_at, sn
+            SELECT id, product_name, customer_input, price, status, created_at, sn, provider_order_id
             FROM orders 
             WHERE user_id = ? 
             ORDER BY created_at DESC 
@@ -377,7 +441,7 @@ async def show_order_history(update: Update, context: ContextTypes.DEFAULT_TYPE)
         else:
             msg = "📋 *RIWAYAT ORDER TERAKHIR*\n\n"
             for order in orders:
-                order_id, product_name, target, price, status, created_at, sn = order
+                order_id, product_name, target, price, status, created_at, sn, provider_id = order
                 status_emoji = {
                     'completed': '✅',
                     'pending': '⏳', 
@@ -397,11 +461,13 @@ async def show_order_history(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 
                 # Display SN if available
                 sn_display = f"\n🔢 SN: `{sn}`" if sn else ""
+                # Display provider ID if available
+                provider_display = f"\n🔗 Ref ID: `{provider_id}`" if provider_id else ""
                 
                 msg += (
                     f"{status_emoji} *{product_name}*\n"
                     f"📮 Tujuan: `{target}`\n"
-                    f"💰 Rp {price:,}{sn_display}\n"
+                    f"💰 Rp {price:,}{sn_display}{provider_display}\n"
                     f"📅 {order_date} {order_time} | {status.upper()}\n"
                     f"────────────────────\n"
                 )
@@ -825,192 +891,9 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return MENU
 
+# ==================== UPDATED PROCESS ORDER WITH KHFYPAY ====================
+
 async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Process the actual order - FIXED VERSION tanpa kolom cost & profit"""
+    """Process the actual order with KhfyPay integration"""
     try:
-        user_id = str(update.callback_query.from_user.id)
-        product = context.user_data.get('selected_product', {})
-        target = context.user_data.get('target', '')
-        
-        # Create order in database - menggunakan database module
-        order_id = database.create_order(
-            user_id=user_id,
-            product_code=product['code'],
-            customer_input=target
-        )
-        
-        if order_id:
-            logger.info(f"Order created successfully: ID {order_id}")
-            
-            # Simulate API call to provider
-            await asyncio.sleep(2)
-            
-            # Simulate successful order with random SN
-            import random
-            sn_number = random.randint(100000, 999999)
-            sn = f"SN{sn_number}"
-            
-            # Update order status to completed dengan SN
-            success = database.update_order_status(
-                order_id=order_id, 
-                status='completed', 
-                sn=sn,
-                note="Order berhasil diproses"
-            )
-            
-            if success:
-                # Get updated balance
-                new_saldo = database.get_user_saldo(user_id)
-                
-                # Log transaction
-                database.add_system_log(
-                    level='INFO',
-                    module='ORDER',
-                    message=f"Order completed: {order_id} - {product['name']} to {target}",
-                    user_id=user_id
-                )
-                
-                # Send success message
-                success_text = (
-                    f"✅ **ORDER BERHASIL!**\n\n"
-                    f"📦 Produk: {product['name']}\n"
-                    f"📮 Tujuan: `{target}`\n"
-                    f"💰 Harga: Rp {product['price']:,}\n"
-                    f"📋 Order ID: `{order_id}`\n"
-                    f"🔢 SN: `{sn}`\n"
-                    f"💳 Sisa Saldo: Rp {new_saldo:,}\n\n"
-                    f"Terima kasih telah berbelanja! 🛍️"
-                )
-                
-                await update.callback_query.message.reply_text(
-                    success_text,
-                    parse_mode='Markdown',
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🛒 Beli Lagi", callback_data="menu_order")],
-                        [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
-                    ])
-                )
-            else:
-                # If update status failed, set to failed
-                database.update_order_status(order_id, 'failed', note="Gagal update status order")
-                await update.callback_query.message.reply_text(
-                    "❌ Gagal memproses order. Silakan hubungi admin.",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
-                    ])
-                )
-            
-        else:
-            logger.error(f"Failed to create order for user {user_id}")
-            await update.callback_query.message.reply_text(
-                "❌ Gagal membuat order. Silakan coba lagi.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
-                ])
-            )
-        
-        # Clear context
-        context.user_data.clear()
-        return MENU
-        
-    except Exception as e:
-        logger.error(f"Error in process_order: {e}")
-        
-        # Try to log the error
-        try:
-            user_id = str(update.callback_query.from_user.id)
-            database.add_system_log(
-                level='ERROR',
-                module='ORDER',
-                message=f"Order processing failed: {str(e)}",
-                user_id=user_id
-            )
-        except:
-            pass
-            
-        await update.callback_query.message.reply_text(
-            "❌ Terjadi error saat memproses order. Silakan coba lagi.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
-            ])
-        )
-        return MENU
-
-async def cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle order cancellation"""
-    query = update.callback_query
-    await query.answer()
-    
-    # Clear context
-    context.user_data.clear()
-    
-    await safe_edit_message_text(
-        query,
-        "❌ **Order dibatalkan**\n\nKembali ke menu utama.",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
-        ])
-    )
-    
-    return MENU
-
-async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Cancel the entire conversation"""
-    context.user_data.clear()
-    
-    await update.message.reply_text(
-        "❌ **Dibatalkan**\n\nKembali ke menu utama.",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
-        ])
-    )
-    
-    return ConversationHandler.END
-
-def get_conversation_handler():
-    """Return the order conversation handler"""
-    return ConversationHandler(
-        entry_points=[
-            CallbackQueryHandler(menu_main, pattern="^menu_main$"),
-            CallbackQueryHandler(menu_handler, pattern="^menu_"),
-            CommandHandler("order", menu_main),
-            CommandHandler("start", menu_main)
-        ],
-        states={
-            MENU: [
-                CallbackQueryHandler(menu_handler, pattern="^menu_"),
-                CallbackQueryHandler(show_group_menu, pattern="^menu_order$"),
-            ],
-            CHOOSING_GROUP: [
-                CallbackQueryHandler(show_products_in_group, pattern="^group_"),
-                CallbackQueryHandler(show_group_menu, pattern="^menu_order$"),
-                CallbackQueryHandler(menu_main, pattern="^menu_main$"),
-            ],
-            CHOOSING_PRODUCT: [
-                CallbackQueryHandler(select_product, pattern="^product_"),
-                CallbackQueryHandler(show_group_menu, pattern="^menu_order$"),
-                CallbackQueryHandler(menu_main, pattern="^menu_main$"),
-            ],
-            ENTER_TUJUAN: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, enter_tujuan),
-                CommandHandler("cancel", cancel_conversation),
-            ],
-            CONFIRM_ORDER: [
-                CallbackQueryHandler(confirm_order, pattern="^confirm_order$"),
-                CallbackQueryHandler(cancel_order, pattern="^cancel_order$"),
-                CallbackQueryHandler(menu_main, pattern="^menu_main$"),
-            ],
-            ORDER_PROCESSING: [
-                CallbackQueryHandler(process_order, pattern="^process_order$"),
-            ]
-        },
-        fallbacks=[
-            CommandHandler("cancel", cancel_conversation),
-            CallbackQueryHandler(menu_main, pattern="^menu_main$"),
-            CallbackQueryHandler(cancel_order, pattern="^cancel_order$"),
-        ],
-        allow_reentry=True
-    )
-
-# Export the conversation handler
-order_conv_handler = get_conversation_handler()
+        user_id = str(update.callback_query.from_user
