@@ -36,10 +36,6 @@ try:
     from admin_handler import (
         admin_menu,
         admin_callback_handler,
-        edit_produk_conv_handler,
-        manage_balance_conv_handler,
-        broadcast_conv_handler,
-        cleanup_conv_handler,
         get_admin_handlers
     )
     ADMIN_AVAILABLE = True
@@ -58,11 +54,6 @@ except Exception as e:
     
     async def admin_callback_handler(update, context):
         await update.callback_query.answer("❌ Admin features sedang dalam perbaikan.", show_alert=True)
-    
-    edit_produk_conv_handler = None
-    manage_balance_conv_handler = None
-    broadcast_conv_handler = None
-    cleanup_conv_handler = None
     
     def get_admin_handlers():
         return []
@@ -108,9 +99,6 @@ try:
     from topup_handler import (
         get_topup_conversation_handler,
         show_topup_menu,
-        show_topup_history, 
-        show_pending_topups,
-        handle_proof_upload,
         get_topup_handlers,
         topup_command
     )
@@ -125,8 +113,6 @@ except Exception as e:
             await update.callback_query.message.reply_text("❌ Fitur topup sedang dalam perbaikan.")
         else:
             await update.message.reply_text("❌ Fitur topup sedang dalam perbaikan.")
-    
-    show_topup_history = show_pending_topups = show_topup_menu
     
     def get_topup_conversation_handler():
         return None
@@ -445,21 +431,7 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /broadcast"""
     if str(update.message.from_user.id) in ADMIN_IDS:
         if ADMIN_AVAILABLE:
-            # Simulasikan callback query untuk broadcast
-            class FakeQuery:
-                def __init__(self, message, from_user):
-                    self.message = message
-                    self.from_user = from_user
-                    self.data = "admin_broadcast"
-                
-                async def answer(self):
-                    pass
-                
-                async def edit_message_text(self, text, reply_markup=None, parse_mode=None):
-                    await self.message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
-            
-            fake_query = FakeQuery(update.message, update.message.from_user)
-            await broadcast_conv_handler.handle_update(Update(0, callback_query=fake_query), context)
+            await admin_callback_handler(update, context)
         else:
             await update.message.reply_text("❌ Fitur broadcast sedang dalam perbaikan.")
     else:
@@ -469,21 +441,20 @@ async def topup_list_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """Handler untuk command /topup_list"""
     if str(update.message.from_user.id) in ADMIN_IDS:
         if ADMIN_AVAILABLE:
-            # Simulasikan callback query untuk topup list
-            class FakeQuery:
-                def __init__(self, message, from_user):
-                    self.message = message
-                    self.from_user = from_user
-                    self.data = "admin_topup"
-                
-                async def answer(self):
-                    pass
-                
-                async def edit_message_text(self, text, reply_markup=None, parse_mode=None):
-                    await self.message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+            # Create fake callback query for admin topup
+            query = type('Query', (), {
+                'data': 'admin_topup',
+                'from_user': update.message.from_user,
+                'message': update.message,
+                'answer': lambda: None,
+                'edit_message_text': lambda text, reply_markup=None, parse_mode=None: update.message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+            })()
             
-            fake_query = FakeQuery(update.message, update.message.from_user)
-            await admin_callback_handler(Update(0, callback_query=fake_query), context)
+            fake_update = type('Update', (), {
+                'callback_query': query
+            })()
+            
+            await admin_callback_handler(fake_update, context)
         else:
             await update.message.reply_text("❌ Fitur admin sedang dalam perbaikan.")
     else:
@@ -493,21 +464,20 @@ async def cek_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /cek_user"""
     if str(update.message.from_user.id) in ADMIN_IDS:
         if ADMIN_AVAILABLE:
-            # Simulasikan callback query untuk user management
-            class FakeQuery:
-                def __init__(self, message, from_user):
-                    self.message = message
-                    self.from_user = from_user
-                    self.data = "admin_users"
-                
-                async def answer(self):
-                    pass
-                
-                async def edit_message_text(self, text, reply_markup=None, parse_mode=None):
-                    await self.message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+            # Create fake callback query for admin users
+            query = type('Query', (), {
+                'data': 'admin_users',
+                'from_user': update.message.from_user,
+                'message': update.message,
+                'answer': lambda: None,
+                'edit_message_text': lambda text, reply_markup=None, parse_mode=None: update.message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+            })()
             
-            fake_query = FakeQuery(update.message, update.message.from_user)
-            await admin_callback_handler(Update(0, callback_query=fake_query), context)
+            fake_update = type('Update', (), {
+                'callback_query': query
+            })()
+            
+            await admin_callback_handler(fake_update, context)
         else:
             await update.message.reply_text("❌ Fitur admin sedang dalam perbaikan.")
     else:
@@ -560,32 +530,41 @@ async def post_init(application: Application):
     logger.info("🤖 Bot has been initialized successfully!")
     
     try:
-        # Get bot statistics
-        stats = database.get_bot_statistics()
+        # Get bot info
+        bot = await application.bot.get_me()
+        
+        # Get basic statistics
+        try:
+            total_users = database.get_total_users()
+            total_products = database.get_total_products()
+            pending_topups = database.get_pending_topups_count()
+        except:
+            total_users = 0
+            total_products = 0
+            pending_topups = 0
         
         status_info = (
-            f"📊 Handler Status:\n"
+            f"🤖 **Bot Status Report**\n\n"
+            f"📊 **Handler Status:**\n"
             f"• Database: ✅\n"
             f"• Topup: {'✅' if TOPUP_AVAILABLE else '❌'}\n"
             f"• Order: {'✅' if ORDER_AVAILABLE else '❌'}\n"
             f"• Admin: {'✅' if ADMIN_AVAILABLE else '❌'}\n"
-            f"• Stok: {'✅' if STOK_AVAILABLE else '❌'}\n"
-        )
-        
-        stats_info = (
-            f"📈 Bot Statistics:\n"
-            f"• Users: {stats['total_users']}\n"
-            f"• Active Users: {stats['active_users']}\n"
-            f"• Products: {stats['active_products']}\n"
-            f"• Revenue: Rp {stats['total_revenue']:,.0f}\n"
-            f"• Pending Topups: {stats['pending_topups']}\n"
+            f"• Stok: {'✅' if STOK_AVAILABLE else '❌'}\n\n"
+            f"📈 **Bot Statistics:**\n"
+            f"• Total Users: {total_users}\n"
+            f"• Total Products: {total_products}\n"
+            f"• Pending Topups: {pending_topups}\n\n"
+            f"🔧 **Bot Info:**\n"
+            f"• Name: @{bot.username}\n"
+            f"• ID: {bot.id}\n"
+            f"• Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
         
         print("=" * 50)
         print("🤖 BOT STARTED SUCCESSFULLY!")
         print("=" * 50)
         print(status_info)
-        print(stats_info)
         print("=" * 50)
         print("📍 Bot is now running and waiting for messages...")
         print("📍 Try sending /start to your bot")
@@ -593,6 +572,7 @@ async def post_init(application: Application):
         
     except Exception as e:
         logger.error(f"Error in post_init: {e}")
+        print(f"❌ Error in post_init: {e}")
 
 # ==================== MAIN FUNCTION ====================
 def main():
@@ -640,24 +620,6 @@ def main():
                 application.add_handler(order_conv_handler)
                 print("✅ Order conversation handler registered")
         
-        # Admin Conversation Handlers
-        if ADMIN_AVAILABLE:
-            if edit_produk_conv_handler:
-                application.add_handler(edit_produk_conv_handler)
-                print("✅ Admin edit produk conversation handler registered")
-            
-            if manage_balance_conv_handler:
-                application.add_handler(manage_balance_conv_handler)
-                print("✅ Admin manage balance conversation handler registered")
-            
-            if broadcast_conv_handler:
-                application.add_handler(broadcast_conv_handler)
-                print("✅ Admin broadcast conversation handler registered")
-            
-            if cleanup_conv_handler:
-                application.add_handler(cleanup_conv_handler)
-                print("✅ Admin cleanup conversation handler registered")
-        
         # 2. TOPUP CALLBACK HANDLERS
         if TOPUP_AVAILABLE:
             topup_handlers = get_topup_handlers()
@@ -672,12 +634,17 @@ def main():
                 application.add_handler(handler)
             print("✅ Admin callback handlers registered")
         
-        # 4. MAIN MENU CALLBACK HANDLER
+        # 4. STOK HANDLER
+        if STOK_AVAILABLE:
+            application.add_handler(CallbackQueryHandler(stock_akrab_callback, pattern="^stock_"))
+            print("✅ Stok handler registered")
+        
+        # 5. MAIN MENU CALLBACK HANDLER
         application.add_handler(CallbackQueryHandler(main_menu_handler, pattern="^main_menu_"))
         application.add_handler(CallbackQueryHandler(main_menu_handler, pattern="^topup_menu$"))
         print("✅ Main menu callback handler registered")
         
-        # 5. COMMAND HANDLERS
+        # 6. COMMAND HANDLERS
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("help", help_command))
         application.add_handler(CommandHandler("saldo", saldo_command))
@@ -693,55 +660,36 @@ def main():
         
         print("✅ Command handlers registered")
         
-        # 6. MESSAGE HANDLER (UNTUK UNKNOWN MESSAGES)
+        # 7. MESSAGE HANDLER (UNTUK UNKNOWN MESSAGES)
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_message))
         print("✅ Unknown message handler registered")
         
-        # 7. ERROR HANDLER
+        # 8. ERROR HANDLER
         application.add_error_handler(error_handler)
         print("✅ Error handler registered")
         
         # ==================== START BOT ====================
-        print("🎯 Starting bot...")
+        print("🎯 Starting bot polling...")
         
-        # Run bot until interrupted
-        if os.name == 'nt':  # Windows
-            application.run_polling(allowed_updates=Update.ALL_TYPES)
-        else:  # Linux/Unix
-            # For production use webhook, for development use polling
-            try:
-                # Try to use webhook if in production
-                webhook_url = getattr(config, 'WEBHOOK_URL', None)
-                webhook_port = getattr(config, 'WEBHOOK_PORT', 8443)
-                
-                if webhook_url:
-                    print(f"🌐 Using webhook: {webhook_url}")
-                    application.run_webhook(
-                        listen="0.0.0.0",
-                        port=webhook_port,
-                        url_path=BOT_TOKEN,
-                        webhook_url=f"{webhook_url}/{BOT_TOKEN}"
-                    )
-                else:
-                    print("🔄 Using polling (development mode)")
-                    application.run_polling(
-                        allowed_updates=Update.ALL_TYPES,
-                        drop_pending_updates=True
-                    )
-                    
-            except Exception as e:
-                print(f"⚠️ Webhook failed, falling back to polling: {e}")
-                application.run_polling(
-                    allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True
-                )
+        # Run bot dengan polling
+        application.run_polling(
+            drop_pending_updates=True,
+            allowed_updates=Update.ALL_TYPES
+        )
                 
     except KeyboardInterrupt:
         print("\n🛑 Bot stopped by user")
     except Exception as e:
         print(f"❌ Failed to start bot: {e}")
         logger.error(f"Failed to start bot: {e}", exc_info=True)
+        traceback.print_exc()
         sys.exit(1)
 
 if __name__ == "__main__":
+    # Print startup banner
+    print("=" * 60)
+    print("🤖 TELEGRAM BOT - FULL FEATURE VERSION")
+    print("🛠️  FIXED & READY FOR PRODUCTION")
+    print("=" * 60)
+    
     main()
