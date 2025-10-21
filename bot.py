@@ -36,10 +36,6 @@ try:
     from admin_handler import (
         admin_menu,
         admin_callback_handler,
-        edit_produk_conv_handler,
-        manage_balance_conv_handler,
-        broadcast_conv_handler,
-        cleanup_conv_handler,
         get_admin_handlers
     )
     ADMIN_AVAILABLE = True
@@ -58,11 +54,6 @@ except Exception as e:
     
     async def admin_callback_handler(update, context):
         await update.callback_query.answer("❌ Admin features sedang dalam perbaikan.", show_alert=True)
-    
-    edit_produk_conv_handler = None
-    manage_balance_conv_handler = None
-    broadcast_conv_handler = None
-    cleanup_conv_handler = None
     
     def get_admin_handlers():
         return []
@@ -459,7 +450,7 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await self.message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
             
             fake_query = FakeQuery(update.message, update.message.from_user)
-            await broadcast_conv_handler.handle_update(Update(0, callback_query=fake_query), context)
+            await admin_callback_handler(Update(0, callback_query=fake_query), context)
         else:
             await update.message.reply_text("❌ Fitur broadcast sedang dalam perbaikan.")
     else:
@@ -543,8 +534,8 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
                 "❌ Terjadi kesalahan sistem. Silakan coba lagi dalam beberapa saat.\n\n"
                 "Jika error berlanjut, hubungi admin.",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🏠 MENU UTAMA", callback_data="main_menu_main")],
-                    [InlineKeyboardButton("📞 BANTUAN", callback_data="main_menu_help")]
+                    [InlineKeyboardButton("📞 BANTUAN", callback_data="main_menu_help")],
+                    [InlineKeyboardButton("🏠 MENU UTAMA", callback_data="main_menu_main")]
                 ])
             )
         elif update.callback_query:
@@ -555,193 +546,123 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
                 ])
             )
 
-async def post_init(application: Application):
-    """Function yang dijalankan setelah bot berhasil initialized"""
-    logger.info("🤖 Bot has been initialized successfully!")
+# ==================== APPLICATION SETUP ====================
+def setup_application():
+    """Setup dan konfigurasi application bot"""
+    print("🚀 Setting up bot application...")
+    
+    # Create application dengan persistence
+    persistence = PicklePersistence(filepath="bot_persistence")
+    application = Application.builder().token(BOT_TOKEN).persistence(persistence).build()
+    
+    # ==================== REGISTER HANDLERS ====================
+    
+    # Basic command handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("saldo", saldo_command))
+    application.add_handler(CommandHandler("stock", stock_command_handler))
+    application.add_handler(CommandHandler("order", order_command))
+    application.add_handler(CommandHandler("topup", topup_command_handler))
+    application.add_handler(CommandHandler("admin", admin_command))
+    
+    # Admin command handlers
+    application.add_handler(CommandHandler("broadcast", broadcast_command))
+    application.add_handler(CommandHandler("topup_list", topup_list_command))
+    application.add_handler(CommandHandler("cek_user", cek_user_command))
+    
+    # Main menu callback handlers
+    application.add_handler(CallbackQueryHandler(main_menu_handler, pattern="^main_menu_"))
+    application.add_handler(CallbackQueryHandler(main_menu_handler, pattern="^topup_menu$"))
+    
+    # Add conversation handlers dari modules
+    if ORDER_AVAILABLE:
+        order_conv_handler = get_order_conversation_handler()
+        if order_conv_handler:
+            application.add_handler(order_conv_handler)
+            print("✅ Order conversation handler registered")
+    
+    if TOPUP_AVAILABLE:
+        topup_conv_handler = get_topup_conversation_handler()
+        if topup_conv_handler:
+            application.add_handler(topup_conv_handler)
+            print("✅ Topup conversation handler registered")
+        
+        # Add additional topup handlers
+        topup_handlers = get_topup_handlers()
+        for handler in topup_handlers:
+            application.add_handler(handler)
+    
+    # Add admin handlers
+    if ADMIN_AVAILABLE:
+        admin_handlers = get_admin_handlers()
+        for handler in admin_handlers:
+            application.add_handler(handler)
+        print("✅ Admin handlers registered")
+    
+    # Stok handler
+    if STOK_AVAILABLE:
+        application.add_handler(CallbackQueryHandler(stock_akrab_callback, pattern="^stock_"))
+        print("✅ Stok handler registered")
+    
+    # Unknown message handler (harus terakhir)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_message))
+    
+    # Error handler
+    application.add_error_handler(error_handler)
+    
+    print("✅ All handlers registered successfully")
+    return application
+
+# ==================== MAIN EXECUTION ====================
+async def main():
+    """Main function untuk menjalankan bot"""
+    print("🤖 Starting Telegram Bot...")
     
     try:
-        # Get bot statistics
-        stats = database.get_bot_statistics()
+        # Setup application
+        application = setup_application()
         
-        status_info = (
-            f"📊 Handler Status:\n"
-            f"• Database: ✅\n"
-            f"• Topup: {'✅' if TOPUP_AVAILABLE else '❌'}\n"
-            f"• Order: {'✅' if ORDER_AVAILABLE else '❌'}\n"
-            f"• Admin: {'✅' if ADMIN_AVAILABLE else '❌'}\n"
-            f"• Stok: {'✅' if STOK_AVAILABLE else '❌'}\n"
-        )
-        
-        stats_info = (
-            f"📈 Bot Statistics:\n"
-            f"• Users: {stats['total_users']}\n"
-            f"• Active Users: {stats['active_users']}\n"
-            f"• Products: {stats['active_products']}\n"
-            f"• Revenue: Rp {stats['total_revenue']:,.0f}\n"
-            f"• Pending Topups: {stats['pending_topups']}\n"
-        )
-        
-        print("=" * 50)
-        print("🤖 BOT STARTED SUCCESSFULLY!")
-        print("=" * 50)
-        print(status_info)
-        print(stats_info)
-        print("=" * 50)
-        print("📍 Bot is now running and waiting for messages...")
-        print("📍 Try sending /start to your bot")
-        print("=" * 50)
-        
-    except Exception as e:
-        logger.error(f"Error in post_init: {e}")
-
-# ==================== MAIN FUNCTION ====================
-def main():
-    """Main function - Initialize dan start bot"""
-    try:
-        print("🚀 Starting Telegram Bot...")
-        
-        # Check BOT_TOKEN
-        if not BOT_TOKEN or BOT_TOKEN == 'YOUR_BOT_TOKEN_HERE':
-            print("❌ Please set BOT_TOKEN in config.py")
-            sys.exit(1)
-        
-        # Initialize database
+        # Check database connection
+        print("🔍 Checking database connection...")
         try:
-            success = database.init_database()
-            if success:
-                print("✅ Database initialized successfully")
-            else:
-                print("❌ Database initialization failed")
+            # Test database connection
+            test_user = database.get_or_create_user("test", "test_user", "Test User")
+            print("✅ Database connection successful")
         except Exception as e:
-            print(f"❌ Database initialization failed: {e}")
+            print(f"❌ Database connection failed: {e}")
+            return
         
-        # Create Application
-        persistence = PicklePersistence(filepath="bot_persistence")
-        application = Application.builder()\
-            .token(BOT_TOKEN)\
-            .persistence(persistence)\
-            .post_init(post_init)\
-            .build()
+        # Start the bot
+        print("🎉 Bot is starting...")
+        print("📱 Bot is now running. Press Ctrl+C to stop.")
         
-        print("✅ Application built successfully")
+        # Run bot sampai dihentikan
+        await application.run_polling(
+            drop_pending_updates=True,
+            allowed_updates=Update.ALL_TYPES
+        )
         
-        # ==================== HANDLER REGISTRATION ====================
-        
-        # 1. CONVERSATION HANDLERS (PRIORITAS TERTINGGI)
-        if TOPUP_AVAILABLE:
-            topup_conv_handler = get_topup_conversation_handler()
-            if topup_conv_handler:
-                application.add_handler(topup_conv_handler)
-                print("✅ Topup conversation handler registered")
-        
-        if ORDER_AVAILABLE:
-            order_conv_handler = get_order_conversation_handler()
-            if order_conv_handler:
-                application.add_handler(order_conv_handler)
-                print("✅ Order conversation handler registered")
-        
-        # Admin Conversation Handlers
-        if ADMIN_AVAILABLE:
-            if edit_produk_conv_handler:
-                application.add_handler(edit_produk_conv_handler)
-                print("✅ Admin edit produk conversation handler registered")
-            
-            if manage_balance_conv_handler:
-                application.add_handler(manage_balance_conv_handler)
-                print("✅ Admin manage balance conversation handler registered")
-            
-            if broadcast_conv_handler:
-                application.add_handler(broadcast_conv_handler)
-                print("✅ Admin broadcast conversation handler registered")
-            
-            if cleanup_conv_handler:
-                application.add_handler(cleanup_conv_handler)
-                print("✅ Admin cleanup conversation handler registered")
-        
-        # 2. TOPUP CALLBACK HANDLERS
-        if TOPUP_AVAILABLE:
-            topup_handlers = get_topup_handlers()
-            for handler in topup_handlers:
-                application.add_handler(handler)
-            print("✅ Topup callback handlers registered")
-        
-        # 3. ADMIN CALLBACK HANDLERS
-        if ADMIN_AVAILABLE:
-            admin_handlers = get_admin_handlers()
-            for handler in admin_handlers:
-                application.add_handler(handler)
-            print("✅ Admin callback handlers registered")
-        
-        # 4. MAIN MENU CALLBACK HANDLER
-        application.add_handler(CallbackQueryHandler(main_menu_handler, pattern="^main_menu_"))
-        application.add_handler(CallbackQueryHandler(main_menu_handler, pattern="^topup_menu$"))
-        print("✅ Main menu callback handler registered")
-        
-        # 5. COMMAND HANDLERS
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("help", help_command))
-        application.add_handler(CommandHandler("saldo", saldo_command))
-        application.add_handler(CommandHandler("topup", topup_command_handler))
-        application.add_handler(CommandHandler("stock", stock_command_handler))
-        application.add_handler(CommandHandler("order", order_command))
-        application.add_handler(CommandHandler("admin", admin_command))
-        
-        # Admin commands
-        application.add_handler(CommandHandler("broadcast", broadcast_command))
-        application.add_handler(CommandHandler("topup_list", topup_list_command))
-        application.add_handler(CommandHandler("cek_user", cek_user_command))
-        
-        print("✅ Command handlers registered")
-        
-        # 6. MESSAGE HANDLER (UNTUK UNKNOWN MESSAGES)
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_message))
-        print("✅ Unknown message handler registered")
-        
-        # 7. ERROR HANDLER
-        application.add_error_handler(error_handler)
-        print("✅ Error handler registered")
-        
-        # ==================== START BOT ====================
-        print("🎯 Starting bot...")
-        
-        # Run bot until interrupted
-        if os.name == 'nt':  # Windows
-            application.run_polling(allowed_updates=Update.ALL_TYPES)
-        else:  # Linux/Unix
-            # For production use webhook, for development use polling
-            try:
-                # Try to use webhook if in production
-                webhook_url = getattr(config, 'WEBHOOK_URL', None)
-                webhook_port = getattr(config, 'WEBHOOK_PORT', 8443)
-                
-                if webhook_url:
-                    print(f"🌐 Using webhook: {webhook_url}")
-                    application.run_webhook(
-                        listen="0.0.0.0",
-                        port=webhook_port,
-                        url_path=BOT_TOKEN,
-                        webhook_url=f"{webhook_url}/{BOT_TOKEN}"
-                    )
-                else:
-                    print("🔄 Using polling (development mode)")
-                    application.run_polling(
-                        allowed_updates=Update.ALL_TYPES,
-                        drop_pending_updates=True
-                    )
-                    
-            except Exception as e:
-                print(f"⚠️ Webhook failed, falling back to polling: {e}")
-                application.run_polling(
-                    allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True
-                )
-                
-    except KeyboardInterrupt:
-        print("\n🛑 Bot stopped by user")
     except Exception as e:
-        print(f"❌ Failed to start bot: {e}")
-        logger.error(f"Failed to start bot: {e}", exc_info=True)
-        sys.exit(1)
+        logger.critical(f"Failed to start bot: {e}")
+        print(f"❌ Critical error: {e}")
+        traceback.print_exc()
+        
+    finally:
+        print("👋 Bot stopped")
 
 if __name__ == "__main__":
-    main()
+    # Print startup banner
+    print("=" * 50)
+    print("🤖 TELEGRAM BOT - FULL FEATURE VERSION")
+    print("🛠️  FIXED & READY FOR PRODUCTION")
+    print("=" * 50)
+    
+    # Run main function
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n👋 Bot stopped by user")
+    except Exception as e:
+        print(f"❌ Unexpected error: {e}")
+        traceback.print_exc()
