@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Database Management System - FIXED VERSION
-Dengan improved locking mechanism dan error handling
+Database Management System - FULL FEATURE FIXED VERSION
+Dengan improved locking mechanism, error handling, dan semua fungsi yang diperlukan
 """
 
 import sqlite3
@@ -31,7 +31,7 @@ class DatabaseManager:
         if not hasattr(self, '_initialized'):
             self.db_path = db_path
             self._initialized = True
-            self._connection_lock = threading.Lock()  # Additional lock for connection management
+            self._connection_lock = threading.Lock()
             self.init_database()
 
     @contextmanager
@@ -47,17 +47,17 @@ class DatabaseManager:
                     conn = sqlite3.connect(
                         self.db_path, 
                         check_same_thread=False,
-                        timeout=30.0  # Increased timeout
+                        timeout=30.0
                     )
                     conn.row_factory = sqlite3.Row
                     # Optimized PRAGMA settings
                     conn.execute("PRAGMA foreign_keys = ON")
                     conn.execute("PRAGMA journal_mode = WAL")
-                    conn.execute("PRAGMA cache_size = -10000")  # Reduced cache size
+                    conn.execute("PRAGMA cache_size = -10000")
                     conn.execute("PRAGMA synchronous = NORMAL")
-                    conn.execute("PRAGMA busy_timeout = 10000")  # 10 second busy timeout
+                    conn.execute("PRAGMA busy_timeout = 10000")
                     conn.execute("PRAGMA temp_store = MEMORY")
-                    conn.execute("PRAGMA mmap_size = 268435456")  # 256MB mmap
+                    conn.execute("PRAGMA mmap_size = 268435456")
                 
                 yield conn
                 
@@ -401,7 +401,7 @@ class DatabaseManager:
             return 0.0
 
     def update_user_balance(self, user_id: str, amount: float, note: str = "") -> bool:
-        """Update user balance dengan validation dan logging - FIXED VERSION"""
+        """Update user balance dengan validation dan logging"""
         max_retries = 3
         
         for attempt in range(max_retries):
@@ -431,7 +431,7 @@ class DatabaseManager:
                         (new_balance, datetime.now(), str(user_id))
                     )
                     
-                    # Log the balance change - simplified to avoid nested transactions
+                    # Log the balance change
                     if amount > 0:
                         cursor.execute(
                             'UPDATE users SET total_topups = total_topups + 1 WHERE user_id = ?',
@@ -846,9 +846,9 @@ class DatabaseManager:
             logger.error(f"Error getting topup {topup_id}: {e}")
             return None
 
-    def approve_topup(self, topup_id: int, admin_id: str) -> bool:
-        """Approve topup request dan tambahkan saldo - FIXED VERSION"""
-        max_retries = 5  # Increased retries for critical operation
+    def approve_topup(self, topup_id: int, admin_id: str, *args) -> bool:
+        """Approve topup request dan tambahkan saldo - FIXED VERSION dengan *args"""
+        max_retries = 5
         
         for attempt in range(max_retries):
             try:
@@ -863,15 +863,18 @@ class DatabaseManager:
                     if topup['status'] != 'pending':
                         raise ValueError(f"Topup {topup_id} already processed")
                     
-                    # Update topup status first
+                    user_id = topup['user_id']
+                    amount = topup['amount']
+                    
+                    # Update topup status
                     cursor.execute('''
                         UPDATE topup_requests 
                         SET status = 'approved', updated_at = ?, admin_notes = ?
                         WHERE id = ?
                     ''', (datetime.now(), f"Approved by admin {admin_id}", topup_id))
                     
-                    # Add balance to user using the safe method
-                    success = self.update_user_balance(topup['user_id'], topup['amount'], f"Topup approved - ID: {topup_id}")
+                    # Add balance to user
+                    success = self.update_user_balance(user_id, amount, f"Topup approved - ID: {topup_id}")
                     
                     if not success:
                         raise Exception("Failed to update user balance")
@@ -880,14 +883,14 @@ class DatabaseManager:
                     cursor.execute('''
                         INSERT INTO transactions (user_id, type, amount, status, details, completed_at)
                         VALUES (?, 'topup', ?, 'completed', ?, ?)
-                    ''', (topup['user_id'], topup['amount'], f"Topup approved - ID: {topup_id}", datetime.now()))
+                    ''', (user_id, amount, f"Topup approved - ID: {topup_id}", datetime.now()))
                     
-                    logger.info(f"✅ Topup approved: ID {topup_id} for user {topup['user_id']}")
+                    logger.info(f"✅ Topup approved: ID {topup_id} for user {user_id}, amount: {amount}")
                     return True
                     
             except sqlite3.OperationalError as e:
                 if "locked" in str(e).lower() and attempt < max_retries - 1:
-                    wait_time = 0.2 * (2 ** attempt)  # Longer wait for critical operations
+                    wait_time = 0.2 * (2 ** attempt)
                     logger.warning(f"Approve topup locked, retrying... Attempt {attempt + 1}")
                     time.sleep(wait_time)
                     continue
@@ -900,8 +903,8 @@ class DatabaseManager:
         
         return False
 
-    def reject_topup(self, topup_id: int, admin_id: str) -> bool:
-        """Reject topup request"""
+    def reject_topup(self, topup_id: int, admin_id: str, *args) -> bool:
+        """Reject topup request - FIXED VERSION dengan *args"""
         max_retries = 3
         for attempt in range(max_retries):
             try:
@@ -1152,7 +1155,7 @@ class DatabaseManager:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 
-                # Count admins (you might want to get this from config or separate table)
+                # Count admins
                 cursor.execute('SELECT COUNT(*) as total_admins FROM users WHERE level >= 10')
                 total_admins = cursor.fetchone()['total_admins']
                 
@@ -1165,9 +1168,7 @@ class DatabaseManager:
 
     # ==================== ADMIN MANAGEMENT ====================
     def is_user_admin(self, user_id: str) -> bool:
-        """Check if user is admin (basic implementation)"""
-        # This is a basic implementation. You might want to store admin status in database
-        # For now, we'll check against level field
+        """Check if user is admin"""
         user = self.get_user(user_id)
         return user and user.get('level', 0) >= 10 if user else False
 
@@ -1231,7 +1232,7 @@ class DatabaseManager:
 
     # ==================== LOGGING ====================
     def add_system_log(self, level: str, module: str, message: str, user_id: str = None):
-        """Add system log entry - SIMPLIFIED VERSION to avoid nested transactions"""
+        """Add system log entry"""
         try:
             # Use a separate connection for logging to avoid transaction conflicts
             conn = sqlite3.connect(self.db_path, timeout=10.0)
@@ -1243,11 +1244,10 @@ class DatabaseManager:
             conn.commit()
             conn.close()
         except Exception as e:
-            # If logging fails, just print to console
             print(f"LOG [{level}] {module}: {message} (User: {user_id}) - DB Error: {e}")
 
     def add_admin_log(self, admin_id: str, action: str, target_type: str = None, target_id: str = None, details: str = None):
-        """Add admin action log - SIMPLIFIED VERSION"""
+        """Add admin action log"""
         try:
             # Use a separate connection for logging to avoid transaction conflicts
             conn = sqlite3.connect(self.db_path, timeout=10.0)
@@ -1286,11 +1286,97 @@ class DatabaseManager:
             logger.error(f"Error getting all users: {e}")
             return []
 
+    # ==================== NEW FUNCTIONS FOR COMPATIBILITY ====================
+    def get_pending_topups_count(self) -> int:
+        """Get count of pending topup requests"""
+        try:
+            topups = self.get_pending_topups()
+            return len(topups)
+        except Exception as e:
+            logger.error(f"Error getting pending topups count: {e}")
+            return 0
+
+    def get_total_users_count(self) -> int:
+        """Get total number of users"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT COUNT(*) as count FROM users WHERE is_banned = 0')
+                result = cursor.fetchone()
+                return result['count'] if result else 0
+        except Exception as e:
+            logger.error(f"Error getting total users count: {e}")
+            return 0
+
+    def get_total_products_count(self) -> int:
+        """Get total number of products"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT COUNT(*) as count FROM products WHERE status = "active"')
+                result = cursor.fetchone()
+                return result['count'] if result else 0
+        except Exception as e:
+            logger.error(f"Error getting total products count: {e}")
+            return 0
+
+    def get_total_orders_count(self) -> int:
+        """Get total number of orders"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT COUNT(*) as count FROM orders')
+                result = cursor.fetchone()
+                return result['count'] if result else 0
+        except Exception as e:
+            logger.error(f"Error getting total orders count: {e}")
+            return 0
+
+    def get_total_revenue_amount(self) -> float:
+        """Get total revenue from orders"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT SUM(price) as total FROM orders WHERE status = "completed"')
+                result = cursor.fetchone()
+                return result['total'] or 0
+        except Exception as e:
+            logger.error(f"Error getting total revenue: {e}")
+            return 0
+
+    def cleanup_old_orders(self, days: int = 30) -> int:
+        """Cleanup old orders"""
+        try:
+            cutoff_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM orders WHERE created_at < ? AND status IN ("completed", "failed")', (cutoff_date,))
+                deleted_count = cursor.rowcount
+                logger.info(f"Cleaned up {deleted_count} old orders")
+                return deleted_count
+        except Exception as e:
+            logger.error(f"Error cleaning up old orders: {e}")
+            return 0
+
+    def cleanup_old_topups(self, days: int = 30) -> int:
+        """Cleanup old topup requests"""
+        try:
+            cutoff_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM topup_requests WHERE created_at < ? AND status IN ("approved", "rejected")', (cutoff_date,))
+                deleted_count = cursor.rowcount
+                logger.info(f"Cleaned up {deleted_count} old topups")
+                return deleted_count
+        except Exception as e:
+            logger.error(f"Error cleaning up old topups: {e}")
+            return 0
+
 # ==================== MODULE-LEVEL FUNCTIONS ====================
 # Create global instance
 _db_manager = DatabaseManager()
 
-# Export module-level functions for backward compatibility
+# Export module-level functions untuk backward compatibility
 def init_database():
     return _db_manager.init_database()
 
@@ -1348,17 +1434,24 @@ def delete_inactive_products():
 def create_topup_request(user_id: str, amount: float, payment_method: str = "", proof_image: str = ""):
     return _db_manager.create_topup_request(user_id, amount, payment_method, proof_image)
 
+# FIXED: Alias untuk kompatibilitas dengan topup_handler
+def create_topup(user_id: str, amount: float, payment_method: str = "", proof_image: str = ""):
+    """Alias untuk create_topup_request - untuk kompatibilitas dengan topup_handler"""
+    return _db_manager.create_topup_request(user_id, amount, payment_method, proof_image)
+
 def get_pending_topups():
     return _db_manager.get_pending_topups()
 
 def get_topup_by_id(topup_id: int):
     return _db_manager.get_topup_by_id(topup_id)
 
-def approve_topup(topup_id: int, admin_id: str):
-    return _db_manager.approve_topup(topup_id, admin_id)
+def approve_topup(topup_id: int, admin_id: str, *args):
+    """Approve topup request - FIXED dengan *args untuk kompatibilitas"""
+    return _db_manager.approve_topup(topup_id, admin_id, *args)
 
-def reject_topup(topup_id: int, admin_id: str):
-    return _db_manager.reject_topup(topup_id, admin_id)
+def reject_topup(topup_id: int, admin_id: str, *args):
+    """Reject topup request - FIXED dengan *args untuk kompatibilitas"""
+    return _db_manager.reject_topup(topup_id, admin_id, *args)
 
 def create_order(user_id: str, product_code: str, customer_input: str):
     return _db_manager.create_order(user_id, product_code, customer_input)
@@ -1390,7 +1483,29 @@ def add_admin_log(admin_id: str, action: str, target_type: str = None, target_id
 def get_all_users(limit: int = 100):
     return _db_manager.get_all_users(limit)
 
-# Export the manager for advanced usage
+# NEW FUNCTIONS untuk kompatibilitas dengan admin_handler dan topup_handler
+def get_pending_topups_count():
+    return _db_manager.get_pending_topups_count()
+
+def get_total_users():
+    return _db_manager.get_total_users_count()
+
+def get_total_products():
+    return _db_manager.get_total_products_count()
+
+def get_total_orders():
+    return _db_manager.get_total_orders_count()
+
+def get_total_revenue():
+    return _db_manager.get_total_revenue_amount()
+
+def cleanup_old_orders(days: int = 30):
+    return _db_manager.cleanup_old_orders(days)
+
+def cleanup_old_topups(days: int = 30):
+    return _db_manager.cleanup_old_topups(days)
+
+# Export the manager untuk advanced usage
 def get_db_manager():
     return _db_manager
 
@@ -1407,3 +1522,12 @@ if __name__ == "__main__":
     # Test statistics
     stats = db.get_bot_statistics()
     print(f"✅ Statistics: {stats}")
+    
+    # Test new functions
+    print(f"✅ Total users: {get_total_users()}")
+    print(f"✅ Total products: {get_total_products()}")
+    print(f"✅ Total orders: {get_total_orders()}")
+    print(f"✅ Total revenue: {get_total_revenue()}")
+    print(f"✅ Pending topups count: {get_pending_topups_count()}")
+    
+    print("🚀 Database FULL FEATURE FIXED VERSION ready!")
