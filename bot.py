@@ -58,22 +58,52 @@ except Exception as e:
     def get_admin_handlers():
         return []
 
-# Stok Handler
+# Stok Handler - FIXED VERSION
 try:
     from stok_handler import stock_akrab_callback, stock_command
     STOK_AVAILABLE = True
     print("✅ Stok handler loaded successfully")
+    
+    # Override stock_command untuk handle ReplyKeyboard
+    async def fixed_stock_command(update, context):
+        """Fixed version of stock_command untuk ReplyKeyboard"""
+        try:
+            user = update.message.from_user
+            await update.message.reply_text("📊 **Memuat data stok...**", parse_mode='Markdown')
+            
+            # Panggil fungsi original dengan penanganan error
+            if hasattr(update, 'callback_query'):
+                await stock_command(update, context)
+            else:
+                # Create fake callback untuk kompatibilitas
+                await stock_akrab_callback(update, context)
+                
+        except Exception as e:
+            logger.error(f"Error in fixed_stock_command: {e}")
+            await update.message.reply_text(
+                "❌ Gagal memuat data stok. Silakan coba lagi.",
+                reply_markup=get_main_keyboard(user.id)
+            )
+            
 except Exception as e:
     print(f"❌ Error importing stok_handler: {e}")
     STOK_AVAILABLE = False
     
     async def stock_akrab_callback(update, context):
-        await update.callback_query.message.reply_text("❌ Fitur stok sedang dalam perbaikan.")
+        user = update.callback_query.from_user if hasattr(update, 'callback_query') else update.message.from_user
+        await update.callback_query.message.reply_text(
+            "❌ Fitur stok sedang dalam perbaikan.",
+            reply_markup=get_main_keyboard(user.id)
+        )
     
-    async def stock_command(update, context):
-        await update.message.reply_text("❌ Fitur stok sedang dalam perbaikan.")
+    async def fixed_stock_command(update, context):
+        user = update.message.from_user
+        await update.message.reply_text(
+            "❌ Fitur stok sedang dalam perbaikan.",
+            reply_markup=get_main_keyboard(user.id)
+        )
 
-# Order Handler
+# Order Handler - FIXED VERSION
 try:
     from order_handler import (
         get_conversation_handler as get_order_conversation_handler,
@@ -81,20 +111,50 @@ try:
     )
     ORDER_AVAILABLE = True
     print("✅ Order handler loaded successfully")
+    
+    # Override order_menu_handler untuk handle ReplyKeyboard
+    async def fixed_order_menu_handler(update, context):
+        """Fixed version of order_menu_handler untuk ReplyKeyboard"""
+        try:
+            user = update.message.from_user if hasattr(update, 'message') else update.callback_query.from_user
+            
+            if hasattr(update, 'callback_query'):
+                # Jika dari callback query, panggil original
+                await order_menu_handler(update, context)
+            else:
+                # Jika dari ReplyKeyboard, mulai order process
+                from order_handler import show_category_selection
+                await show_category_selection(update, context)
+                
+        except Exception as e:
+            logger.error(f"Error in fixed_order_menu_handler: {e}")
+            user = update.message.from_user if hasattr(update, 'message') else update.callback_query.from_user
+            await update.message.reply_text(
+                "❌ Gagal memulai proses order. Silakan coba lagi.",
+                reply_markup=get_main_keyboard(user.id)
+            )
+            
 except Exception as e:
     print(f"❌ Error importing order_handler: {e}")
     ORDER_AVAILABLE = False
     
+    async def fixed_order_menu_handler(update, context):
+        user = update.message.from_user if hasattr(update, 'message') else update.callback_query.from_user
+        if hasattr(update, 'message'):
+            await update.message.reply_text(
+                "❌ Fitur order sedang dalam perbaikan.",
+                reply_markup=get_main_keyboard(user.id)
+            )
+        else:
+            await update.callback_query.message.reply_text(
+                "❌ Fitur order sedang dalam perbaikan.",
+                reply_markup=get_main_keyboard(user.id)
+            )
+    
     def get_order_conversation_handler():
         return None
-    
-    async def order_menu_handler(update, context):
-        if hasattr(update, 'message'):
-            await update.message.reply_text("❌ Fitur order sedang dalam perbaikan.")
-        else:
-            await update.callback_query.message.reply_text("❌ Fitur order sedang dalam perbaikan.")
 
-# Topup Handler
+# Topup Handler - FIXED VERSION
 try:
     from topup_handler import (
         get_topup_conversation_handler,
@@ -104,15 +164,39 @@ try:
     )
     TOPUP_AVAILABLE = True
     print("✅ Topup handler loaded successfully")
+    
+    # Override show_topup_menu untuk handle ReplyKeyboard
+    async def fixed_show_topup_menu(update, context):
+        """Fixed version of show_topup_menu untuk ReplyKeyboard"""
+        try:
+            if hasattr(update, 'callback_query'):
+                await show_topup_menu(update, context)
+            else:
+                await show_topup_menu(update, context)
+        except Exception as e:
+            logger.error(f"Error in fixed_show_topup_menu: {e}")
+            user = update.message.from_user if hasattr(update, 'message') else update.callback_query.from_user
+            await update.message.reply_text(
+                "❌ Gagal memuat menu topup. Silakan coba lagi.",
+                reply_markup=get_main_keyboard(user.id)
+            )
+            
 except Exception as e:
     print(f"❌ Error importing topup_handler: {e}")
     TOPUP_AVAILABLE = False
     
-    async def show_topup_menu(update, context): 
+    async def fixed_show_topup_menu(update, context): 
+        user = update.message.from_user if hasattr(update, 'message') else update.callback_query.from_user
         if hasattr(update, 'message'):
-            await update.message.reply_text("❌ Fitur topup sedang dalam perbaikan.")
+            await update.message.reply_text(
+                "❌ Fitur topup sedang dalam perbaikan.",
+                reply_markup=get_main_keyboard(user.id)
+            )
         else:
-            await update.callback_query.message.reply_text("❌ Fitur topup sedang dalam perbaikan.")
+            await update.callback_query.message.reply_text(
+                "❌ Fitur topup sedang dalam perbaikan.",
+                reply_markup=get_main_keyboard(user.id)
+            )
     
     def get_topup_conversation_handler():
         return None
@@ -121,7 +205,7 @@ except Exception as e:
         return []
     
     async def topup_command(update, context):
-        await show_topup_menu(update, context)
+        await fixed_show_topup_menu(update, context)
 
 # ==================== LOGGING SETUP ====================
 logging.basicConfig(
@@ -206,7 +290,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         logger.error(f"Error in start command: {e}")
-        await update.message.reply_text("❌ Terjadi error. Silakan coba lagi.")
+        await update.message.reply_text(
+            "❌ Terjadi error. Silakan coba lagi.",
+            reply_markup=get_back_keyboard()
+        )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk memproses pesan text dari reply keyboard"""
@@ -217,15 +304,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         if text == "🛒 BELI PRODUK":
-            await order_menu_handler(update, context)
+            await fixed_order_menu_handler(update, context)
         elif text == "💳 CEK SALDO":
             await show_saldo_menu(update, context)
         elif text == "📊 CEK STOK":
-            await stock_command(update, context)
+            await fixed_stock_command(update, context)
         elif text == "📞 BANTUAN":
             await show_help_menu(update, context)
         elif text == "💸 TOP UP SALDO":
-            await show_topup_menu(update, context)
+            await fixed_show_topup_menu(update, context)
         elif text == "🔄 START BOT":
             await start(update, context)
         elif text == "🏠 MENU UTAMA":
@@ -234,7 +321,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if str(user.id) in ADMIN_IDS:
                 await admin_menu(update, context)
             else:
-                await update.message.reply_text("❌ Anda bukan admin!", reply_markup=get_main_keyboard(user.id))
+                await update.message.reply_text(
+                    "❌ Anda bukan admin!",
+                    reply_markup=get_main_keyboard(user.id)
+                )
         else:
             await unknown_message(update, context)
             
@@ -372,11 +462,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def stock_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /stock"""
-    await stock_command(update, context)
+    await fixed_stock_command(update, context)
 
 async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /order"""
-    await order_menu_handler(update, context)
+    await fixed_order_menu_handler(update, context)
 
 async def topup_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /topup"""
@@ -403,7 +493,6 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /broadcast"""
     if str(update.message.from_user.id) in ADMIN_IDS:
         if ADMIN_AVAILABLE:
-            # Untuk admin commands, kita tetap gunakan inline keyboard
             await admin_callback_handler(update, context)
         else:
             await update.message.reply_text(
@@ -490,12 +579,14 @@ async def post_init(application: Application):
         # Get bot info
         bot = await application.bot.get_me()
         
-        # Get basic statistics
+        # Get basic statistics - FIXED VERSION
         try:
             total_users = database.get_total_users()
-            total_products = database.get_total_products()
+            # Gunakan fungsi yang ada di database
+            total_products = len(database.get_all_products()) if hasattr(database, 'get_all_products') else 0
             pending_topups = database.get_pending_topups_count()
-        except:
+        except Exception as e:
+            logger.error(f"Error getting statistics: {e}")
             total_users = 0
             total_products = 0
             pending_topups = 0
