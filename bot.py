@@ -192,15 +192,15 @@ async def show_history_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def show_order_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Tampilkan riwayat order user"""
+    """Tampilkan riwayat order user dengan data REAL-TIME"""
     query = update.callback_query
     await query.answer()
     
     user_id = str(query.from_user.id)
     
     try:
-        # Get user orders
-        orders = database.get_user_orders(user_id, limit=10)
+        # Get user orders - menggunakan fungsi baru
+        orders = database.get_user_recent_orders(user_id, limit=10)
         
         if not orders:
             await send_modern_message(
@@ -212,12 +212,12 @@ async def show_order_history(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
             return
         
-        # Format orders for display
+        # Format orders for display dengan status terbaru
         orders_text = ""
         total_spent = 0
         completed_orders = 0
         
-        for i, order in enumerate(orders[:8], 1):  # Show last 8 orders
+        for i, order in enumerate(orders[:8], 1):
             status_emoji = {
                 'completed': '✅',
                 'pending': '⏳', 
@@ -227,11 +227,14 @@ async def show_order_history(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 'cancelled': '🚫'
             }.get(order['status'], '📦')
             
-            # Format date
+            # Format date - handle both string and datetime
             try:
-                order_date = datetime.strptime(order['created_at'], '%Y-%m-%d %H:%M:%S').strftime('%d/%m %H:%M')
+                if isinstance(order['updated_at'], str):
+                    order_date = datetime.strptime(order['updated_at'], '%Y-%m-%d %H:%M:%S').strftime('%d/%m %H:%M')
+                else:
+                    order_date = order['updated_at'].strftime('%d/%m %H:%M')
             except:
-                order_date = order['created_at']
+                order_date = "N/A"
             
             orders_text += (
                 f"{status_emoji} **Order #{order['id']}**\n"
@@ -243,27 +246,34 @@ async def show_order_history(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if order.get('sn'):
                 orders_text += f"🔢 SN: `{order['sn']}`\n"
             
+            # Show if order was recently updated
+            if order['updated_at'] != order['created_at']:
+                orders_text += "🔄 *Diperbarui*\n"
+            
             orders_text += "━━━━━━━━━━━━━━━━━━━━\n"
             
             if order['status'] == 'completed':
                 completed_orders += 1
                 total_spent += order['price']
         
-        # Summary
+        # Summary dengan real-time data
+        success_rate = (completed_orders / len(orders) * 100) if orders else 0
+        
         summary = (
-            f"\n📈 **STATISTIK ORDER**\n"
+            f"\n📈 **STATISTIK REAL-TIME**\n"
             f"• Total Order: {len(orders)}\n"
             f"• Berhasil: {completed_orders}\n"
+            f"• Success Rate: {success_rate:.1f}%\n"
             f"• Total Pengeluaran: Rp {total_spent:,}\n"
         )
         
         if len(orders) > 8:
             summary += f"• Dan {len(orders) - 8} order lainnya..."
         
-        full_text = f"📋 **RIWAYAT ORDER TERAKHIR**\n\n{orders_text}{summary}"
+        full_text = f"📋 **RIWAYAT ORDER REAL-TIME**\n\n{orders_text}{summary}"
         
         keyboard = [
-            [InlineKeyboardButton("🔄 Refresh", callback_data="history_orders")],
+            [InlineKeyboardButton("🔄 Refresh Data", callback_data="history_orders")],
             [InlineKeyboardButton("📊 Riwayat Lain", callback_data="history_menu")],
             [InlineKeyboardButton("🛒 Order Lagi", callback_data="main_menu_order")],
             [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
