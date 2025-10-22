@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Admin Handler - Full Feature Complete Version - FIXED
+Admin Handler - Full Feature Complete Version 
 Fitur lengkap untuk management bot Telegram - READY FOR PRODUCTION
 """
 
@@ -26,7 +26,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DB_PATH = "bot_database.db"
+DB_PATH = getattr(database, 'DB_PATH', 'bot_database.db')
 
 # States untuk Conversation Handlers
 EDIT_MENU, CHOOSE_PRODUCT, EDIT_HARGA, EDIT_DESKRIPSI = range(4)
@@ -35,7 +35,7 @@ BROADCAST_MESSAGE = range(8, 9)
 CLEANUP_CONFIRM = range(9, 10)
 
 # ============================
-# UTILITY FUNCTIONS & SAFE WRAPPERS - FIXED
+# UTILITY FUNCTIONS & SAFE WRAPPERS
 # ============================
 
 def safe_db_call(func_name, default_value=None, *args, **kwargs):
@@ -98,29 +98,57 @@ async def admin_check(update, context) -> bool:
         return False
     return True
 
-async def safe_edit_message_text(query, text, reply_markup=None, parse_mode=None):
+async def safe_edit_message_text(update, text, reply_markup=None, parse_mode=None):
     """Safe wrapper untuk edit_message_text dengan error handling"""
     try:
-        await query.edit_message_text(
-            text=text,
-            reply_markup=reply_markup,
-            parse_mode=parse_mode
-        )
-        return True
+        if hasattr(update, 'callback_query') and update.callback_query:
+            await update.callback_query.edit_message_text(
+                text=text,
+                reply_markup=reply_markup,
+                parse_mode=parse_mode
+            )
+            return True
+        elif hasattr(update, 'message') and update.message:
+            await update.message.reply_text(
+                text=text,
+                reply_markup=reply_markup,
+                parse_mode=parse_mode
+            )
+            return True
+        return False
     except BadRequest as e:
         if "Message is not modified" in str(e):
-            # Ignore error ini karena pesan sudah sama
-            logger.info("Message not modified - safe to ignore")
             return True
-        else:
-            logger.error(f"BadRequest in safe_edit_message_text: {e}")
-            return False
+        elif "Message can't be deleted" in str(e):
+            try:
+                if hasattr(update, 'callback_query') and update.callback_query:
+                    await update.callback_query.message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+                return True
+            except Exception as send_error:
+                logger.error(f"Failed to send new message: {send_error}")
+                return False
+        logger.error(f"BadRequest in safe_edit_message_text: {e}")
+        return False
     except Exception as e:
-        logger.error(f"Error in safe_edit_message_text: {e}")
+        logger.error(f"Unexpected error in safe_edit_message_text: {e}")
+        return False
+
+async def safe_reply_message(update, text, *args, **kwargs):
+    """Safely reply to message with error handling"""
+    try:
+        if hasattr(update, 'message') and update.message:
+            await update.message.reply_text(text, *args, **kwargs)
+            return True
+        elif hasattr(update, 'callback_query') and update.callback_query:
+            await update.callback_query.message.reply_text(text, *args, **kwargs)
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"Error replying to message: {e}")
         return False
 
 # ============================
-# MENU ADMIN UTAMA - FIXED
+# MENU ADMIN UTAMA
 # ============================
 
 async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -130,6 +158,8 @@ async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     keyboard = [
         [InlineKeyboardButton("🔄 Update Produk", callback_data="admin_update")],
+        [InlineKeyboardButton("📦 Sync Stok Provider", callback_data="admin_sync_stock")],
+        [InlineKeyboardButton("📊 Cek Status Stok", callback_data="admin_check_stock")],
         [InlineKeyboardButton("📋 List Produk", callback_data="admin_list_produk")],
         [InlineKeyboardButton("✏️ Edit Produk", callback_data="admin_edit_produk")],
         [InlineKeyboardButton("💳 Kelola Topup", callback_data="admin_topup")],
@@ -145,25 +175,19 @@ async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if getattr(update, "message", None):
         await update.message.reply_text(
-            "👑 **MENU ADMIN**\n\nSilakan pilih fitur:",
+            "👑 **MENU ADMIN**\n\n**Fitur Stok Terbaru:**\n• Sync stok dari provider\n• Cek status stok real-time\n• Update otomatis\n\nSilakan pilih fitur:",
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
     elif getattr(update, "callback_query", None):
         query = update.callback_query
         await query.answer()
-        success = await safe_edit_message_text(
+        await safe_edit_message_text(
             query,
-            "👑 **MENU ADMIN**\n\nSilakan pilih fitur:",
+            "👑 **MENU ADMIN**\n\n**Fitur Stok Terbaru:**\n• Sync stok dari provider\n• Cek status stok real-time\n• Update otomatis\n\nSilakan pilih fitur:",
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
-        if not success:
-            await query.message.reply_text(
-                "👑 **MENU ADMIN**\n\nSilakan pilih fitur:",
-                reply_markup=reply_markup,
-                parse_mode='Markdown'
-            )
 
 async def admin_menu_from_query(query, context):
     """Helper untuk kembali ke menu admin dari query"""
@@ -174,7 +198,7 @@ async def admin_menu_from_query(query, context):
     await admin_menu(FakeUpdate(query), context)
 
 # ============================
-# CALLBACK QUERY HANDLER - ROUTER UTAMA - FIXED
+# CALLBACK QUERY HANDLER - ROUTER UTAMA
 # ============================
 
 async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -191,6 +215,10 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
         # Main menu routing
         if data == "admin_update":
             await updateproduk(query, context)
+        elif data == "admin_sync_stock":
+            await sync_stok_from_provider(query, context)
+        elif data == "admin_check_stock":
+            await cek_stok_produk(query, context)
         elif data == "admin_list_produk":
             await listproduk(query, context)
         elif data == "admin_edit_produk":
@@ -212,13 +240,13 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
         elif data == "admin_cleanup":
             await cleanup_data_from_query(update, context)
         
-        # Topup management - FIXED PATTERN
+        # Topup management
         elif data.startswith('topup_detail:'):
             await topup_detail(update, context)
         elif data.startswith('approve_topup:'):
-            await approve_topup_handler(update, context)  # FIXED: Changed function name
+            await approve_topup_handler(update, context)
         elif data.startswith('reject_topup:'):
-            await reject_topup_handler(update, context)   # FIXED: Changed function name
+            await reject_topup_handler(update, context)
         
         # User management
         elif data.startswith('user_detail:'):
@@ -245,7 +273,7 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
         await query.message.reply_text("❌ Terjadi kesalahan sistem.")
 
 # ============================
-# FITUR UPDATE PRODUK - FIXED
+# FITUR UPDATE PRODUK - ENHANCED
 # ============================
 
 async def ensure_products_table():
@@ -274,7 +302,7 @@ async def ensure_products_table():
         return False
 
 async def updateproduk(update_or_query, context):
-    """Update produk dari API provider"""
+    """Update produk dari API provider dengan sync stok yang benar"""
     if hasattr(update_or_query, "message") and update_or_query.message:
         msg_func = update_or_query.message.reply_text
         user_id = update_or_query.message.from_user.id
@@ -282,7 +310,7 @@ async def updateproduk(update_or_query, context):
         msg_func = update_or_query.edit_message_text
         user_id = update_or_query.from_user.id
 
-    await msg_func("🔄 Memperbarui Produk...")
+    await msg_func("🔄 Memperbarui Produk dan Stok...")
     
     # Check API key
     if not hasattr(config, 'API_KEY_PROVIDER') or not config.API_KEY_PROVIDER:
@@ -321,11 +349,15 @@ async def updateproduk(update_or_query, context):
             # Start transaction
             await conn.execute("BEGIN TRANSACTION")
             
-            # Mark semua produk sebagai inactive
+            # Mark semua produk sebagai inactive terlebih dahulu
             await conn.execute("UPDATE products SET status = 'inactive'")
             
             count = 0
             skipped = 0
+            updated_stock = 0
+            updated_kosong = 0
+            updated_gangguan = 0
+            
             for prod in produk_list:
                 code = str(prod.get("kode_produk", "")).strip()
                 name = str(prod.get("nama_produk", "")).strip()
@@ -336,9 +368,25 @@ async def updateproduk(update_or_query, context):
                 description = str(prod.get("deskripsi", "")).strip() or f"Produk {name}"
                 
                 # Skip jika data tidak valid
-                if not code or not name or price <= 0 or gangguan == 1 or kosong == 1:
+                if not code or not name or price <= 0:
                     skipped += 1
                     continue
+                
+                # TENTUKAN STATUS STOK BERDASARKAN DATA PROVIDER
+                stock_quantity = 0
+                
+                if gangguan == 1:
+                    # Produk gangguan - stok 0
+                    stock_quantity = 0
+                    updated_gangguan += 1
+                elif kosong == 1:
+                    # Produk kosong - stok 0
+                    stock_quantity = 0
+                    updated_kosong += 1
+                else:
+                    # Produk aktif - beri stok
+                    stock_quantity = 100
+                    updated_stock += 1
                 
                 # Kategorisasi produk
                 category = "Umum"
@@ -357,9 +405,14 @@ async def updateproduk(update_or_query, context):
                     category = "Paket Bonus"
                 
                 now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                
+                # UPDATE DENGAN DATA STOK YANG BENAR
                 await conn.execute("""
-                    INSERT INTO products (code, name, price, status, description, category, provider, gangguan, kosong, stock, updated_at)
-                    VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, 0, ?)
+                    INSERT INTO products (
+                        code, name, price, status, description, category, 
+                        provider, gangguan, kosong, stock, updated_at
+                    )
+                    VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(code) DO UPDATE SET
                         name=excluded.name,
                         price=excluded.price,
@@ -369,8 +422,12 @@ async def updateproduk(update_or_query, context):
                         provider=excluded.provider,
                         gangguan=excluded.gangguan,
                         kosong=excluded.kosong,
+                        stock=excluded.stock,
                         updated_at=excluded.updated_at
-                """, (code, name, price, description, category, provider_code, gangguan, kosong, now))
+                """, (
+                    code, name, price, description, category, 
+                    provider_code, gangguan, kosong, stock_quantity, now
+                ))
                 count += 1
             
             await conn.commit()
@@ -380,18 +437,218 @@ async def updateproduk(update_or_query, context):
         await msg_func(f"❌ Error saat update produk: {e}")
         return
 
-    await log_admin_action(user_id, "UPDATE_PRODUCTS", f"Updated: {count} produk, Skipped: {skipped}")
+    await log_admin_action(user_id, "UPDATE_PRODUCTS", 
+                         f"Updated: {count} produk, Stock: {updated_stock}, Gangguan: {updated_gangguan}, Kosong: {updated_kosong}, Skipped: {skipped}")
+    
     await msg_func(
-        f"✅ **Update Produk Berhasil**\n\n"
-        f"📊 **Statistik:**\n"
+        f"✅ **Update Produk & Stok Berhasil**\n\n"
+        f"📊 **Statistik Update:**\n"
         f"├ Berhasil diupdate: {count} produk\n"
+        f"├ 🟢 Stok tersedia: {updated_stock} produk\n"
+        f"├ 🚧 Stok gangguan: {updated_gangguan} produk\n"
+        f"├ 🔴 Stok kosong: {updated_kosong} produk\n"
         f"├ Dilewati: {skipped} produk\n"
         f"⏰ **Update Terakhir:** {datetime.now().strftime('%d-%m-%Y %H:%M')}",
         parse_mode='Markdown'
     )
 
 # ============================
-# FITUR LIST PRODUK - FIXED
+# FITUR SYNC STOK DARI PROVIDER
+# ============================
+
+async def sync_stok_from_provider(update_or_query, context):
+    """Sync stok produk dari provider tanpa mengubah data lainnya"""
+    if hasattr(update_or_query, "message") and update_or_query.message:
+        msg_func = update_or_query.message.reply_text
+        user_id = update_or_query.message.from_user.id
+    else:
+        msg_func = update_or_query.edit_message_text
+        user_id = update_or_query.from_user.id
+
+    await msg_func("🔄 Mensinkronisasi Stok dari Provider...")
+    
+    if not hasattr(config, 'API_KEY_PROVIDER') or not config.API_KEY_PROVIDER:
+        await msg_func("❌ API Key Provider tidak ditemukan di config.py")
+        return
+
+    api_key = config.API_KEY_PROVIDER
+    url = f"https://panel.khfy-store.com/api_v2/list_product?api_key={api_key}"
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=30) as resp:
+                if resp.status != 200:
+                    await msg_func(f"❌ Gagal mengambil data stok: Status {resp.status}")
+                    return
+                data = await resp.json()
+    except Exception as e:
+        await msg_func(f"❌ Gagal mengambil data stok: {e}")
+        return
+
+    if not data.get("ok", False):
+        await msg_func("❌ Response error dari provider.")
+        return
+
+    produk_list = data.get("data", [])
+    if not produk_list:
+        await msg_func("⚠️ Tidak ada data stok dari provider.")
+        return
+
+    try:
+        async with aiosqlite.connect(DB_PATH) as conn:
+            await conn.execute("BEGIN TRANSACTION")
+            
+            updated_count = 0
+            kosong_count = 0
+            gangguan_count = 0
+            tersedia_count = 0
+            
+            for prod in produk_list:
+                code = str(prod.get("kode_produk", "")).strip()
+                gangguan = int(prod.get("gangguan", 0))
+                kosong = int(prod.get("kosong", 0))
+                
+                if not code:
+                    continue
+                
+                # Tentukan stok berdasarkan status dari provider
+                new_stock = 0
+                
+                if gangguan == 1:
+                    new_stock = 0
+                    gangguan_count += 1
+                elif kosong == 1:
+                    new_stock = 0
+                    kosong_count += 1
+                else:
+                    new_stock = 100  # Stok tersedia
+                    tersedia_count += 1
+                
+                # Update hanya field stok dan status terkait
+                result = await conn.execute("""
+                    UPDATE products 
+                    SET stock = ?, gangguan = ?, kosong = ?, updated_at = ?
+                    WHERE code = ? AND status = 'active'
+                """, (new_stock, gangguan, kosong, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), code))
+                
+                if (await result).rowcount > 0:
+                    updated_count += 1
+            
+            await conn.commit()
+            
+    except Exception as e:
+        logger.error(f"Error syncing stock: {e}")
+        await msg_func(f"❌ Error saat sync stok: {e}")
+        return
+
+    await log_admin_action(user_id, "SYNC_STOCK", 
+                         f"Updated: {updated_count} produk, Tersedia: {tersedia_count}, Gangguan: {gangguan_count}, Kosong: {kosong_count}")
+    
+    await msg_func(
+        f"✅ **Sync Stok Berhasil**\n\n"
+        f"📊 **Status Stok Terbaru:**\n"
+        f"├ Produk diupdate: {updated_count}\n"
+        f"├ 🟢 Tersedia: {tersedia_count} produk\n"
+        f"├ 🚧 Gangguan: {gangguan_count} produk\n"
+        f"├ 🔴 Kosong: {kosong_count} produk\n"
+        f"⏰ **Sync Terakhir:** {datetime.now().strftime('%d-%m-%Y %H:%M')}",
+        parse_mode='Markdown'
+    )
+
+# ============================
+# FITUR CEK STOK PRODUK
+# ============================
+
+async def cek_stok_produk(update_or_query, context):
+    """Menampilkan status stok produk"""
+    if hasattr(update_or_query, "message") and update_or_query.message:
+        msg_func = update_or_query.message.reply_text
+    else:
+        msg_func = update_or_query.edit_message_text
+
+    try:
+        async with aiosqlite.connect(DB_PATH) as conn:
+            async with conn.execute("""
+                SELECT code, name, price, stock, gangguan, kosong, category
+                FROM products 
+                WHERE status='active'
+                ORDER BY category, name ASC
+            """) as cursor:
+                products = await cursor.fetchall()
+                
+        if not products:
+            await msg_func("📭 Tidak ada produk aktif.")
+            return
+        
+        # Hitung statistik stok
+        total_products = len(products)
+        tersedia = sum(1 for p in products if p[3] > 0 and p[4] == 0 and p[5] == 0)
+        gangguan = sum(1 for p in products if p[4] == 1)
+        kosong = sum(1 for p in products if p[5] == 1 or p[3] == 0)
+        
+        # Group by category dengan info stok
+        categories = {}
+        for code, name, price, stock, gangguan_flag, kosong_flag, category in products:
+            if category not in categories:
+                categories[category] = []
+            
+            status_emoji = "🟢"
+            status_text = f"Stock: {stock}"
+            if gangguan_flag == 1:
+                status_emoji = "🚧"
+                status_text = "GANGGUAN"
+            elif kosong_flag == 1:
+                status_emoji = "🔴"
+                status_text = "KOSONG"
+            elif stock == 0:
+                status_emoji = "🔴"
+                status_text = "HABIS"
+            elif stock < 10:
+                status_emoji = "🟡"
+                status_text = f"Stock: {stock}"
+            
+            categories[category].append(f"{status_emoji} {name} - {status_text}")
+        
+        # Buat pesan
+        message = f"📊 **STATUS STOK PRODUK**\n\n"
+        message += f"📈 **Ringkasan:**\n"
+        message += f"├ Total Produk: {total_products}\n"
+        message += f"├ 🟢 Tersedia: {tersedia}\n"
+        message += f"├ 🚧 Gangguan: {gangguan}\n"
+        message += f"└ 🔴 Kosong/Habis: {kosong}\n\n"
+        
+        for category, items in categories.items():
+            message += f"**{category.upper()}:**\n"
+            for item in items[:8]:  # Limit items per category
+                message += f"├ {item}\n"
+            if len(items) > 8:
+                message += f"└ ... dan {len(items) - 8} produk lainnya\n"
+            message += "\n"
+        
+        message += f"⏰ **Update:** {datetime.now().strftime('%d-%m-%Y %H:%M')}"
+        
+        # Tambahkan tombol refresh dan sync
+        keyboard = [
+            [
+                InlineKeyboardButton("🔄 Sync Stok", callback_data="admin_sync_stock"),
+                InlineKeyboardButton("📦 Update Produk", callback_data="admin_update")
+            ],
+            [InlineKeyboardButton("⬅️ Kembali", callback_data="admin_back")]
+        ]
+        
+        await safe_edit_message_text(
+            update_or_query,
+            message,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+            
+    except Exception as e:
+        logger.error(f"Error checking stock: {e}")
+        await msg_func("❌ Gagal memuat status stok.")
+
+# ============================
+# FITUR LIST PRODUK
 # ============================
 
 async def listproduk(update_or_query, context):
@@ -408,7 +665,7 @@ async def listproduk(update_or_query, context):
     try:
         async with aiosqlite.connect(DB_PATH) as conn:
             async with conn.execute("""
-                SELECT code, name, price, category, status 
+                SELECT code, name, price, category, status, stock, gangguan, kosong
                 FROM products 
                 WHERE status='active' 
                 ORDER BY category, name ASC 
@@ -422,16 +679,26 @@ async def listproduk(update_or_query, context):
             
         # Group by category
         categories = {}
-        for code, name, price, category, status in rows:
+        for code, name, price, category, status, stock, gangguan, kosong in rows:
             if category not in categories:
                 categories[category] = []
-            categories[category].append((code, name, price))
+            
+            # Tentukan status emoji
+            status_emoji = "🟢"
+            if gangguan == 1:
+                status_emoji = "🚧"
+            elif kosong == 1 or stock == 0:
+                status_emoji = "🔴"
+            elif stock < 10:
+                status_emoji = "🟡"
+                
+            categories[category].append((code, name, price, status_emoji))
         
         msg = "📋 **DAFTAR PRODUK AKTIF**\n\n"
         for category, products in categories.items():
             msg += f"**{category.upper()}:**\n"
-            for code, name, price in products[:10]:
-                msg += f"├ `{code}` | {name} | Rp {price:,.0f}\n"
+            for code, name, price, emoji in products[:10]:
+                msg += f"├ {emoji} `{code}` | {name} | Rp {price:,.0f}\n"
             if len(products) > 10:
                 msg += f"└ ... dan {len(products) - 10} produk lainnya\n"
             msg += "\n"
@@ -445,7 +712,7 @@ async def listproduk(update_or_query, context):
         await msg_func("❌ Gagal mengambil daftar produk.")
 
 # ============================
-# FITUR EDIT PRODUK - FIXED
+# FITUR EDIT PRODUK
 # ============================
 
 async def edit_produk_start_from_query(query, context):
@@ -671,7 +938,7 @@ async def edit_deskripsi_handler(update: Update, context: ContextTypes.DEFAULT_T
     return ConversationHandler.END
 
 # ============================
-# FITUR TOPUP MANAGEMENT - FIXED VERSION
+# FITUR TOPUP MANAGEMENT
 # ============================
 
 async def topup_list_interactive(query, context):
@@ -775,7 +1042,7 @@ async def topup_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("❌ Gagal memuat detail topup.")
 
 async def approve_topup_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Approve topup request - FIXED VERSION"""
+    """Approve topup request"""
     query = update.callback_query
     await query.answer()
     
@@ -793,13 +1060,13 @@ async def approve_topup_handler(update: Update, context: ContextTypes.DEFAULT_TY
         user_id = topup_data.get('user_id')
         amount = topup_data.get('amount', 0)
         
-        # FIXED: Call approve_topup with correct arguments - hanya topup_id dan admin_id
+        # Approve topup
         success = safe_db_call('approve_topup', False, topup_id, admin_id)
         
         if success:
             # Get updated user balance for confirmation
-            user_info = safe_db_call('get_user_info', {}, user_id)
-            new_balance = user_info.get('balance', 0)
+            user_info = safe_db_call('get_user', None, user_id)
+            new_balance = user_info.get('balance', 0) if user_info else 0
 
             message = (
                 f"✅ **TOPUP DISETUJUI**\n\n"
@@ -850,7 +1117,7 @@ async def approve_topup_handler(update: Update, context: ContextTypes.DEFAULT_TY
         )
 
 async def reject_topup_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Reject topup request - FIXED VERSION"""
+    """Reject topup request"""
     query = update.callback_query
     await query.answer()
     
@@ -867,7 +1134,7 @@ async def reject_topup_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         user_id = topup_data.get('user_id')
         amount = topup_data.get('amount', 0)
         
-        # FIXED: Call reject_topup with correct arguments - hanya topup_id dan admin_id
+        # Reject topup
         success = safe_db_call('reject_topup', False, topup_id, admin_id)
         
         if success:
@@ -919,7 +1186,7 @@ async def reject_topup_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         )
 
 # ============================
-# FITUR USER MANAGEMENT - FIXED
+# FITUR USER MANAGEMENT
 # ============================
 
 async def show_users_menu(query, context):
@@ -1044,7 +1311,7 @@ async def remove_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("❌ Gagal menghapus user dari admin.")
 
 # ============================
-# FITUR BROADCAST - FIXED
+# FITUR BROADCAST
 # ============================
 
 async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1111,7 +1378,7 @@ async def broadcast_message_handler(update: Update, context: ContextTypes.DEFAUL
     return ConversationHandler.END
 
 # ============================
-# FITUR CLEANUP DATA - FIXED
+# FITUR CLEANUP DATA
 # ============================
 
 async def cleanup_data_from_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1153,7 +1420,7 @@ async def cleanup_data_from_query(update: Update, context: ContextTypes.DEFAULT_
         )
 
 # ============================
-# FITUR BACKUP DATABASE - FIXED
+# FITUR BACKUP DATABASE
 # ============================
 
 async def backup_database_from_query(query, context):
@@ -1185,7 +1452,7 @@ async def backup_database_from_query(query, context):
         await query.message.reply_text("❌ Gagal membuat backup database.")
 
 # ============================
-# FITUR SYSTEM HEALTH - FIXED
+# FITUR SYSTEM HEALTH
 # ============================
 
 async def system_health_from_query(query, context):
@@ -1241,7 +1508,7 @@ async def system_health_from_query(query, context):
         await query.message.reply_text("❌ Gagal memuat system health.")
 
 # ============================
-# FITUR MANAGE BALANCE - FIXED
+# FITUR MANAGE BALANCE
 # ============================
 
 async def manage_balance_start(query, context):
@@ -1334,7 +1601,7 @@ async def show_stats_menu(query, context):
         await query.message.reply_text("❌ Gagal memuat statistik.")
 
 # ============================
-# CONVERSATION HANDLERS - FIXED
+# CONVERSATION HANDLERS
 # ============================
 
 def get_admin_conversation_handlers():
@@ -1408,13 +1675,17 @@ def get_admin_handlers():
     ]
 
 if __name__ == "__main__":
-    print("✅ Admin Handler - FULL VERSION FIXED")
-    print("📋 Semua error telah diperbaiki:")
-    print("  ✅ AttributeError: 'Update' object has no attribute 'edit_message_text'")
-    print("  ✅ Database locking and generator errors")
-    print("  ✅ Message is not modified errors")
-    print("  ✅ Safe message editing dengan error handling")
-    print("  ✅ Proper callback query handling")
-    print("  ✅ Complete conversation handlers")
-    print("  ✅ FIXED: approve_topup() takes 2 positional arguments but 3 were given")
+    print("✅ Admin Handler - FULL VERSION COMPLETE")
+    print("📋 Semua fitur telah diimplementasi:")
+    print("  ✅ Update Produk & Stok dari Provider")
+    print("  ✅ Sync Stok Terpisah")
+    print("  ✅ Cek Status Stok Real-time")
+    print("  ✅ Edit Produk (Harga & Deskripsi)")
+    print("  ✅ Kelola Topup (Approve/Reject)")
+    print("  ✅ Kelola User & Balance")
+    print("  ✅ Broadcast Message")
+    print("  ✅ Backup Database")
+    print("  ✅ System Health Check")
+    print("  ✅ Data Cleanup")
+    print("  ✅ Safe Error Handling")
     print("🚀 Ready for production use!")
