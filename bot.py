@@ -160,13 +160,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("💳 CEK SALDO", callback_data="main_menu_saldo")],
             [InlineKeyboardButton("📊 CEK STOK", callback_data="main_menu_stock")],
             [InlineKeyboardButton("📞 BANTUAN", callback_data="main_menu_help")],
-            [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="topup_menu")],
-            [InlineKeyboardButton("🔄 START BOT", callback_data="main_menu_main")]
+            [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="topup_menu")]
         ]
         
         # Add admin button if user is admin
         if str(user.id) in ADMIN_IDS:
             keyboard.append([InlineKeyboardButton("👑 ADMIN PANEL", callback_data="main_menu_admin")])
+        
+        # Tambahkan START BOT di footer
+        keyboard.append([InlineKeyboardButton("🔄 START BOT", callback_data="main_menu_main")])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -240,12 +242,14 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("💳 CEK SALDO", callback_data="main_menu_saldo")],
         [InlineKeyboardButton("📊 CEK STOK", callback_data="main_menu_stock")],
         [InlineKeyboardButton("📞 BANTUAN", callback_data="main_menu_help")],
-        [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="topup_menu")],
-        [InlineKeyboardButton("🔄 START BOT", callback_data="main_menu_main")]
+        [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="topup_menu")]
     ]
     
     if str(user.id) in ADMIN_IDS:
         keyboard.append([InlineKeyboardButton("👑 ADMIN PANEL", callback_data="main_menu_admin")])
+    
+    # Tambahkan START BOT di footer
+    keyboard.append([InlineKeyboardButton("🔄 START BOT", callback_data="main_menu_main")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -283,10 +287,11 @@ async def show_saldo_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         saldo = 0
     
     keyboard = [
-        [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="topup_menu")],
-        [InlineKeyboardButton("🏠 MENU UTAMA", callback_data="main_menu_main")],
-        [InlineKeyboardButton("🔄 START BOT", callback_data="main_menu_main")]
+        [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="topup_menu")]
     ]
+    
+    # Hanya START BOT di footer
+    keyboard.append([InlineKeyboardButton("🔄 START BOT", callback_data="main_menu_main")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -330,10 +335,10 @@ async def show_help_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Hubungi Admin untuk bantuan lebih lanjut."
     )
     
-    keyboard = [
-        [InlineKeyboardButton("🏠 MENU UTAMA", callback_data="main_menu_main")],
-        [InlineKeyboardButton("🔄 START BOT", callback_data="main_menu_main")]
-    ]
+    keyboard = []
+    
+    # Hanya START BOT di footer
+    keyboard.append([InlineKeyboardButton("🔄 START BOT", callback_data="main_menu_main")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -364,10 +369,11 @@ async def saldo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         saldo = 0
     
     keyboard = [
-        [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="topup_menu")],
-        [InlineKeyboardButton("🏠 MENU UTAMA", callback_data="main_menu_main")],
-        [InlineKeyboardButton("🔄 START BOT", callback_data="main_menu_main")]
+        [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="topup_menu")]
     ]
+    
+    # Hanya START BOT di footer
+    keyboard.append([InlineKeyboardButton("🔄 START BOT", callback_data="main_menu_main")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -381,10 +387,10 @@ async def saldo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /help"""
-    keyboard = [
-        [InlineKeyboardButton("🏠 MENU UTAMA", callback_data="main_menu_main")],
-        [InlineKeyboardButton("🔄 START BOT", callback_data="main_menu_main")]
-    ]
+    keyboard = []
+    
+    # Hanya START BOT di footer
+    keyboard.append([InlineKeyboardButton("🔄 START BOT", callback_data="main_menu_main")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -499,8 +505,6 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Gunakan /help untuk melihat daftar perintah yang tersedia "
         "atau gunakan tombol menu untuk navigasi.",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📞 BANTUAN", callback_data="main_menu_help")],
-            [InlineKeyboardButton("🏠 MENU UTAMA", callback_data="main_menu_main")],
             [InlineKeyboardButton("🔄 START BOT", callback_data="main_menu_main")]
         ])
     )
@@ -520,8 +524,6 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
                 "❌ Terjadi kesalahan sistem. Silakan coba lagi dalam beberapa saat.\n\n"
                 "Jika error berlanjut, hubungi admin.",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🏠 MENU UTAMA", callback_data="main_menu_main")],
-                    [InlineKeyboardButton("📞 BANTUAN", callback_data="main_menu_help")],
                     [InlineKeyboardButton("🔄 START BOT", callback_data="main_menu_main")]
                 ])
             )
@@ -529,7 +531,6 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
             await update.callback_query.message.reply_text(
                 "❌ Terjadi kesalahan sistem. Silakan coba lagi.",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🏠 MENU UTAMA", callback_data="main_menu_main")],
                     [InlineKeyboardButton("🔄 START BOT", callback_data="main_menu_main")]
                 ])
             )
