@@ -107,6 +107,58 @@ class KhfyPayAPI:
             logger.error(f"Error checking stock akrab: {e}")
             return None
 
+# ==================== DATABASE COMPATIBILITY FIX ====================
+
+def get_user_saldo(user_id):
+    """Fixed compatibility function for user balance"""
+    try:
+        return database.get_user_balance(user_id)
+    except Exception as e:
+        logger.error(f"Error getting user saldo: {e}")
+        return 0
+
+def update_user_saldo(user_id, amount):
+    """Fixed compatibility function for update balance"""
+    try:
+        note = f"Order adjustment: {amount}"
+        # Determine transaction type based on amount
+        if amount < 0:
+            transaction_type = "order"
+        else:
+            transaction_type = "refund" if "refund" in note.lower() else "adjustment"
+        
+        return database.update_user_balance(user_id, amount, note, transaction_type)
+    except Exception as e:
+        logger.error(f"Error updating user saldo: {e}")
+        return False
+
+def save_order(user_id, product_name, product_code, customer_input, price, 
+               status='pending', provider_order_id='', sn='', note=''):
+    """Fixed compatibility function for save order"""
+    try:
+        return database.save_order(
+            user_id=user_id,
+            product_name=product_name,
+            product_code=product_code,
+            customer_input=customer_input,
+            price=price,
+            status=status,
+            provider_order_id=provider_order_id,
+            sn=sn,
+            note=note
+        )
+    except Exception as e:
+        logger.error(f"Error saving order: {e}")
+        return 0
+
+def update_order_status(order_id, status, sn='', note=''):
+    """Fixed compatibility function for update order status"""
+    try:
+        return database.update_order_status(order_id, status, sn, note)
+    except Exception as e:
+        logger.error(f"Error updating order status: {e}")
+        return False
+
 # ==================== STOCK MANAGEMENT SYSTEM ====================
 
 def sync_product_stock_from_provider():
@@ -124,9 +176,7 @@ def sync_product_stock_from_provider():
             logger.error("Gagal mendapatkan produk dari provider")
             return False
         
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
+        # Use database functions instead of raw SQL
         updated_stock_count = 0
         
         if isinstance(provider_products, list):
@@ -163,21 +213,19 @@ def sync_product_stock_from_provider():
                             gangguan = 0
                             kosong = 1
                         
-                        # Update stok di database
-                        c.execute("""
-                            UPDATE products 
-                            SET stock = ?, gangguan = ?, kosong = ?, last_stock_sync = ?
-                            WHERE code = ? AND status = 'active'
-                        """, (new_stock, gangguan, kosong, datetime.now(), product_code))
+                        # Update stok di database menggunakan database function
+                        success = database.update_product(
+                            product_code,
+                            stock=new_stock,
+                            gangguan=gangguan,
+                            kosong=kosong
+                        )
                         
-                        if c.rowcount > 0:
+                        if success:
                             updated_stock_count += 1
         
-        conn.commit()
-        conn.close()
-        
         logger.info(f"Berhasil update stok untuk {updated_stock_count} produk")
-        return True
+        return updated_stock_count > 0
         
     except Exception as e:
         logger.error(f"Error sync_product_stock_from_provider: {e}")
@@ -203,21 +251,27 @@ def get_product_stock_status(stock, gangguan, kosong):
 def update_product_stock_after_order(product_code, quantity=1):
     """Update stok produk setelah order berhasil"""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
+        # Get current product
+        product = database.get_product(product_code)
+        if not product:
+            logger.error(f"Product {product_code} not found for stock update")
+            return False
         
-        # Kurangi stok
-        c.execute("""
-            UPDATE products 
-            SET stock = GREATEST(0, stock - ?), last_updated = ?
-            WHERE code = ? AND status = 'active'
-        """, (quantity, datetime.now(), product_code))
+        current_stock = product.get('stock', 0)
+        new_stock = max(0, current_stock - quantity)
         
-        conn.commit()
-        conn.close()
+        # Update stock using database function
+        success = database.update_product(
+            product_code,
+            stock=new_stock
+        )
         
-        logger.info(f"Updated stock for {product_code}: reduced by {quantity}")
-        return True
+        if success:
+            logger.info(f"Updated stock for {product_code}: {current_stock} -> {new_stock}")
+        else:
+            logger.error(f"Failed to update stock for {product_code}")
+            
+        return success
     except Exception as e:
         logger.error(f"Error update_product_stock_after_order: {e}")
         return False
@@ -227,28 +281,23 @@ def update_product_stock_after_order(product_code, quantity=1):
 def process_refund(order_id, user_id, amount, reason="Order gagal"):
     """Process refund untuk order yang gagal"""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
+        # Update saldo user menggunakan database function
+        update_success = update_user_saldo(user_id, amount)
         
-        # Update saldo user
-        c.execute("UPDATE users SET saldo = saldo + ? WHERE user_id = ?", (amount, user_id))
+        if not update_success:
+            logger.error(f"Failed to update balance for refund: user {user_id}, amount {amount}")
+            return False
         
         # Update status order
-        c.execute("""
-            UPDATE orders 
-            SET status = 'refunded', note = ?, updated_at = ?
-            WHERE id = ?
-        """, (f"Refund: {reason}", datetime.now(), order_id))
+        status_success = update_order_status(
+            order_id, 
+            'refunded', 
+            note=f"Refund: {reason}"
+        )
         
-        # Log refund transaction
-        c.execute("""
-            INSERT INTO transactions 
-            (user_id, type, amount, description, created_at)
-            VALUES (?, 'refund', ?, ?, ?)
-        """, (user_id, amount, f"Refund order #{order_id}: {reason}", datetime.now()))
-        
-        conn.commit()
-        conn.close()
+        if not status_success:
+            logger.error(f"Failed to update order status for refund: order {order_id}")
+            return False
         
         logger.info(f"Successfully refunded {amount} to user {user_id} for order {order_id}")
         return True
@@ -351,56 +400,52 @@ def get_grouped_products_with_stock():
         # Sync stok terlebih dahulu sebelum menampilkan
         sync_product_stock_from_provider()
         
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("""
-            SELECT code, name, price, category, description, status, gangguan, kosong, stock
-            FROM products 
-            WHERE status='active'
-            ORDER BY category, name ASC
-        """)
-        products = c.fetchall()
-        conn.close()
-
-        logger.info(f"Found {len(products)} active products in database with stock sync")
+        # Get all active products
+        products_data = database.get_products_by_category(status='active')
+        
+        logger.info(f"Found {len(products_data)} active products in database with stock sync")
         
         groups = {}
-        for code, name, price, category, description, status, gangguan, kosong, stock in products:
-            group = category or "Lainnya"
+        for product in products_data:
+            group = product.get('category', 'Lainnya')
             
             # Additional grouping for specific product codes
-            if code.startswith("BPAL"):
+            if product['code'].startswith("BPAL"):
                 group = "BPAL (Bonus Akrab L)"
-            elif code.startswith("BPAXXL"):
+            elif product['code'].startswith("BPAXXL"):
                 group = "BPAXXL (Bonus Akrab XXL)"
-            elif code.startswith("XLA"):
+            elif product['code'].startswith("XLA"):
                 group = "XLA (Umum)"
-            elif "pulsa" in name.lower():
+            elif "pulsa" in product['name'].lower():
                 group = "Pulsa"
-            elif "data" in name.lower() or "internet" in name.lower() or "kuota" in name.lower():
+            elif "data" in product['name'].lower() or "internet" in product['name'].lower() or "kuota" in product['name'].lower():
                 group = "Internet"
-            elif "listrik" in name.lower() or "pln" in name.lower():
+            elif "listrik" in product['name'].lower() or "pln" in product['name'].lower():
                 group = "Listrik"
-            elif "game" in name.lower():
+            elif "game" in product['name'].lower():
                 group = "Game"
-            elif "emoney" in name.lower() or "gopay" in name.lower() or "dana" in name.lower():
+            elif "emoney" in product['name'].lower() or "gopay" in product['name'].lower() or "dana" in product['name'].lower():
                 group = "E-Money"
             
             if group not in groups:
                 groups[group] = []
             
             # Get stock status untuk tampilan
-            stock_status, actual_stock = get_product_stock_status(stock, gangguan, kosong)
+            stock_status, actual_stock = get_product_stock_status(
+                product.get('stock', 0), 
+                product.get('gangguan', 0), 
+                product.get('kosong', 0)
+            )
             
             groups[group].append({
-                'code': code,
-                'name': name,
-                'price': price,
-                'category': category,
-                'description': description,
-                'stock': stock,
-                'gangguan': gangguan,
-                'kosong': kosong,
+                'code': product['code'],
+                'name': product['name'],
+                'price': product['price'],
+                'category': product.get('category', ''),
+                'description': product.get('description', ''),
+                'stock': product.get('stock', 0),
+                'gangguan': product.get('gangguan', 0),
+                'kosong': product.get('kosong', 0),
                 'stock_status': stock_status,
                 'display_stock': actual_stock
             })
@@ -422,29 +467,25 @@ def get_product_by_code_with_stock(product_code):
         # Sync stok untuk produk ini
         sync_product_stock_from_provider()
         
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("""
-            SELECT code, name, price, category, description, status, gangguan, kosong, stock
-            FROM products 
-            WHERE code = ? AND status = 'active'
-        """, (product_code,))
-        product = c.fetchone()
-        conn.close()
+        product = database.get_product(product_code)
         
         if product:
-            stock_status, display_stock = get_product_stock_status(product[8], product[6], product[7])
+            stock_status, display_stock = get_product_stock_status(
+                product.get('stock', 0), 
+                product.get('gangguan', 0), 
+                product.get('kosong', 0)
+            )
             
             return {
-                'code': product[0],
-                'name': product[1],
-                'price': product[2],
-                'category': product[3],
-                'description': product[4],
-                'status': product[5],
-                'gangguan': product[6],
-                'kosong': product[7],
-                'stock': product[8],
+                'code': product['code'],
+                'name': product['name'],
+                'price': product['price'],
+                'category': product.get('category', ''),
+                'description': product.get('description', ''),
+                'status': product.get('status', ''),
+                'gangguan': product.get('gangguan', 0),
+                'kosong': product.get('kosong', 0),
+                'stock': product.get('stock', 0),
                 'stock_status': stock_status,
                 'display_stock': display_stock
             }
@@ -816,7 +857,7 @@ async def receive_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Show confirmation dengan info stok
         user_id = str(update.effective_user.id)
-        saldo = database.get_user_saldo(user_id)
+        saldo = get_user_saldo(user_id)
         
         keyboard = [
             [
@@ -868,7 +909,7 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         product_price = product_data['price']
         
         # Get user balance
-        saldo = database.get_user_saldo(user_id)
+        saldo = get_user_saldo(user_id)
         
         if saldo < product_price:
             await safe_edit_message_text(
@@ -931,10 +972,10 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reffid = str(uuid.uuid4())
         
         # Deduct balance FIRST (sebelum ke provider)
-        new_saldo = database.update_user_saldo(user_id, -product_price)
+        new_saldo = update_user_saldo(user_id, -product_price)
         
         # Save order to database
-        order_id = database.save_order(
+        order_id = save_order(
             user_id=user_id,
             product_name=product_data['name'],
             product_code=product_data['code'],
@@ -948,7 +989,7 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if not order_id:
             # Refund jika gagal save order
-            database.update_user_saldo(user_id, product_price)
+            update_user_saldo(user_id, product_price)
             await safe_edit_message_text(
                 update,
                 "❌ Gagal menyimpan order. Saldo telah dikembalikan.",
@@ -980,8 +1021,8 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
             error_msg = order_result.get('message', 'Unknown error from provider') if order_result else 'Gagal terhubung ke provider'
             
             # REFUND: Order gagal di provider
-            database.update_user_saldo(user_id, product_price)
-            database.update_order_status(order_id, 'failed')
+            update_user_saldo(user_id, product_price)
+            update_order_status(order_id, 'failed')
             process_refund(order_id, user_id, product_price, f"Provider error: {error_msg}")
             
             await safe_edit_message_text(
@@ -1014,18 +1055,10 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif provider_status == 'error':
             final_status = 'failed'
             # Auto refund untuk error yang langsung diketahui
-            database.update_user_saldo(user_id, product_price)
+            update_user_saldo(user_id, product_price)
             process_refund(order_id, user_id, product_price, f"Provider error: {provider_message}")
         
-        database.update_order_status(order_id, final_status)
-        
-        # Update SN jika ada
-        if sn_number:
-            conn = sqlite3.connect(DB_PATH)
-            c = conn.cursor()
-            c.execute("UPDATE orders SET sn = ? WHERE id = ?", (sn_number, order_id))
-            conn.commit()
-            conn.close()
+        update_order_status(order_id, final_status, sn=sn_number, note=provider_message)
         
         # Prepare success message
         status_info = {
@@ -1091,7 +1124,7 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Safety refund jika error tidak terduga
         try:
             user_id = str(query.from_user.id)
-            database.update_user_saldo(user_id, product_price)
+            update_user_saldo(user_id, product_price)
         except:
             pass
             
@@ -1130,29 +1163,18 @@ def handle_webhook_callback(message):
             is_success = False
         
         # Cari order di database
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("""
-            SELECT id, user_id, price, status 
-            FROM orders 
-            WHERE provider_order_id = ? AND status IN ('processing', 'pending')
-        """, (reffid,))
-        
-        order = c.fetchone()
+        order = database.get_order_by_provider_id(reffid)
         if not order:
             logger.warning(f"Order tidak ditemukan untuk reffid: {reffid}")
-            conn.close()
             return False
         
-        order_id, user_id, price, current_status = order
+        order_id = order['id']
+        user_id = order['user_id']
+        price = order['price']
         
         if is_success:
             # Update jadi completed
-            c.execute("""
-                UPDATE orders 
-                SET status = 'completed', note = ?, updated_at = ?
-                WHERE id = ?
-            """, (f"Webhook: {message}", datetime.now(), order_id))
+            update_order_status(order_id, 'completed', note=f"Webhook: {message}")
             
             # Update stok untuk produk yang berhasil
             if product_code:
@@ -1162,26 +1184,13 @@ def handle_webhook_callback(message):
             
         else:
             # REFUND otomatis untuk yang gagal
-            c.execute("""
-                UPDATE orders 
-                SET status = 'failed', note = ?, updated_at = ?
-                WHERE id = ?
-            """, (f"Webhook Gagal: {message}", datetime.now(), order_id))
+            update_order_status(order_id, 'failed', note=f"Webhook Gagal: {message}")
             
             # Refund saldo
-            c.execute("UPDATE users SET saldo = saldo + ? WHERE user_id = ?", (price, user_id))
-            
-            # Log refund
-            c.execute("""
-                INSERT INTO transactions 
-                (user_id, type, amount, description, created_at)
-                VALUES (?, 'refund', ?, ?, ?)
-            """, (user_id, price, f"Auto-refund order gagal via webhook: {message}", datetime.now()))
+            update_user_saldo(user_id, price)
             
             logger.info(f"Webhook: Order {order_id} failed - refund processed")
         
-        conn.commit()
-        conn.close()
         return True
         
     except Exception as e:
