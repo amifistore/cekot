@@ -160,7 +160,7 @@ class DatabaseManager:
                     CREATE TABLE IF NOT EXISTS transactions (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         user_id TEXT NOT NULL,
-                        type TEXT NOT NULL CHECK(type IN ('topup','withdraw','refund','bonus','order','commission')),
+                        type TEXT NOT NULL CHECK(type IN ('topup','withdraw','refund','bonus','order','commission','adjustment')),
                         amount REAL NOT NULL CHECK(amount != 0),
                         status TEXT DEFAULT 'pending' CHECK(status IN ('pending','completed','rejected','cancelled','failed')),
                         details TEXT,
@@ -524,9 +524,15 @@ class DatabaseManager:
                     (new_balance, datetime.now(), str(user_id))
                 )
                 
-                # Log transaction
+                # Log transaction - FIXED: menggunakan type yang valid
                 if amount != 0:
                     status = 'completed' if amount > 0 else 'pending'
+                    valid_types = ['topup', 'withdraw', 'refund', 'bonus', 'order', 'commission', 'adjustment']
+                    
+                    # Pastikan transaction_type valid
+                    if transaction_type not in valid_types:
+                        transaction_type = 'adjustment'
+                    
                     cursor.execute('''
                         INSERT INTO transactions (user_id, type, amount, status, details, completed_at)
                         VALUES (?, ?, ?, ?, ?, ?)
