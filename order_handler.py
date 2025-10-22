@@ -186,15 +186,15 @@ def validate_pulsa_target(phone, product_code):
     
     return phone
 
-# ==================== PRODUCT MANAGEMENT ====================
+# ==================== PRODUCT MANAGEMENT (SESUAI DATABASE ORI) ====================
 
 def get_grouped_products():
-    """Get products grouped by category from database"""
+    """Get products grouped by category from database - SAMA SEPERTI CODE ORI"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("""
-            SELECT code, name, price, category, description, status, gangguan, kosong, stock, minimal, maksimal
+            SELECT code, name, price, category, description, status, gangguan, kosong, stock
             FROM products 
             WHERE status='active'
             ORDER BY category, name ASC
@@ -202,12 +202,30 @@ def get_grouped_products():
         products = c.fetchall()
         conn.close()
 
-        logger.info(f"Found {len(products)} active products in database")
+        logger.info(f"Found {len(products)} active products in database (including out-of-stock)")
         
         groups = {}
-        for code, name, price, category, description, status, gangguan, kosong, stock, minimal, maksimal in products:
-            # Use category from database
+        for code, name, price, category, description, status, gangguan, kosong, stock in products:
+            # Use category from database, fallback to code-based grouping
             group = category or "Lainnya"
+            
+            # Additional grouping for specific product codes - SAMA SEPERTI CODE ORI
+            if code.startswith("BPAL"):
+                group = "BPAL (Bonus Akrab L)"
+            elif code.startswith("BPAXXL"):
+                group = "BPAXXL (Bonus Akrab XXL)"
+            elif code.startswith("XLA"):
+                group = "XLA (Umum)"
+            elif "pulsa" in name.lower():
+                group = "Pulsa"
+            elif "data" in name.lower() or "internet" in name.lower() or "kuota" in name.lower():
+                group = "Internet"
+            elif "listrik" in name.lower() or "pln" in name.lower():
+                group = "Listrik"
+            elif "game" in name.lower():
+                group = "Game"
+            elif "emoney" in name.lower() or "gopay" in name.lower() or "dana" in name.lower():
+                group = "E-Money"
             
             if group not in groups:
                 groups[group] = []
@@ -220,9 +238,7 @@ def get_grouped_products():
                 'description': description,
                 'stock': stock,
                 'gangguan': gangguan,
-                'kosong': kosong,
-                'minimal': minimal,
-                'maksimal': maksimal
+                'kosong': kosong
             })
         
         # Sort groups alphabetically
@@ -237,12 +253,12 @@ def get_grouped_products():
         return {}
 
 def get_product_by_code(product_code):
-    """Get product details by code"""
+    """Get product details by code - SAMA SEPERTI CODE ORI"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("""
-            SELECT code, name, price, category, description, status, gangguan, kosong, stock, minimal, maksimal
+            SELECT code, name, price, category, description, status, gangguan, kosong, stock
             FROM products 
             WHERE code = ? AND status = 'active'
         """, (product_code,))
@@ -259,9 +275,7 @@ def get_product_by_code(product_code):
                 'status': product[5],
                 'gangguan': product[6],
                 'kosong': product[7],
-                'stock': product[8],
-                'minimal': product[9],
-                'maksimal': product[10]
+                'stock': product[8]
             }
         return None
     except Exception as e:
@@ -289,7 +303,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
 async def show_group_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show product groups menu from database"""
+    """Show product groups menu from database - SAMA SEPERTI CODE ORI"""
     try:
         if hasattr(update, 'callback_query'):
             query = update.callback_query
@@ -359,7 +373,7 @@ async def show_group_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
 async def show_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show products in selected group"""
+    """Show products in selected group - SAMA SEPERTI CODE ORI"""
     query = update.callback_query
     await query.answer()
     
@@ -388,7 +402,7 @@ async def show_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         keyboard = []
         for product in page_products:
-            # Add status indicator
+            # Add status indicator - SAMA SEPERTI CODE ORI
             if product['gangguan'] == 1:
                 status_emoji = "🚧"
             elif product['kosong'] == 1:
@@ -469,7 +483,7 @@ async def back_to_groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await show_group_menu(update, context)
 
 async def select_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle product selection"""
+    """Handle product selection - SAMA SEPERTI CODE ORI"""
     query = update.callback_query
     await query.answer()
     
@@ -486,7 +500,7 @@ async def select_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return ConversationHandler.END
         
-        # Check product availability
+        # Check product availability - SAMA SEPERTI CODE ORI
         if product['kosong'] == 1:
             await safe_edit_message_text(
                 update,
@@ -532,7 +546,7 @@ async def select_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Store selected product
         context.user_data['selected_product'] = product
         
-        # Ask for target
+        # Ask for target - SAMA SEPERTI CODE ORI
         target_example = "Contoh: 081234567890"
         if product['code'].startswith('PLN'):
             target_example = "Contoh: 123456789012345 (ID Pelanggan PLN)"
@@ -649,6 +663,8 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         user_id = str(query.from_user.id)
+        username = query.from_user.username or ""
+        full_name = query.from_user.full_name or ""
         
         # Get user balance
         saldo = database.get_user_saldo(user_id)
@@ -722,7 +738,7 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Deduct balance and save order to database
         new_saldo = database.update_user_saldo(user_id, -product_price)
         
-        # Save order to database
+        # Save order to database - MENGGUNAKAN FUNGSI DARI DATABASE ORI
         order_id = database.save_order(
             user_id=user_id,
             product_name=product_data['name'],
