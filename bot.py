@@ -746,8 +746,8 @@ def main():
         # ==================== START BOT ====================
         print("🎯 Starting bot polling...")
         
-        # Run bot dengan polling
-        application.run_pooling(
+        # Run bot dengan polling - FIXED TYPO: run_polling bukan run_pooling
+        application.run_polling(
             drop_pending_updates=True,
             allowed_updates=Update.ALL_TYPES
         )
