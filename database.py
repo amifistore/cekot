@@ -2,6 +2,7 @@
 """
 Database Management System - PRODUCTION READY VERSION
 FULL FEATURES - NO BUGS - READY FOR DEPLOYMENT
+FIXED FOR ORDER_HANDLER COMPATIBILITY
 """
 
 import sqlite3
@@ -975,6 +976,66 @@ class DatabaseManager:
             logger.error(f"Error getting user orders for {user_id}: {e}")
             return []
 
+    # ==================== ORDER HANDLER COMPATIBILITY FUNCTIONS ====================
+    
+    def update_user_saldo(self, user_id: str, amount: float) -> bool:
+        """Compatibility function for order_handler - update user balance"""
+        return self.update_user_balance(user_id, amount, f"Order adjustment: {amount}")
+
+    def get_user_saldo(self, user_id: str) -> float:
+        """Compatibility function for order_handler - get user balance"""
+        return self.get_user_balance(user_id)
+
+    def save_order(self, user_id: str, product_name: str, product_code: str, 
+                   customer_input: str, price: float, status: str = 'pending',
+                   provider_order_id: str = '', sn: str = '', note: str = '') -> int:
+        """Compatibility function for order_handler - save order dengan semua parameter"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Calculate profit
+                product = self.get_product(product_code)
+                cost_price = product.get('cost_price', 0) if product else 0
+                profit = price - cost_price
+                
+                cursor.execute('''
+                    INSERT INTO orders 
+                    (user_id, product_code, product_name, price, customer_input, status, 
+                     provider_order_id, sn, note, cost, profit)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (str(user_id), product_code, product_name, price, customer_input, status,
+                      provider_order_id, sn, note, cost_price, profit))
+                
+                order_id = cursor.lastrowid
+                
+                # Update user order count
+                cursor.execute('''
+                    UPDATE users 
+                    SET total_orders = total_orders + 1, 
+                        last_active = ?
+                    WHERE user_id = ?
+                ''', (datetime.now(), str(user_id)))
+                
+                logger.info(f"💾 Order saved: ID {order_id} for user {user_id}")
+                return order_id
+                    
+        except Exception as e:
+            logger.error(f"Error saving order: {e}")
+            return 0
+
+    def get_order(self, order_id: int) -> Optional[Dict[str, Any]]:
+        """Get order by ID"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM orders WHERE id = ?', (order_id,))
+                result = cursor.fetchone()
+                return dict(result) if result else None
+        except Exception as e:
+            logger.error(f"Error getting order {order_id}: {e}")
+            return None
+
     # ==================== STATISTICS & ANALYTICS ====================
     def get_bot_statistics(self) -> Dict[str, Any]:
         """Get comprehensive bot statistics"""
@@ -1709,7 +1770,7 @@ def optimize_database():
     return _db_manager.optimize_database()
 
 def get_all_users(limit: int = 100):
-    return _db_manager.get_all_users(limit)
+    return _db_manager.get_recent_users(limit)
 
 def get_recent_users(limit: int = 20):
     return _db_manager.get_recent_users(limit)
@@ -1722,6 +1783,27 @@ def count_inactive_users(days: int = 30):
 
 def delete_inactive_users(days: int = 30):
     return _db_manager.delete_inactive_users(days)
+
+# ==================== ORDER HANDLER COMPATIBILITY FUNCTIONS ====================
+
+def update_user_saldo(user_id: str, amount: float) -> bool:
+    """Compatibility function for order_handler"""
+    return _db_manager.update_user_saldo(user_id, amount)
+
+def get_user_saldo(user_id: str) -> float:
+    """Compatibility function for order_handler"""
+    return _db_manager.get_user_saldo(user_id)
+
+def save_order(user_id: str, product_name: str, product_code: str, 
+               customer_input: str, price: float, status: str = 'pending',
+               provider_order_id: str = '', sn: str = '', note: str = '') -> int:
+    """Compatibility function for order_handler"""
+    return _db_manager.save_order(user_id, product_name, product_code, customer_input, 
+                                 price, status, provider_order_id, sn, note)
+
+def get_order(order_id: int):
+    """Compatibility function for order_handler"""
+    return _db_manager.get_order(order_id)
 
 # New compatibility functions
 def get_pending_topups_count():
@@ -1743,7 +1825,6 @@ def get_db_manager():
     return _db_manager
 
 # Aliases untuk compatibility
-get_user_saldo = get_user_balance
 get_user_info = get_user
 get_user_statistics = get_user_stats
 
@@ -1771,6 +1852,10 @@ if __name__ == "__main__":
     # Test settings
     setting = db.get_setting('system_name')
     print(f"✅ Settings test: {setting}")
+    
+    # Test order handler compatibility
+    saldo = db.get_user_saldo("test_user")
+    print(f"✅ Saldo compatibility test: {saldo}")
     
     # Test cleanup
     cleanup = db.cleanup_old_data(1)
