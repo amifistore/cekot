@@ -103,40 +103,72 @@ except Exception as e:
             reply_markup=get_main_keyboard(user.id)
         )
 
-# Order Handler - FIXED VERSION
+# Order Handler - COMPLETELY FIXED VERSION
 try:
     from order_handler import (
         get_conversation_handler as get_order_conversation_handler,
-        menu_handler as order_menu_handler
+        menu_handler as order_menu_handler,
+        show_category_selection
     )
     ORDER_AVAILABLE = True
     print("✅ Order handler loaded successfully")
     
-    # Override order_menu_handler untuk handle ReplyKeyboard
+    # COMPLETELY FIXED order handler untuk ReplyKeyboard
     async def fixed_order_menu_handler(update, context):
-        """Fixed version of order_menu_handler untuk ReplyKeyboard"""
+        """Completely fixed version of order_menu_handler untuk ReplyKeyboard"""
         try:
             user = update.message.from_user if hasattr(update, 'message') else update.callback_query.from_user
             
             if hasattr(update, 'callback_query'):
-                # Jika dari callback query, panggil original
-                await order_menu_handler(update, context)
+                # Jika dari callback query, panggil original dengan error handling
+                try:
+                    await order_menu_handler(update, context)
+                except Exception as e:
+                    logger.error(f"Error in callback order handler: {e}")
+                    await update.callback_query.message.reply_text(
+                        "❌ Gagal memulai proses order. Silakan coba lagi.",
+                        reply_markup=get_main_keyboard(user.id)
+                    )
             else:
-                # Jika dari ReplyKeyboard, mulai order process
-                from order_handler import show_category_selection
+                # Jika dari ReplyKeyboard, langsung mulai order process
+                await update.message.reply_text(
+                    "🛒 **MEMUAT PRODUK...**\n\nSilakan tunggu sebentar...",
+                    reply_markup=get_back_keyboard(),
+                    parse_mode='Markdown'
+                )
                 await show_category_selection(update, context)
                 
         except Exception as e:
             logger.error(f"Error in fixed_order_menu_handler: {e}")
             user = update.message.from_user if hasattr(update, 'message') else update.callback_query.from_user
-            await update.message.reply_text(
-                "❌ Gagal memulai proses order. Silakan coba lagi.",
-                reply_markup=get_main_keyboard(user.id)
-            )
+            if hasattr(update, 'message'):
+                await update.message.reply_text(
+                    "❌ Gagal memulai proses order. Silakan coba lagi.",
+                    reply_markup=get_main_keyboard(user.id)
+                )
+            else:
+                await update.callback_query.message.reply_text(
+                    "❌ Gagal memulai proses order. Silakan coba lagi.",
+                    reply_markup=get_main_keyboard(user.id)
+                )
             
 except Exception as e:
     print(f"❌ Error importing order_handler: {e}")
     ORDER_AVAILABLE = False
+    
+    # Fallback jika show_category_selection tidak ada
+    async def show_category_selection(update, context):
+        user = update.message.from_user if hasattr(update, 'message') else update.callback_query.from_user
+        if hasattr(update, 'message'):
+            await update.message.reply_text(
+                "❌ Fitur order sedang dalam perbaikan.",
+                reply_markup=get_main_keyboard(user.id)
+            )
+        else:
+            await update.callback_query.message.reply_text(
+                "❌ Fitur order sedang dalam perbaikan.",
+                reply_markup=get_main_keyboard(user.id)
+            )
     
     async def fixed_order_menu_handler(update, context):
         user = update.message.from_user if hasattr(update, 'message') else update.callback_query.from_user
@@ -715,7 +747,7 @@ def main():
         print("🎯 Starting bot polling...")
         
         # Run bot dengan polling
-        application.run_polling(
+        application.run_pooling(
             drop_pending_updates=True,
             allowed_updates=Update.ALL_TYPES
         )
