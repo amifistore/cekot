@@ -12,7 +12,7 @@ from typing import Dict, Any
 from datetime import datetime
 
 # Telegram Imports
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -138,6 +138,43 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = config.BOT_TOKEN
 ADMIN_IDS = getattr(config, 'ADMIN_TELEGRAM_IDS', [])
 
+# ==================== REPLY KEYBOARD SETUP ====================
+def get_main_keyboard(user_id=None):
+    """Reply Keyboard untuk menu utama"""
+    keyboard = [
+        ["🛒 BELI PRODUK", "💳 CEK SALDO"],
+        ["📊 CEK STOK", "📞 BANTUAN"],
+        ["💸 TOP UP SALDO", "🔄 START BOT"]
+    ]
+    
+    # Tambahkan admin panel jika user adalah admin
+    if user_id and str(user_id) in ADMIN_IDS:
+        keyboard.append(["👑 ADMIN PANEL"])
+    
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+def get_saldo_keyboard():
+    """Reply Keyboard untuk menu saldo"""
+    keyboard = [
+        ["💸 TOP UP SALDO"],
+        ["🏠 MENU UTAMA", "🔄 START BOT"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+def get_help_keyboard():
+    """Reply Keyboard untuk menu bantuan"""
+    keyboard = [
+        ["🏠 MENU UTAMA", "🔄 START BOT"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+def get_simple_keyboard():
+    """Reply Keyboard sederhana"""
+    keyboard = [
+        ["🔄 START BOT"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+
 # ==================== BASIC COMMAND HANDLERS ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /start - Menu utama"""
@@ -154,24 +191,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Error getting user saldo: {e}")
             saldo = 0
         
-        # Main menu keyboard
-        keyboard = [
-            [InlineKeyboardButton("🛒 BELI PRODUK", callback_data="main_menu_order")],
-            [InlineKeyboardButton("💳 CEK SALDO", callback_data="main_menu_saldo")],
-            [InlineKeyboardButton("📊 CEK STOK", callback_data="main_menu_stock")],
-            [InlineKeyboardButton("📞 BANTUAN", callback_data="main_menu_help")],
-            [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="topup_menu")]
-        ]
-        
-        # Add admin button if user is admin
-        if str(user.id) in ADMIN_IDS:
-            keyboard.append([InlineKeyboardButton("👑 ADMIN PANEL", callback_data="main_menu_admin")])
-        
-        # Tambahkan START BOT di footer
-        keyboard.append([InlineKeyboardButton("🔄 START BOT", callback_data="main_menu_main")])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
+        # Kirim pesan welcome dengan reply keyboard
         welcome_text = (
             f"🤖 **Selamat Datang!**\n\n"
             f"Halo {user.full_name}!\n"
@@ -181,7 +201,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(
             welcome_text,
-            reply_markup=reply_markup,
+            reply_markup=get_main_keyboard(user.id),
             parse_mode='Markdown'
         )
         
@@ -189,45 +209,43 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in start command: {e}")
         await update.message.reply_text("❌ Terjadi error. Silakan coba lagi.")
 
-async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Main menu handler untuk semua callback"""
-    query = update.callback_query
-    await query.answer()
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler untuk memproses pesan text dari reply keyboard"""
+    user = update.message.from_user
+    text = update.message.text
     
-    data = query.data
-    user = query.from_user
-    
-    logger.info(f"Main menu callback: {data} from user {user.id}")
+    logger.info(f"Message from user {user.id}: {text}")
     
     try:
-        if data == "main_menu_main":
-            await show_main_menu(update, context)
-        elif data == "main_menu_saldo":
+        if text == "🛒 BELI PRODUK":
+            await order_menu_handler(update, context)
+        elif text == "💳 CEK SALDO":
             await show_saldo_menu(update, context)
-        elif data == "main_menu_help":
+        elif text == "📊 CEK STOK":
+            await stock_command(update, context)
+        elif text == "📞 BANTUAN":
             await show_help_menu(update, context)
-        elif data == "main_menu_stock":
-            await stock_akrab_callback(update, context)
-        elif data == "main_menu_admin":
+        elif text == "💸 TOP UP SALDO":
+            await show_topup_menu(update, context)
+        elif text == "🔄 START BOT":
+            await start(update, context)
+        elif text == "🏠 MENU UTAMA":
+            await show_main_menu(update, context)
+        elif text == "👑 ADMIN PANEL":
             if str(user.id) in ADMIN_IDS:
                 await admin_menu(update, context)
             else:
-                await query.answer("❌ Anda bukan admin!", show_alert=True)
-        elif data == "main_menu_order":
-            await order_menu_handler(update, context)
-        elif data == "topup_menu":
-            await show_topup_menu(update, context)
+                await update.message.reply_text("❌ Anda bukan admin!")
         else:
-            await query.message.reply_text("❌ Menu tidak dikenali.")
+            await unknown_message(update, context)
             
     except Exception as e:
-        logger.error(f"Error in main_menu_handler for {data}: {e}")
-        await query.message.reply_text("❌ Terjadi error. Silakan coba lagi.")
+        logger.error(f"Error handling message {text}: {e}")
+        await update.message.reply_text("❌ Terjadi error. Silakan coba lagi.")
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Tampilkan menu utama"""
-    query = update.callback_query
-    user = query.from_user
+    user = update.message.from_user if hasattr(update, 'message') else update.callback_query.from_user
     
     saldo = 0
     try:
@@ -237,46 +255,29 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error getting user saldo: {e}")
         saldo = 0
     
-    keyboard = [
-        [InlineKeyboardButton("🛒 BELI PRODUK", callback_data="main_menu_order")],
-        [InlineKeyboardButton("💳 CEK SALDO", callback_data="main_menu_saldo")],
-        [InlineKeyboardButton("📊 CEK STOK", callback_data="main_menu_stock")],
-        [InlineKeyboardButton("📞 BANTUAN", callback_data="main_menu_help")],
-        [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="topup_menu")]
-    ]
+    menu_text = (
+        f"🏠 **MENU UTAMA**\n\n"
+        f"Halo {user.full_name}!\n"
+        f"💰 **Saldo Anda:** Rp {saldo:,.0f}\n\n"
+        f"Pilih menu di bawah:"
+    )
     
-    if str(user.id) in ADMIN_IDS:
-        keyboard.append([InlineKeyboardButton("👑 ADMIN PANEL", callback_data="main_menu_admin")])
-    
-    # Tambahkan START BOT di footer
-    keyboard.append([InlineKeyboardButton("🔄 START BOT", callback_data="main_menu_main")])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    try:
-        await query.edit_message_text(
-            f"🏠 **MENU UTAMA**\n\n"
-            f"Halo {user.full_name}!\n"
-            f"💰 **Saldo Anda:** Rp {saldo:,.0f}\n\n"
-            f"Pilih menu di bawah:",
-            reply_markup=reply_markup,
+    if hasattr(update, 'message'):
+        await update.message.reply_text(
+            menu_text,
+            reply_markup=get_main_keyboard(user.id),
             parse_mode='Markdown'
         )
-    except Exception as e:
-        logger.warning(f"Could not edit message: {e}")
-        await query.message.reply_text(
-            f"🏠 **MENU UTAMA**\n\n"
-            f"Halo {user.full_name}!\n"
-            f"💰 **Saldo Anda:** Rp {saldo:,.0f}\n\n"
-            f"Pilih menu di bawah:",
-            reply_markup=reply_markup,
+    else:
+        await update.callback_query.message.reply_text(
+            menu_text,
+            reply_markup=get_main_keyboard(user.id),
             parse_mode='Markdown'
         )
 
 async def show_saldo_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Tampilkan menu saldo"""
-    query = update.callback_query
-    user = query.from_user
+    user = update.message.from_user if hasattr(update, 'message') else update.callback_query.from_user
     
     saldo = 0
     try:
@@ -286,37 +287,27 @@ async def show_saldo_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error getting user saldo: {e}")
         saldo = 0
     
-    keyboard = [
-        [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="topup_menu")]
-    ]
+    saldo_text = (
+        f"💰 **SALDO ANDA**\n\n"
+        f"Saldo saat ini: **Rp {saldo:,.0f}**\n\n"
+        f"Gunakan menu Top Up untuk menambah saldo."
+    )
     
-    # Hanya START BOT di footer
-    keyboard.append([InlineKeyboardButton("🔄 START BOT", callback_data="main_menu_main")])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    try:
-        await query.edit_message_text(
-            f"💰 **SALDO ANDA**\n\n"
-            f"Saldo saat ini: **Rp {saldo:,.0f}**\n\n"
-            f"Gunakan menu Top Up untuk menambah saldo.",
-            reply_markup=reply_markup,
+    if hasattr(update, 'message'):
+        await update.message.reply_text(
+            saldo_text,
+            reply_markup=get_saldo_keyboard(),
             parse_mode='Markdown'
         )
-    except Exception as e:
-        logger.warning(f"Could not edit message: {e}")
-        await query.message.reply_text(
-            f"💰 **SALDO ANDA**\n\n"
-            f"Saldo saat ini: **Rp {saldo:,.0f}**\n\n"
-            f"Gunakan menu Top Up untuk menambah saldo.",
-            reply_markup=reply_markup,
+    else:
+        await update.callback_query.message.reply_text(
+            saldo_text,
+            reply_markup=get_saldo_keyboard(),
             parse_mode='Markdown'
         )
 
 async def show_help_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Tampilkan menu bantuan"""
-    query = update.callback_query
-    
     help_text = (
         "📞 **BANTUAN & PANDUAN**\n\n"
         "**CARA ORDER:**\n"
@@ -335,65 +326,25 @@ async def show_help_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Hubungi Admin untuk bantuan lebih lanjut."
     )
     
-    keyboard = []
-    
-    # Hanya START BOT di footer
-    keyboard.append([InlineKeyboardButton("🔄 START BOT", callback_data="main_menu_main")])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    try:
-        await query.edit_message_text(
+    if hasattr(update, 'message'):
+        await update.message.reply_text(
             help_text,
-            reply_markup=reply_markup,
+            reply_markup=get_help_keyboard(),
             parse_mode='Markdown'
         )
-    except Exception as e:
-        logger.warning(f"Could not edit message: {e}")
-        await query.message.reply_text(
+    else:
+        await update.callback_query.message.reply_text(
             help_text,
-            reply_markup=reply_markup,
+            reply_markup=get_help_keyboard(),
             parse_mode='Markdown'
         )
 
 async def saldo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /saldo"""
-    user = update.message.from_user
-    
-    saldo = 0
-    try:
-        user_id = database.get_or_create_user(str(user.id), user.username, user.full_name)
-        saldo = database.get_user_saldo(user_id)
-    except Exception as e:
-        logger.error(f"Error getting user saldo: {e}")
-        saldo = 0
-    
-    keyboard = [
-        [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="topup_menu")]
-    ]
-    
-    # Hanya START BOT di footer
-    keyboard.append([InlineKeyboardButton("🔄 START BOT", callback_data="main_menu_main")])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        f"💰 **SALDO ANDA**\n\n"
-        f"Saldo saat ini: **Rp {saldo:,.0f}**\n\n"
-        f"Gunakan menu Top Up untuk menambah saldo.",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
+    await show_saldo_menu(update, context)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /help"""
-    keyboard = []
-    
-    # Hanya START BOT di footer
-    keyboard.append([InlineKeyboardButton("🔄 START BOT", callback_data="main_menu_main")])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
     help_text = (
         "🤖 **BOT COMMANDS**\n\n"
         "**PERINTAH UTAMA:**\n"
@@ -412,7 +363,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         help_text,
-        reply_markup=reply_markup,
+        reply_markup=get_help_keyboard(),
         parse_mode='Markdown'
     )
 
@@ -453,20 +404,7 @@ async def topup_list_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """Handler untuk command /topup_list"""
     if str(update.message.from_user.id) in ADMIN_IDS:
         if ADMIN_AVAILABLE:
-            # Create fake callback query for admin topup
-            query = type('Query', (), {
-                'data': 'admin_topup',
-                'from_user': update.message.from_user,
-                'message': update.message,
-                'answer': lambda: None,
-                'edit_message_text': lambda text, reply_markup=None, parse_mode=None: update.message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
-            })()
-            
-            fake_update = type('Update', (), {
-                'callback_query': query
-            })()
-            
-            await admin_callback_handler(fake_update, context)
+            await admin_callback_handler(update, context)
         else:
             await update.message.reply_text("❌ Fitur admin sedang dalam perbaikan.")
     else:
@@ -476,20 +414,7 @@ async def cek_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /cek_user"""
     if str(update.message.from_user.id) in ADMIN_IDS:
         if ADMIN_AVAILABLE:
-            # Create fake callback query for admin users
-            query = type('Query', (), {
-                'data': 'admin_users',
-                'from_user': update.message.from_user,
-                'message': update.message,
-                'answer': lambda: None,
-                'edit_message_text': lambda text, reply_markup=None, parse_mode=None: update.message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
-            })()
-            
-            fake_update = type('Update', (), {
-                'callback_query': query
-            })()
-            
-            await admin_callback_handler(fake_update, context)
+            await admin_callback_handler(update, context)
         else:
             await update.message.reply_text("❌ Fitur admin sedang dalam perbaikan.")
     else:
@@ -504,9 +429,7 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🤔 Saya tidak mengerti perintah tersebut.\n\n"
         "Gunakan /help untuk melihat daftar perintah yang tersedia "
         "atau gunakan tombol menu untuk navigasi.",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 START BOT", callback_data="main_menu_main")]
-        ])
+        reply_markup=get_simple_keyboard()
     )
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
@@ -523,16 +446,12 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 "❌ Terjadi kesalahan sistem. Silakan coba lagi dalam beberapa saat.\n\n"
                 "Jika error berlanjut, hubungi admin.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔄 START BOT", callback_data="main_menu_main")]
-                ])
+                reply_markup=get_simple_keyboard()
             )
         elif update.callback_query:
             await update.callback_query.message.reply_text(
                 "❌ Terjadi kesalahan sistem. Silakan coba lagi.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔄 START BOT", callback_data="main_menu_main")]
-                ])
+                reply_markup=get_simple_keyboard()
             )
 
 async def post_init(application: Application):
@@ -617,7 +536,11 @@ def main():
         
         # ==================== HANDLER REGISTRATION ====================
         
-        # 1. CONVERSATION HANDLERS (PRIORITAS TERTINGGI)
+        # 1. MESSAGE HANDLER UNTUK REPLY KEYBOARD (PRIORITAS TERTINGGI)
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        print("✅ Reply keyboard handler registered")
+        
+        # 2. CONVERSATION HANDLERS
         if TOPUP_AVAILABLE:
             topup_conv_handler = get_topup_conversation_handler()
             if topup_conv_handler:
@@ -630,29 +553,24 @@ def main():
                 application.add_handler(order_conv_handler)
                 print("✅ Order conversation handler registered")
         
-        # 2. TOPUP CALLBACK HANDLERS
+        # 3. TOPUP CALLBACK HANDLERS
         if TOPUP_AVAILABLE:
             topup_handlers = get_topup_handlers()
             for handler in topup_handlers:
                 application.add_handler(handler)
             print("✅ Topup callback handlers registered")
         
-        # 3. ADMIN CALLBACK HANDLERS
+        # 4. ADMIN CALLBACK HANDLERS
         if ADMIN_AVAILABLE:
             admin_handlers = get_admin_handlers()
             for handler in admin_handlers:
                 application.add_handler(handler)
             print("✅ Admin callback handlers registered")
         
-        # 4. STOK HANDLER
+        # 5. STOK HANDLER
         if STOK_AVAILABLE:
             application.add_handler(CallbackQueryHandler(stock_akrab_callback, pattern="^stock_"))
             print("✅ Stok handler registered")
-        
-        # 5. MAIN MENU CALLBACK HANDLER
-        application.add_handler(CallbackQueryHandler(main_menu_handler, pattern="^main_menu_"))
-        application.add_handler(CallbackQueryHandler(main_menu_handler, pattern="^topup_menu$"))
-        print("✅ Main menu callback handler registered")
         
         # 6. COMMAND HANDLERS
         application.add_handler(CommandHandler("start", start))
@@ -670,11 +588,7 @@ def main():
         
         print("✅ Command handlers registered")
         
-        # 7. MESSAGE HANDLER (UNTUK UNKNOWN MESSAGES)
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_message))
-        print("✅ Unknown message handler registered")
-        
-        # 8. ERROR HANDLER
+        # 7. ERROR HANDLER
         application.add_error_handler(error_handler)
         print("✅ Error handler registered")
         
