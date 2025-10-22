@@ -1,13 +1,15 @@
-import config
-from flask import Flask, request, jsonify
-import sqlite3
-import re
-from datetime import datetime
-import database
+#!/usr/bin/env python3
+"""
+Webhook Handler untuk Real-time Order Updates - SYNC VERSION
+"""
+
 import logging
+import re
+import sqlite3
+from datetime import datetime
+from flask import Flask, request, jsonify
+import database
 import asyncio
-import telegram
-from telegram.ext import Application
 
 # Setup logging
 logging.basicConfig(
@@ -60,8 +62,41 @@ def extract_sn_from_keterangan(keterangan):
     
     return None
 
+def get_order_by_provider_id(reffid):
+    """Get order by provider order ID"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""
+            SELECT id, user_id, product_name, customer_input, price, status, 
+                   provider_order_id, sn, note, status_refund
+            FROM orders 
+            WHERE provider_order_id = ?
+        """, (reffid,))
+        
+        order = c.fetchone()
+        conn.close()
+        
+        if order:
+            return {
+                'id': order[0],
+                'user_id': order[1],
+                'product_name': order[2],
+                'customer_input': order[3],
+                'price': order[4],
+                'status': order[5],
+                'provider_order_id': order[6],
+                'sn': order[7],
+                'note': order[8],
+                'status_refund': order[9]
+            }
+        return None
+    except Exception as e:
+        logger.error(f"Error getting order by provider ID: {e}")
+        return None
+
 def update_order_status_from_webhook(reffid, status, keterangan=None, sn=None):
-    """Update order status based on webhook data"""
+    """Update order status based on webhook data - FIXED VERSION"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -74,13 +109,19 @@ def update_order_status_from_webhook(reffid, status, keterangan=None, sn=None):
             'PROSES': 'processing',
             'REFUND': 'refunded',
             'SUCCESS': 'completed',
-            'FAILED': 'failed'
+            'FAILED': 'failed',
+            'PROCCESS': 'processing'
         }
         
         internal_status = status_mapping.get(status.upper(), status.lower())
         
         # Get current order status
-        c.execute("SELECT status, status_refund FROM orders WHERE provider_order_id = ?", (reffid,))
+        c.execute("""
+            SELECT id, user_id, product_name, customer_input, price, status, 
+                   status_refund, sn, note
+            FROM orders WHERE provider_order_id = ?
+        """, (reffid,))
+        
         current_order = c.fetchone()
         
         if not current_order:
@@ -88,13 +129,23 @@ def update_order_status_from_webhook(reffid, status, keterangan=None, sn=None):
             conn.close()
             return False
         
-        current_status, current_refund = current_order
+        order_id, user_id, product_name, target, price, current_status, current_refund, current_sn, current_note = current_order
         
         # Skip if status is already the same
         if current_status == internal_status:
             logger.info(f"Order {reffid} status already {internal_status}, skipping update")
             conn.close()
-            return True
+            return {
+                'id': order_id,
+                'user_id': user_id,
+                'product_name': product_name,
+                'customer_input': target,
+                'price': price,
+                'status': internal_status,
+                'provider_order_id': reffid,
+                'sn': sn or current_sn,
+                'note': keterangan or current_note
+            }
         
         # Update order status
         update_query = """
@@ -116,43 +167,32 @@ def update_order_status_from_webhook(reffid, status, keterangan=None, sn=None):
         
         # If order failed and needs refund, process refund
         if internal_status == 'failed' and current_refund == 0:
-            c.execute("""
-                SELECT user_id, price FROM orders 
-                WHERE provider_order_id = ?
-            """, (reffid,))
-            order_data = c.fetchone()
-            
-            if order_data:
-                user_id, price = order_data
-                # Refund user balance
-                c.execute("""
-                    UPDATE users SET saldo = saldo + ? 
-                    WHERE user_id = ?
-                """, (price, user_id))
+            # Refund user balance using database function
+            try:
+                database.update_user_balance(user_id, price, f"Refund order gagal: {reffid}", "refund")
                 # Mark as refunded
-                c.execute("""
-                    UPDATE orders SET status_refund = 1 
-                    WHERE provider_order_id = ?
-                """, (reffid,))
+                c.execute("UPDATE orders SET status_refund = 1 WHERE provider_order_id = ?", (reffid,))
                 logger.info(f"Refund processed for order {reffid}: user {user_id} amount {price}")
+            except Exception as refund_error:
+                logger.error(f"Error processing refund: {refund_error}")
         
         conn.commit()
-        
-        # Get updated order data for notification
-        c.execute("""
-            SELECT user_id, product_name, customer_input, price, status, 
-                   provider_order_id, sn, note
-            FROM orders 
-            WHERE provider_order_id = ?
-        """, (reffid,))
-        updated_order = c.fetchone()
-        
         conn.close()
         
         logger.info(f"Order status updated: {reffid} -> {internal_status}")
         
-        # Return order data for notification
-        return updated_order
+        # Return updated order data for notification
+        return {
+            'id': order_id,
+            'user_id': user_id,
+            'product_name': product_name,
+            'customer_input': target,
+            'price': price,
+            'status': internal_status,
+            'provider_order_id': reffid,
+            'sn': sn or current_sn,
+            'note': keterangan or current_note
+        }
         
     except Exception as e:
         logger.error(f"Error updating order status from webhook: {e}")
@@ -165,7 +205,14 @@ async def send_order_notification(order_data):
             logger.error("Bot application not set for sending notifications")
             return
         
-        user_id, product_name, target, price, status, provider_id, sn, note = order_data
+        user_id = order_data['user_id']
+        product_name = order_data['product_name']
+        target = order_data['customer_input']
+        price = order_data['price']
+        status = order_data['status']
+        provider_id = order_data['provider_order_id']
+        sn = order_data.get('sn')
+        note = order_data.get('note')
         
         status_emoji = {
             'completed': '✅',
@@ -237,6 +284,7 @@ def webhook():
         r'RC=(?P<reffid>[a-z0-9_.-]+)\s+TrxID=(?P<trxid>\d+)\s+(?P<produk>[A-Z0-9]+)\.(?P<tujuan>\d+)\s+(?P<status_text>[A-Za-z]+)[, ]*(?P<keterangan>.+?)Saldo[\s\S]*?result=(?P<status_code>\d+)',
         r'ReffID[=:]?\s*(?P<reffid>[a-z0-9_.-]+).*?Status[=:]?\s*(?P<status_text>[A-Za-z]+).*?Keterangan[=:]?\s*(?P<keterangan>[^\.]+)',
         r'reff_id[=:]?\s*(?P<reffid>[a-z0-9_.-]+).*?status[=:]?\s*(?P<status_text>[A-Za-z]+)',
+        r'RC=(?P<reffid>[a-f0-9-]+)\s+TrxID=(?P<trxid>\d+)\s+(?P<produk>[A-Z0-9]+)\.(?P<tujuan>\d+)\s+(?P<status_text>[A-Za-z]+)\s*(?P<keterangan>.+?)(?:\s+Saldo[\s\S]*?)?(?:\bresult=(?P<status_code>\d+))?\s*>?$'
     ]
     
     parsed_data = None
@@ -253,9 +301,9 @@ def webhook():
     reffid = parsed_data['reffid']
     status_text = parsed_data['status_text']
     keterangan = parsed_data.get('keterangan', '').strip()
-    status_code = int(parsed_data.get('status_code', -1))
+    status_code = parsed_data.get('status_code', -1)
 
-    logger.info(f"Parsed webhook: reffid={reffid}, status={status_text}, code={status_code}")
+    logger.info(f"Parsed webhook: reffid={reffid}, status={status_text}, keterangan={keterangan}")
 
     # Extract SN from keterangan
     sn = extract_sn_from_keterangan(keterangan)
@@ -270,7 +318,7 @@ def webhook():
         )
         
         if order_data:
-            logger.info(f"Successfully updated order status: {reffid} -> {status_text}")
+            logger.info(f"Successfully updated order status: {reffid} -> {order_data['status']}")
             
             # Send notification asynchronously
             if bot_application:
@@ -278,6 +326,16 @@ def webhook():
             else:
                 logger.warning("Bot application not available for sending notifications")
                 
+            return jsonify({
+                "ok": True,
+                "message": "Webhook processed successfully",
+                "data": {
+                    "reffid": reffid,
+                    "status": order_data['status'],
+                    "sn": sn,
+                    "keterangan": keterangan
+                }
+            })
         else:
             logger.error(f"Failed to update order status: {reffid}")
             return jsonify({"ok": False, "error": "gagal update status"}), 500
@@ -285,18 +343,6 @@ def webhook():
     except Exception as e:
         logger.error(f"Error updating order status: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
-
-    return jsonify({
-        "ok": True,
-        "message": "Webhook processed successfully",
-        "parsed": {
-            "reffid": reffid,
-            "status_text": status_text,
-            "status_code": status_code,
-            "keterangan": keterangan,
-            "sn": sn
-        }
-    })
 
 @app.route("/health", methods=["GET"])
 def health_check():
@@ -311,36 +357,33 @@ def health_check():
 def get_order_status(reffid):
     """Get order status by reffid"""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("""
-            SELECT product_name, customer_input, price, status, created_at, updated_at, sn, note
-            FROM orders 
-            WHERE provider_order_id = ?
-        """, (reffid,))
-        order = c.fetchone()
-        conn.close()
+        order_data = get_order_by_provider_id(reffid)
         
-        if not order:
+        if not order_data:
             return jsonify({"error": "Order not found"}), 404
             
-        product_name, target, price, status, created_at, updated_at, sn, note = order
-        
         return jsonify({
             "reffid": reffid,
-            "product_name": product_name,
-            "target": target,
-            "price": price,
-            "status": status,
-            "created_at": created_at,
-            "updated_at": updated_at,
-            "sn": sn,
-            "note": note
+            "product_name": order_data['product_name'],
+            "target": order_data['customer_input'],
+            "price": order_data['price'],
+            "status": order_data['status'],
+            "sn": order_data['sn'],
+            "note": order_data['note'],
+            "last_updated": datetime.now().isoformat()
         })
         
     except Exception as e:
         logger.error(f"Error getting order status: {e}")
         return jsonify({"error": str(e)}), 500
 
+def start_webhook_server(host="0.0.0.0", port=8080):
+    """Start webhook server"""
+    try:
+        print(f"🌐 Starting webhook server on {host}:{port}")
+        app.run(host=host, port=port, debug=False)
+    except Exception as e:
+        logger.error(f"Failed to start webhook server: {e}")
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080, debug=False)
+    start_webhook_server()
