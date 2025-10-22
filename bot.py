@@ -12,7 +12,7 @@ from typing import Dict, Any
 from datetime import datetime
 
 # Telegram Imports
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -89,10 +89,10 @@ except Exception as e:
         return None
     
     async def order_menu_handler(update, context):
-        if hasattr(update, 'callback_query'):
-            await update.callback_query.message.reply_text("❌ Fitur order sedang dalam perbaikan.")
-        else:
+        if hasattr(update, 'message'):
             await update.message.reply_text("❌ Fitur order sedang dalam perbaikan.")
+        else:
+            await update.callback_query.message.reply_text("❌ Fitur order sedang dalam perbaikan.")
 
 # Topup Handler
 try:
@@ -109,10 +109,10 @@ except Exception as e:
     TOPUP_AVAILABLE = False
     
     async def show_topup_menu(update, context): 
-        if hasattr(update, 'callback_query'):
-            await update.callback_query.message.reply_text("❌ Fitur topup sedang dalam perbaikan.")
-        else:
+        if hasattr(update, 'message'):
             await update.message.reply_text("❌ Fitur topup sedang dalam perbaikan.")
+        else:
+            await update.callback_query.message.reply_text("❌ Fitur topup sedang dalam perbaikan.")
     
     def get_topup_conversation_handler():
         return None
@@ -168,10 +168,10 @@ def get_help_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
-def get_simple_keyboard():
-    """Reply Keyboard sederhana"""
+def get_back_keyboard():
+    """Reply Keyboard untuk kembali ke menu"""
     keyboard = [
-        ["🔄 START BOT"]
+        ["🏠 MENU UTAMA", "🔄 START BOT"]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
@@ -191,7 +191,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Error getting user saldo: {e}")
             saldo = 0
         
-        # Kirim pesan welcome dengan reply keyboard
         welcome_text = (
             f"🤖 **Selamat Datang!**\n\n"
             f"Halo {user.full_name}!\n"
@@ -235,13 +234,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if str(user.id) in ADMIN_IDS:
                 await admin_menu(update, context)
             else:
-                await update.message.reply_text("❌ Anda bukan admin!")
+                await update.message.reply_text("❌ Anda bukan admin!", reply_markup=get_main_keyboard(user.id))
         else:
             await unknown_message(update, context)
             
     except Exception as e:
         logger.error(f"Error handling message {text}: {e}")
-        await update.message.reply_text("❌ Terjadi error. Silakan coba lagi.")
+        await update.message.reply_text(
+            "❌ Terjadi error. Silakan coba lagi.",
+            reply_markup=get_main_keyboard(user.id)
+        )
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Tampilkan menu utama"""
@@ -269,6 +271,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
     else:
+        # Handle callback query case
         await update.callback_query.message.reply_text(
             menu_text,
             reply_markup=get_main_keyboard(user.id),
@@ -380,25 +383,38 @@ async def topup_command_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if TOPUP_AVAILABLE:
         await topup_command(update, context)
     else:
-        await update.message.reply_text("❌ Fitur topup sedang dalam perbaikan.")
+        await update.message.reply_text(
+            "❌ Fitur topup sedang dalam perbaikan.",
+            reply_markup=get_main_keyboard(update.message.from_user.id)
+        )
 
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /admin"""
     if str(update.message.from_user.id) in ADMIN_IDS:
         await admin_menu(update, context)
     else:
-        await update.message.reply_text("❌ Anda bukan admin!")
+        await update.message.reply_text(
+            "❌ Anda bukan admin!",
+            reply_markup=get_main_keyboard(update.message.from_user.id)
+        )
 
 # ==================== ADMIN COMMAND HANDLERS ====================
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /broadcast"""
     if str(update.message.from_user.id) in ADMIN_IDS:
         if ADMIN_AVAILABLE:
+            # Untuk admin commands, kita tetap gunakan inline keyboard
             await admin_callback_handler(update, context)
         else:
-            await update.message.reply_text("❌ Fitur broadcast sedang dalam perbaikan.")
+            await update.message.reply_text(
+                "❌ Fitur broadcast sedang dalam perbaikan.",
+                reply_markup=get_main_keyboard(update.message.from_user.id)
+            )
     else:
-        await update.message.reply_text("❌ Anda bukan admin!")
+        await update.message.reply_text(
+            "❌ Anda bukan admin!",
+            reply_markup=get_main_keyboard(update.message.from_user.id)
+        )
 
 async def topup_list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /topup_list"""
@@ -406,9 +422,15 @@ async def topup_list_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if ADMIN_AVAILABLE:
             await admin_callback_handler(update, context)
         else:
-            await update.message.reply_text("❌ Fitur admin sedang dalam perbaikan.")
+            await update.message.reply_text(
+                "❌ Fitur admin sedang dalam perbaikan.",
+                reply_markup=get_main_keyboard(update.message.from_user.id)
+            )
     else:
-        await update.message.reply_text("❌ Anda bukan admin!")
+        await update.message.reply_text(
+            "❌ Anda bukan admin!",
+            reply_markup=get_main_keyboard(update.message.from_user.id)
+        )
 
 async def cek_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /cek_user"""
@@ -416,9 +438,15 @@ async def cek_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if ADMIN_AVAILABLE:
             await admin_callback_handler(update, context)
         else:
-            await update.message.reply_text("❌ Fitur admin sedang dalam perbaikan.")
+            await update.message.reply_text(
+                "❌ Fitur admin sedang dalam perbaikan.",
+                reply_markup=get_main_keyboard(update.message.from_user.id)
+            )
     else:
-        await update.message.reply_text("❌ Anda bukan admin!")
+        await update.message.reply_text(
+            "❌ Anda bukan admin!",
+            reply_markup=get_main_keyboard(update.message.from_user.id)
+        )
 
 # ==================== UTILITY HANDLERS ====================
 async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -429,7 +457,7 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🤔 Saya tidak mengerti perintah tersebut.\n\n"
         "Gunakan /help untuk melihat daftar perintah yang tersedia "
         "atau gunakan tombol menu untuk navigasi.",
-        reply_markup=get_simple_keyboard()
+        reply_markup=get_back_keyboard()
     )
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
@@ -446,12 +474,12 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 "❌ Terjadi kesalahan sistem. Silakan coba lagi dalam beberapa saat.\n\n"
                 "Jika error berlanjut, hubungi admin.",
-                reply_markup=get_simple_keyboard()
+                reply_markup=get_back_keyboard()
             )
         elif update.callback_query:
             await update.callback_query.message.reply_text(
                 "❌ Terjadi kesalahan sistem. Silakan coba lagi.",
-                reply_markup=get_simple_keyboard()
+                reply_markup=get_back_keyboard()
             )
 
 async def post_init(application: Application):
