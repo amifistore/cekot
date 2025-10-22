@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Bot Telegram Full Feature - FOOTER MENU ONLY VERSION
+Bot Telegram Full Feature - FIXED & READY FOR RELEASE
 """
 
 import logging
@@ -31,7 +31,7 @@ import database
 # ==================== IMPORTS DENGAN ERROR HANDLING ====================
 print("🔄 Loading handlers...")
 
-# Admin Handler
+# Admin Handler - YANG SUDAH DIPERBAIKI
 try:
     from admin_handler import (
         admin_menu,
@@ -45,6 +45,7 @@ except Exception as e:
     traceback.print_exc()
     ADMIN_AVAILABLE = False
     
+    # Fallback functions
     async def admin_menu(update, context):
         if hasattr(update, 'message'):
             await update.message.reply_text("❌ Admin features sedang dalam perbaikan.")
@@ -137,45 +138,9 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = config.BOT_TOKEN
 ADMIN_IDS = getattr(config, 'ADMIN_TELEGRAM_IDS', [])
 
-# ==================== FOOTER MENU CONFIGURATION ====================
-FOOTER_MENU_ITEMS = [
-    {"text": "📊 CEK STOK", "callback_data": "footer_stock", "handler": stock_akrab_callback},
-    {"text": "💸 TOP UP", "callback_data": "footer_topup", "handler": show_topup_menu},
-    {"text": "🛒 BELI PRODUK", "callback_data": "footer_order", "handler": order_menu_handler},
-    {"text": "💳 CEK SALDO", "callback_data": "footer_saldo", "handler": None},  # Special handler
-    {"text": "📞 BANTUAN", "callback_data": "footer_help", "handler": None},    # Special handler
-]
-
-# ==================== FOOTER MENU FUNCTIONS ====================
-def get_footer_menu():
-    """Generate footer menu keyboard"""
-    keyboard = []
-    row = []
-    
-    for i, item in enumerate(FOOTER_MENU_ITEMS):
-        row.append(InlineKeyboardButton(item["text"], callback_data=item["callback_data"]))
-        # Create 2 buttons per row for better layout
-        if (i + 1) % 2 == 0 or i == len(FOOTER_MENU_ITEMS) - 1:
-            keyboard.append(row)
-            row = []
-    
-    # Add admin button if applicable
-    return keyboard
-
-def get_footer_menu_with_admin(user_id=None):
-    """Generate footer menu with admin button if user is admin"""
-    keyboard = get_footer_menu()
-    
-    if user_id and str(user_id) in ADMIN_IDS:
-        keyboard.append([InlineKeyboardButton("👑 ADMIN", callback_data="footer_admin")])
-    
-    keyboard.append([InlineKeyboardButton("🏠 MENU UTAMA", callback_data="footer_main")])
-    
-    return InlineKeyboardMarkup(keyboard)
-
 # ==================== BASIC COMMAND HANDLERS ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk command /start - Menu utama dengan footer menu"""
+    """Handler untuk command /start - Menu utama"""
     try:
         user = update.message.from_user
         logger.info(f"User {user.id} started the bot")
@@ -189,6 +154,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Error getting user saldo: {e}")
             saldo = 0
         
+        # Main menu keyboard
+        keyboard = [
+            [InlineKeyboardButton("🛒 BELI PRODUK", callback_data="main_menu_order")],
+            [InlineKeyboardButton("💳 CEK SALDO", callback_data="main_menu_saldo")],
+            [InlineKeyboardButton("📊 CEK STOK", callback_data="main_menu_stock")],
+            [InlineKeyboardButton("📞 BANTUAN", callback_data="main_menu_help")],
+            [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="topup_menu")],
+            [InlineKeyboardButton("🔄 START BOT", callback_data="main_menu_main")]
+        ]
+        
+        # Add admin button if user is admin
+        if str(user.id) in ADMIN_IDS:
+            keyboard.append([InlineKeyboardButton("👑 ADMIN PANEL", callback_data="main_menu_admin")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
         welcome_text = (
             f"🤖 **Selamat Datang!**\n\n"
             f"Halo {user.full_name}!\n"
@@ -198,7 +179,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(
             welcome_text,
-            reply_markup=get_footer_menu_with_admin(user.id),
+            reply_markup=reply_markup,
             parse_mode='Markdown'
         )
         
@@ -206,43 +187,43 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in start command: {e}")
         await update.message.reply_text("❌ Terjadi error. Silakan coba lagi.")
 
-async def footer_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Main footer menu handler untuk semua callback"""
+async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Main menu handler untuk semua callback"""
     query = update.callback_query
     await query.answer()
     
     data = query.data
     user = query.from_user
     
-    logger.info(f"Footer menu callback: {data} from user {user.id}")
+    logger.info(f"Main menu callback: {data} from user {user.id}")
     
     try:
-        if data == "footer_main":
-            await show_main_menu_footer(update, context)
-        elif data == "footer_saldo":
-            await show_saldo_menu_footer(update, context)
-        elif data == "footer_help":
-            await show_help_menu_footer(update, context)
-        elif data == "footer_admin":
+        if data == "main_menu_main":
+            await show_main_menu(update, context)
+        elif data == "main_menu_saldo":
+            await show_saldo_menu(update, context)
+        elif data == "main_menu_help":
+            await show_help_menu(update, context)
+        elif data == "main_menu_stock":
+            await stock_akrab_callback(update, context)
+        elif data == "main_menu_admin":
             if str(user.id) in ADMIN_IDS:
                 await admin_menu(update, context)
             else:
                 await query.answer("❌ Anda bukan admin!", show_alert=True)
+        elif data == "main_menu_order":
+            await order_menu_handler(update, context)
+        elif data == "topup_menu":
+            await show_topup_menu(update, context)
         else:
-            # Handle other footer menu items
-            for item in FOOTER_MENU_ITEMS:
-                if data == item["callback_data"] and item["handler"]:
-                    await item["handler"](update, context)
-                    return
-            
             await query.message.reply_text("❌ Menu tidak dikenali.")
             
     except Exception as e:
-        logger.error(f"Error in footer_menu_handler for {data}: {e}")
+        logger.error(f"Error in main_menu_handler for {data}: {e}")
         await query.message.reply_text("❌ Terjadi error. Silakan coba lagi.")
 
-async def show_main_menu_footer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Tampilkan menu utama dengan footer menu"""
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Tampilkan menu utama"""
     query = update.callback_query
     user = query.from_user
     
@@ -254,13 +235,27 @@ async def show_main_menu_footer(update: Update, context: ContextTypes.DEFAULT_TY
         logger.error(f"Error getting user saldo: {e}")
         saldo = 0
     
+    keyboard = [
+        [InlineKeyboardButton("🛒 BELI PRODUK", callback_data="main_menu_order")],
+        [InlineKeyboardButton("💳 CEK SALDO", callback_data="main_menu_saldo")],
+        [InlineKeyboardButton("📊 CEK STOK", callback_data="main_menu_stock")],
+        [InlineKeyboardButton("📞 BANTUAN", callback_data="main_menu_help")],
+        [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="topup_menu")],
+        [InlineKeyboardButton("🔄 START BOT", callback_data="main_menu_main")]
+    ]
+    
+    if str(user.id) in ADMIN_IDS:
+        keyboard.append([InlineKeyboardButton("👑 ADMIN PANEL", callback_data="main_menu_admin")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
     try:
         await query.edit_message_text(
             f"🏠 **MENU UTAMA**\n\n"
             f"Halo {user.full_name}!\n"
             f"💰 **Saldo Anda:** Rp {saldo:,.0f}\n\n"
             f"Pilih menu di bawah:",
-            reply_markup=get_footer_menu_with_admin(user.id),
+            reply_markup=reply_markup,
             parse_mode='Markdown'
         )
     except Exception as e:
@@ -270,12 +265,12 @@ async def show_main_menu_footer(update: Update, context: ContextTypes.DEFAULT_TY
             f"Halo {user.full_name}!\n"
             f"💰 **Saldo Anda:** Rp {saldo:,.0f}\n\n"
             f"Pilih menu di bawah:",
-            reply_markup=get_footer_menu_with_admin(user.id),
+            reply_markup=reply_markup,
             parse_mode='Markdown'
         )
 
-async def show_saldo_menu_footer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Tampilkan menu saldo dengan footer menu"""
+async def show_saldo_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Tampilkan menu saldo"""
     query = update.callback_query
     user = query.from_user
     
@@ -287,28 +282,34 @@ async def show_saldo_menu_footer(update: Update, context: ContextTypes.DEFAULT_T
         logger.error(f"Error getting user saldo: {e}")
         saldo = 0
     
-    saldo_text = (
-        f"💰 **SALDO ANDA**\n\n"
-        f"Saldo saat ini: **Rp {saldo:,.0f}**\n\n"
-        f"Gunakan menu Top Up untuk menambah saldo."
-    )
+    keyboard = [
+        [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="topup_menu")],
+        [InlineKeyboardButton("🏠 MENU UTAMA", callback_data="main_menu_main")],
+        [InlineKeyboardButton("🔄 START BOT", callback_data="main_menu_main")]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
     
     try:
         await query.edit_message_text(
-            saldo_text,
-            reply_markup=get_footer_menu_with_admin(user.id),
+            f"💰 **SALDO ANDA**\n\n"
+            f"Saldo saat ini: **Rp {saldo:,.0f}**\n\n"
+            f"Gunakan menu Top Up untuk menambah saldo.",
+            reply_markup=reply_markup,
             parse_mode='Markdown'
         )
     except Exception as e:
         logger.warning(f"Could not edit message: {e}")
         await query.message.reply_text(
-            saldo_text,
-            reply_markup=get_footer_menu_with_admin(user.id),
+            f"💰 **SALDO ANDA**\n\n"
+            f"Saldo saat ini: **Rp {saldo:,.0f}**\n\n"
+            f"Gunakan menu Top Up untuk menambah saldo.",
+            reply_markup=reply_markup,
             parse_mode='Markdown'
         )
 
-async def show_help_menu_footer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Tampilkan menu bantuan dengan footer menu"""
+async def show_help_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Tampilkan menu bantuan"""
     query = update.callback_query
     
     help_text = (
@@ -329,23 +330,29 @@ async def show_help_menu_footer(update: Update, context: ContextTypes.DEFAULT_TY
         "Hubungi Admin untuk bantuan lebih lanjut."
     )
     
+    keyboard = [
+        [InlineKeyboardButton("🏠 MENU UTAMA", callback_data="main_menu_main")],
+        [InlineKeyboardButton("🔄 START BOT", callback_data="main_menu_main")]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
     try:
         await query.edit_message_text(
             help_text,
-            reply_markup=get_footer_menu_with_admin(query.from_user.id),
+            reply_markup=reply_markup,
             parse_mode='Markdown'
         )
     except Exception as e:
         logger.warning(f"Could not edit message: {e}")
         await query.message.reply_text(
             help_text,
-            reply_markup=get_footer_menu_with_admin(query.from_user.id),
+            reply_markup=reply_markup,
             parse_mode='Markdown'
         )
 
-# ==================== COMMAND HANDLERS WITH FOOTER MENU ====================
 async def saldo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk command /saldo dengan footer menu"""
+    """Handler untuk command /saldo"""
     user = update.message.from_user
     
     saldo = 0
@@ -356,16 +363,31 @@ async def saldo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error getting user saldo: {e}")
         saldo = 0
     
+    keyboard = [
+        [InlineKeyboardButton("💸 TOP UP SALDO", callback_data="topup_menu")],
+        [InlineKeyboardButton("🏠 MENU UTAMA", callback_data="main_menu_main")],
+        [InlineKeyboardButton("🔄 START BOT", callback_data="main_menu_main")]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
     await update.message.reply_text(
         f"💰 **SALDO ANDA**\n\n"
         f"Saldo saat ini: **Rp {saldo:,.0f}**\n\n"
         f"Gunakan menu Top Up untuk menambah saldo.",
-        reply_markup=get_footer_menu_with_admin(user.id),
+        reply_markup=reply_markup,
         parse_mode='Markdown'
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk command /help dengan footer menu"""
+    """Handler untuk command /help"""
+    keyboard = [
+        [InlineKeyboardButton("🏠 MENU UTAMA", callback_data="main_menu_main")],
+        [InlineKeyboardButton("🔄 START BOT", callback_data="main_menu_main")]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
     help_text = (
         "🤖 **BOT COMMANDS**\n\n"
         "**PERINTAH UTAMA:**\n"
@@ -384,7 +406,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         help_text,
-        reply_markup=get_footer_menu_with_admin(update.message.from_user.id),
+        reply_markup=reply_markup,
         parse_mode='Markdown'
     )
 
@@ -425,6 +447,7 @@ async def topup_list_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """Handler untuk command /topup_list"""
     if str(update.message.from_user.id) in ADMIN_IDS:
         if ADMIN_AVAILABLE:
+            # Create fake callback query for admin topup
             query = type('Query', (), {
                 'data': 'admin_topup',
                 'from_user': update.message.from_user,
@@ -447,6 +470,7 @@ async def cek_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /cek_user"""
     if str(update.message.from_user.id) in ADMIN_IDS:
         if ADMIN_AVAILABLE:
+            # Create fake callback query for admin users
             query = type('Query', (), {
                 'data': 'admin_users',
                 'from_user': update.message.from_user,
@@ -467,37 +491,47 @@ async def cek_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ==================== UTILITY HANDLERS ====================
 async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk pesan yang tidak dikenal dengan footer menu"""
+    """Handler untuk pesan yang tidak dikenal"""
     logger.debug(f"Unknown message from {update.message.from_user.id}: {update.message.text}")
     
     await update.message.reply_text(
         "🤔 Saya tidak mengerti perintah tersebut.\n\n"
-        "Gunakan tombol menu di bawah untuk navigasi.",
-        reply_markup=get_footer_menu_with_admin(update.message.from_user.id)
+        "Gunakan /help untuk melihat daftar perintah yang tersedia "
+        "atau gunakan tombol menu untuk navigasi.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📞 BANTUAN", callback_data="main_menu_help")],
+            [InlineKeyboardButton("🏠 MENU UTAMA", callback_data="main_menu_main")],
+            [InlineKeyboardButton("🔄 START BOT", callback_data="main_menu_main")]
+        ])
     )
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     """Global error handler untuk menangani semua error"""
     logger.error(f"Exception while handling an update: {context.error}", exc_info=True)
     
+    # Log the full traceback
     tb_list = traceback.format_exception(None, context.error, context.error.__traceback__)
     tb_string = ''.join(tb_list)
     logger.error(f"Traceback: {tb_string}")
     
     if isinstance(update, Update):
-        user_id = None
         if update.message:
-            user_id = update.message.from_user.id
             await update.message.reply_text(
                 "❌ Terjadi kesalahan sistem. Silakan coba lagi dalam beberapa saat.\n\n"
                 "Jika error berlanjut, hubungi admin.",
-                reply_markup=get_footer_menu_with_admin(user_id)
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🏠 MENU UTAMA", callback_data="main_menu_main")],
+                    [InlineKeyboardButton("📞 BANTUAN", callback_data="main_menu_help")],
+                    [InlineKeyboardButton("🔄 START BOT", callback_data="main_menu_main")]
+                ])
             )
         elif update.callback_query:
-            user_id = update.callback_query.from_user.id
             await update.callback_query.message.reply_text(
                 "❌ Terjadi kesalahan sistem. Silakan coba lagi.",
-                reply_markup=get_footer_menu_with_admin(user_id)
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🏠 MENU UTAMA", callback_data="main_menu_main")],
+                    [InlineKeyboardButton("🔄 START BOT", callback_data="main_menu_main")]
+                ])
             )
 
 async def post_init(application: Application):
@@ -505,8 +539,10 @@ async def post_init(application: Application):
     logger.info("🤖 Bot has been initialized successfully!")
     
     try:
+        # Get bot info
         bot = await application.bot.get_me()
         
+        # Get basic statistics
         try:
             total_users = database.get_total_users()
             total_products = database.get_total_products()
@@ -536,11 +572,10 @@ async def post_init(application: Application):
         
         print("=" * 50)
         print("🤖 BOT STARTED SUCCESSFULLY!")
-        print("📍 FOOTER MENU ONLY VERSION")
         print("=" * 50)
         print(status_info)
         print("=" * 50)
-        print("📍 Bot is now running with footer menu...")
+        print("📍 Bot is now running and waiting for messages...")
         print("📍 Try sending /start to your bot")
         print("=" * 50)
         
@@ -552,12 +587,14 @@ async def post_init(application: Application):
 def main():
     """Main function - Initialize dan start bot"""
     try:
-        print("🚀 Starting Telegram Bot - FOOTER MENU ONLY...")
+        print("🚀 Starting Telegram Bot...")
         
+        # Check BOT_TOKEN
         if not BOT_TOKEN or BOT_TOKEN == 'YOUR_BOT_TOKEN_HERE':
             print("❌ Please set BOT_TOKEN in config.py")
             sys.exit(1)
         
+        # Initialize database
         try:
             success = database.init_database()
             if success:
@@ -567,6 +604,7 @@ def main():
         except Exception as e:
             print(f"❌ Database initialization failed: {e}")
         
+        # Create Application
         persistence = PicklePersistence(filepath="bot_persistence")
         application = Application.builder()\
             .token(BOT_TOKEN)\
@@ -578,7 +616,7 @@ def main():
         
         # ==================== HANDLER REGISTRATION ====================
         
-        # 1. CONVERSATION HANDLERS
+        # 1. CONVERSATION HANDLERS (PRIORITAS TERTINGGI)
         if TOPUP_AVAILABLE:
             topup_conv_handler = get_topup_conversation_handler()
             if topup_conv_handler:
@@ -610,9 +648,10 @@ def main():
             application.add_handler(CallbackQueryHandler(stock_akrab_callback, pattern="^stock_"))
             print("✅ Stok handler registered")
         
-        # 5. FOOTER MENU CALLBACK HANDLER (REPLACES MAIN MENU)
-        application.add_handler(CallbackQueryHandler(footer_menu_handler, pattern="^footer_"))
-        print("✅ Footer menu callback handler registered")
+        # 5. MAIN MENU CALLBACK HANDLER
+        application.add_handler(CallbackQueryHandler(main_menu_handler, pattern="^main_menu_"))
+        application.add_handler(CallbackQueryHandler(main_menu_handler, pattern="^topup_menu$"))
+        print("✅ Main menu callback handler registered")
         
         # 6. COMMAND HANDLERS
         application.add_handler(CommandHandler("start", start))
@@ -630,7 +669,7 @@ def main():
         
         print("✅ Command handlers registered")
         
-        # 7. MESSAGE HANDLER
+        # 7. MESSAGE HANDLER (UNTUK UNKNOWN MESSAGES)
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_message))
         print("✅ Unknown message handler registered")
         
@@ -641,6 +680,7 @@ def main():
         # ==================== START BOT ====================
         print("🎯 Starting bot polling...")
         
+        # Run bot dengan polling
         application.run_polling(
             drop_pending_updates=True,
             allowed_updates=Update.ALL_TYPES
@@ -655,9 +695,10 @@ def main():
         sys.exit(1)
 
 if __name__ == "__main__":
+    # Print startup banner
     print("=" * 60)
-    print("🤖 TELEGRAM BOT - FOOTER MENU ONLY VERSION")
-    print("📍 HANYA MENGGUNAKAN MENU BAWAH")
+    print("🤖 TELEGRAM BOT - FULL FEATURE VERSION")
+    print("🛠️  FIXED & READY FOR PRODUCTION")
     print("=" * 60)
     
     main()
