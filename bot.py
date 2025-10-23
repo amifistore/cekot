@@ -970,6 +970,11 @@ def main():
             print("✅ Stok handler registered")
         
         # 5. HISTORY HANDLERS
+        # Di bagian handler registration, tambahkan:
+        application.add_handler(CallbackQueryHandler(show_history_menu, pattern="^history_menu$"))
+        application.add_handler(CallbackQueryHandler(show_order_history, pattern="^history_orders$"))
+        application.add_handler(CallbackQueryHandler(show_topup_history, pattern="^history_topups$"))
+        application.add_handler(CallbackQueryHandler(show_all_history, pattern="^history_all$"))
         application.add_handler(CallbackQueryHandler(show_history_menu, pattern="^history_menu$"))
         application.add_handler(CallbackQueryHandler(show_order_history, pattern="^history_orders$"))
         application.add_handler(CallbackQueryHandler(show_topup_history, pattern="^history_topups$"))
