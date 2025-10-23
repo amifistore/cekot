@@ -936,62 +936,6 @@ def main():
         print("✅ Application built successfully")
         
         # ==================== HANDLER REGISTRATION ====================
-async def show_history_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Tampilkan menu riwayat transaksi"""
-    query = update.callback_query
-     await query.answer()
-    
-    keyboard = [
-        [InlineKeyboardButton("📋 Riwayat Order", callback_data="history_orders")],
-        [InlineKeyboardButton("💰 Riwayat Topup", callback_data="history_topups")],
-        [InlineKeyboardButton("📊 Semua Transaksi", callback_data="history_all")],
-        [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
-    ]
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(
-        "📊 **RIWAYAT TRANSAKSI**\n\n"
-        "Pilih jenis riwayat yang ingin dilihat:",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
-
-async def show_order_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Tampilkan riwayat order user"""
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = str(query.from_user.id)
-    
-    try:
-        # Get user orders
-        orders = []  # Ganti dengan fungsi dari database
-        
-        if not orders:
-            await query.edit_message_text(
-                "📋 **RIWAYAT ORDER**\n\n"
-                "Anda belum memiliki riwayat order.\n\n"
-                "Silakan melakukan order terlebih dahulu.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🛒 Order Sekarang", callback_data="main_menu_order")],
-                    [InlineKeyboardButton("🔙 Kembali", callback_data="history_menu")]
-                ]),
-                parse_mode='Markdown'
-            )
-            return
-            
-        # Tampilkan orders yang ada
-        # ... implementasi menampilkan orders
-        
-    except Exception as e:
-        logger.error(f"Error showing order history: {e}")
-        await query.edit_message_text(
-            "❌ Error memuat riwayat order.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Kembali", callback_data="history_menu")]
-            ])
-        )
         
         # 1. CONVERSATION HANDLERS
         if TOPUP_AVAILABLE:
@@ -1026,11 +970,6 @@ async def show_order_history(update: Update, context: ContextTypes.DEFAULT_TYPE)
             print("✅ Stok handler registered")
         
         # 5. HISTORY HANDLERS
-        # Di bagian handler registration, tambahkan:
-        application.add_handler(CallbackQueryHandler(show_history_menu, pattern="^history_menu$"))
-        application.add_handler(CallbackQueryHandler(show_order_history, pattern="^history_orders$"))
-        application.add_handler(CallbackQueryHandler(show_topup_history, pattern="^history_topups$"))
-        application.add_handler(CallbackQueryHandler(show_all_history, pattern="^history_all$"))
         application.add_handler(CallbackQueryHandler(show_history_menu, pattern="^history_menu$"))
         application.add_handler(CallbackQueryHandler(show_order_history, pattern="^history_orders$"))
         application.add_handler(CallbackQueryHandler(show_topup_history, pattern="^history_topups$"))
