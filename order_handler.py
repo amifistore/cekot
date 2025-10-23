@@ -25,9 +25,6 @@ logger = logging.getLogger(__name__)
 CHOOSING_GROUP, CHOOSING_PRODUCT, ENTER_TUJUAN, CONFIRM_ORDER = range(4)
 PRODUCTS_PER_PAGE = 8
 
-# Database path
-DB_PATH = getattr(database, 'DB_PATH', 'bot_database.db')
-
 # ==================== KHFYPAY API INTEGRATION ====================
 
 class KhfyPayAPI:
@@ -112,7 +109,19 @@ class KhfyPayAPI:
 def get_user_saldo(user_id):
     """Fixed compatibility function for user balance"""
     try:
-        return database.get_user_balance(user_id)
+        # Coba beberapa kemungkinan nama fungsi
+        if hasattr(database, 'get_user_balance'):
+            return database.get_user_balance(user_id)
+        elif hasattr(database, 'get_user_saldo'):
+            return database.get_user_saldo(user_id)
+        else:
+            # Fallback: cek langsung di database
+            conn = sqlite3.connect('bot_database.db')
+            cursor = conn.cursor()
+            cursor.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
+            result = cursor.fetchone()
+            conn.close()
+            return result[0] if result else 0
     except Exception as e:
         logger.error(f"Error getting user saldo: {e}")
         return 0
@@ -127,7 +136,19 @@ def update_user_saldo(user_id, amount):
         else:
             transaction_type = "refund" if "refund" in note.lower() else "adjustment"
         
-        return database.update_user_balance(user_id, amount, note, transaction_type)
+        # Coba beberapa kemungkinan nama fungsi
+        if hasattr(database, 'update_user_balance'):
+            return database.update_user_balance(user_id, amount, note, transaction_type)
+        elif hasattr(database, 'update_user_saldo'):
+            return database.update_user_saldo(user_id, amount, note, transaction_type)
+        else:
+            # Fallback: update langsung di database
+            conn = sqlite3.connect('bot_database.db')
+            cursor = conn.cursor()
+            cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
+            conn.commit()
+            conn.close()
+            return True
     except Exception as e:
         logger.error(f"Error updating user saldo: {e}")
         return False
@@ -136,17 +157,32 @@ def save_order(user_id, product_name, product_code, customer_input, price,
                status='pending', provider_order_id='', sn='', note=''):
     """Fixed compatibility function for save order"""
     try:
-        return database.save_order(
-            user_id=user_id,
-            product_name=product_name,
-            product_code=product_code,
-            customer_input=customer_input,
-            price=price,
-            status=status,
-            provider_order_id=provider_order_id,
-            sn=sn,
-            note=note
-        )
+        if hasattr(database, 'save_order'):
+            return database.save_order(
+                user_id=user_id,
+                product_name=product_name,
+                product_code=product_code,
+                customer_input=customer_input,
+                price=price,
+                status=status,
+                provider_order_id=provider_order_id,
+                sn=sn,
+                note=note
+            )
+        else:
+            # Fallback: simpan langsung ke database
+            conn = sqlite3.connect('bot_database.db')
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO orders (user_id, product_name, product_code, customer_input, 
+                                  price, status, provider_order_id, sn, note, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (user_id, product_name, product_code, customer_input, price, 
+                  status, provider_order_id, sn, note, datetime.now()))
+            order_id = cursor.lastrowid
+            conn.commit()
+            conn.close()
+            return order_id
     except Exception as e:
         logger.error(f"Error saving order: {e}")
         return 0
@@ -154,7 +190,19 @@ def save_order(user_id, product_name, product_code, customer_input, price,
 def update_order_status(order_id, status, sn='', note=''):
     """Fixed compatibility function for update order status"""
     try:
-        return database.update_order_status(order_id, status, sn, note)
+        if hasattr(database, 'update_order_status'):
+            return database.update_order_status(order_id, status, sn, note)
+        else:
+            # Fallback: update langsung di database
+            conn = sqlite3.connect('bot_database.db')
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE orders SET status = ?, sn = ?, note = ?, updated_at = ?
+                WHERE id = ?
+            ''', (status, sn, note, datetime.now(), order_id))
+            conn.commit()
+            conn.close()
+            return True
     except Exception as e:
         logger.error(f"Error updating order status: {e}")
         return False
@@ -176,7 +224,6 @@ def sync_product_stock_from_provider():
             logger.error("Gagal mendapatkan produk dari provider")
             return False
         
-        # Use database functions instead of raw SQL
         updated_stock_count = 0
         
         if isinstance(provider_products, list):
@@ -187,12 +234,8 @@ def sync_product_stock_from_provider():
                     
                     if product_code:
                         # Tentukan stok berdasarkan status dari provider
-                        new_stock = 0
-                        gangguan = 0
-                        kosong = 0
-                        
                         if product_status == 'active':
-                            new_stock = 100  # Default stock untuk produk aktif
+                            new_stock = 100
                             gangguan = 0
                             kosong = 0
                         elif product_status == 'empty':
@@ -208,21 +251,35 @@ def sync_product_stock_from_provider():
                             gangguan = 0
                             kosong = 1
                         else:
-                            # Default untuk status tidak dikenal
                             new_stock = 0
                             gangguan = 0
                             kosong = 1
                         
-                        # Update stok di database menggunakan database function
-                        success = database.update_product(
-                            product_code,
-                            stock=new_stock,
-                            gangguan=gangguan,
-                            kosong=kosong
-                        )
-                        
-                        if success:
-                            updated_stock_count += 1
+                        # Update stok di database
+                        try:
+                            if hasattr(database, 'update_product'):
+                                success = database.update_product(
+                                    product_code,
+                                    stock=new_stock,
+                                    gangguan=gangguan,
+                                    kosong=kosong
+                                )
+                            else:
+                                # Fallback: update langsung di database
+                                conn = sqlite3.connect('bot_database.db')
+                                cursor = conn.cursor()
+                                cursor.execute('''
+                                    UPDATE products SET stock = ?, gangguan = ?, kosong = ?
+                                    WHERE code = ?
+                                ''', (new_stock, gangguan, kosong, product_code))
+                                success = cursor.rowcount > 0
+                                conn.commit()
+                                conn.close()
+                            
+                            if success:
+                                updated_stock_count += 1
+                        except Exception as update_error:
+                            logger.error(f"Error updating product {product_code}: {update_error}")
         
         logger.info(f"Berhasil update stok untuk {updated_stock_count} produk")
         return updated_stock_count > 0
@@ -252,7 +309,7 @@ def update_product_stock_after_order(product_code, quantity=1):
     """Update stok produk setelah order berhasil"""
     try:
         # Get current product
-        product = database.get_product(product_code)
+        product = get_product_by_code_with_stock(product_code)
         if not product:
             logger.error(f"Product {product_code} not found for stock update")
             return False
@@ -260,18 +317,30 @@ def update_product_stock_after_order(product_code, quantity=1):
         current_stock = product.get('stock', 0)
         new_stock = max(0, current_stock - quantity)
         
-        # Update stock using database function
-        success = database.update_product(
-            product_code,
-            stock=new_stock
-        )
-        
-        if success:
-            logger.info(f"Updated stock for {product_code}: {current_stock} -> {new_stock}")
-        else:
-            logger.error(f"Failed to update stock for {product_code}")
+        # Update stock
+        try:
+            if hasattr(database, 'update_product'):
+                success = database.update_product(product_code, stock=new_stock)
+            else:
+                # Fallback: update langsung di database
+                conn = sqlite3.connect('bot_database.db')
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE products SET stock = ? WHERE code = ?
+                ''', (new_stock, product_code))
+                success = cursor.rowcount > 0
+                conn.commit()
+                conn.close()
             
-        return success
+            if success:
+                logger.info(f"Updated stock for {product_code}: {current_stock} -> {new_stock}")
+            else:
+                logger.error(f"Failed to update stock for {product_code}")
+                
+            return success
+        except Exception as update_error:
+            logger.error(f"Error updating stock in database: {update_error}")
+            return False
     except Exception as e:
         logger.error(f"Error update_product_stock_after_order: {e}")
         return False
@@ -281,7 +350,7 @@ def update_product_stock_after_order(product_code, quantity=1):
 def process_refund(order_id, user_id, amount, reason="Order gagal"):
     """Process refund untuk order yang gagal"""
     try:
-        # Update saldo user menggunakan database function
+        # Update saldo user
         update_success = update_user_saldo(user_id, amount)
         
         if not update_success:
@@ -351,46 +420,55 @@ async def safe_reply_message(update, text, *args, **kwargs):
 
 def validate_phone_number(phone):
     """Validate phone number format"""
-    phone = re.sub(r'\D', '', phone)
-    
-    if phone.startswith('0'):
-        phone = '62' + phone[1:]
-    elif phone.startswith('8'):
-        phone = '62' + phone
-    elif phone.startswith('+62'):
-        phone = phone[1:]
-    
-    if len(phone) < 10 or len(phone) > 14:
+    try:
+        phone = re.sub(r'\D', '', phone)
+        
+        if phone.startswith('0'):
+            phone = '62' + phone[1:]
+        elif phone.startswith('8'):
+            phone = '62' + phone
+        elif phone.startswith('+62'):
+            phone = phone[1:]
+        
+        if len(phone) < 10 or len(phone) > 14:
+            return None
+        
+        return phone
+    except Exception as e:
+        logger.error(f"Error validating phone number: {e}")
         return None
-    
-    return phone
 
 def validate_pulsa_target(phone, product_code):
     """Validate pulsa target"""
-    phone = validate_phone_number(phone)
-    if not phone:
+    try:
+        phone = validate_phone_number(phone)
+        if not phone:
+            return None
+        
+        # Validasi berdasarkan operator
+        if product_code.startswith('TS'):  # Telkomsel
+            if not any(phone.startswith(prefix) for prefix in ['62852', '62853', '62811', '62812', '62813', '62821', '62822', '62823']):
+                return None
+        elif product_code.startswith('AX'):  # Axis
+            if not any(phone.startswith(prefix) for prefix in ['62838', '62839', '62837']):
+                return None
+        elif product_code.startswith('XL'):  # XL
+            if not any(phone.startswith(prefix) for prefix in ['62817', '62818', '62819', '62859']):
+                return None
+        elif product_code.startswith('IN'):  # Indosat
+            if not any(phone.startswith(prefix) for prefix in ['62814', '62815', '62816', '62855', '62856', '62857', '62858']):
+                return None
+        elif product_code.startswith('SM'):  # Smartfren
+            if not any(phone.startswith(prefix) for prefix in ['62888', '62889']):
+                return None
+        elif product_code.startswith('3'):  # Three
+            if not any(phone.startswith(prefix) for prefix in ['62895', '62896', '62897', '62898', '62899']):
+                return None
+        
+        return phone
+    except Exception as e:
+        logger.error(f"Error validating pulsa target: {e}")
         return None
-    
-    if product_code.startswith('TS'):
-        if not phone.startswith('62852') and not phone.startswith('62853') and not phone.startswith('62811') and not phone.startswith('62812') and not phone.startswith('62813') and not phone.startswith('62821') and not phone.startswith('62822') and not phone.startswith('62823'):
-            return None
-    elif product_code.startswith('AX'):
-        if not phone.startswith('62838') and not phone.startswith('62839') and not phone.startswith('62837'):
-            return None
-    elif product_code.startswith('XL'):
-        if not phone.startswith('62817') and not phone.startswith('62818') and not phone.startswith('62819') and not phone.startswith('62859'):
-            return None
-    elif product_code.startswith('IN'):
-        if not phone.startswith('62814') and not phone.startswith('62815') and not phone.startswith('62816') and not phone.startswith('62855') and not phone.startswith('62856') and not phone.startswith('62857') and not phone.startswith('62858'):
-            return None
-    elif product_code.startswith('SM'):
-        if not phone.startswith('62888') and not phone.startswith('62889'):
-            return None
-    elif product_code.startswith('3'):
-        if not phone.startswith('62895') and not phone.startswith('62896') and not phone.startswith('62897') and not phone.startswith('62898') and not phone.startswith('62899'):
-            return None
-    
-    return phone
 
 # ==================== PRODUCT MANAGEMENT WITH STOCK DISPLAY ====================
 
@@ -401,7 +479,20 @@ def get_grouped_products_with_stock():
         sync_product_stock_from_provider()
         
         # Get all active products
-        products_data = database.get_products_by_category(status='active')
+        try:
+            if hasattr(database, 'get_products_by_category'):
+                products_data = database.get_products_by_category(status='active')
+            else:
+                # Fallback: ambil langsung dari database
+                conn = sqlite3.connect('bot_database.db')
+                cursor = conn.cursor()
+                cursor.execute("SELECT code, name, price, category, description, stock, gangguan, kosong FROM products WHERE status = 'active'")
+                products_data = [dict(zip(['code', 'name', 'price', 'category', 'description', 'stock', 'gangguan', 'kosong'], row)) 
+                               for row in cursor.fetchall()]
+                conn.close()
+        except Exception as db_error:
+            logger.error(f"Error getting products from database: {db_error}")
+            products_data = []
         
         logger.info(f"Found {len(products_data)} active products in database with stock sync")
         
@@ -467,7 +558,20 @@ def get_product_by_code_with_stock(product_code):
         # Sync stok untuk produk ini
         sync_product_stock_from_provider()
         
-        product = database.get_product(product_code)
+        try:
+            if hasattr(database, 'get_product'):
+                product = database.get_product(product_code)
+            else:
+                # Fallback: ambil langsung dari database
+                conn = sqlite3.connect('bot_database.db')
+                cursor = conn.cursor()
+                cursor.execute("SELECT code, name, price, category, description, status, stock, gangguan, kosong FROM products WHERE code = ?", (product_code,))
+                row = cursor.fetchone()
+                conn.close()
+                product = dict(zip(['code', 'name', 'price', 'category', 'description', 'status', 'stock', 'gangguan', 'kosong'], row)) if row else None
+        except Exception as db_error:
+            logger.error(f"Error getting product from database: {db_error}")
+            product = None
         
         if product:
             stock_status, display_stock = get_product_stock_status(
@@ -1163,7 +1267,21 @@ def handle_webhook_callback(message):
             is_success = False
         
         # Cari order di database
-        order = database.get_order_by_provider_id(reffid)
+        try:
+            if hasattr(database, 'get_order_by_provider_id'):
+                order = database.get_order_by_provider_id(reffid)
+            else:
+                # Fallback: cari langsung di database
+                conn = sqlite3.connect('bot_database.db')
+                cursor = conn.cursor()
+                cursor.execute("SELECT id, user_id, price FROM orders WHERE provider_order_id = ?", (reffid,))
+                row = cursor.fetchone()
+                conn.close()
+                order = dict(zip(['id', 'user_id', 'price'], row)) if row else None
+        except Exception as db_error:
+            logger.error(f"Error finding order in database: {db_error}")
+            order = None
+        
         if not order:
             logger.warning(f"Order tidak ditemukan untuk reffid: {reffid}")
             return False
@@ -1209,6 +1327,40 @@ async def periodic_stock_sync_task(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error in periodic_stock_sync_task: {e}")
 
+# ==================== CANCEL HANDLERS ====================
+
+async def cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel order and return to product selection"""
+    query = update.callback_query
+    await query.answer("Order dibatalkan")
+    
+    if 'selected_product' in context.user_data:
+        del context.user_data['selected_product']
+    if 'order_target' in context.user_data:
+        del context.user_data['order_target']
+    
+    return await show_products(update, context)
+
+async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel the entire order conversation"""
+    query = update.callback_query
+    await query.answer()
+    
+    order_keys = ['selected_product', 'order_target', 'product_page', 'current_group', 'current_products']
+    for key in order_keys:
+        if key in context.user_data:
+            del context.user_data[key]
+    
+    await safe_edit_message_text(
+        update,
+        "❌ Order dibatalkan.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
+        ])
+    )
+    
+    return ConversationHandler.END
+
 # ==================== CONVERSATION HANDLER SETUP ====================
 
 def get_conversation_handler():
@@ -1246,40 +1398,6 @@ def get_conversation_handler():
         name="order_conversation",
         persistent=False
     )
-
-# ==================== CANCEL HANDLERS ====================
-
-async def cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Cancel order and return to product selection"""
-    query = update.callback_query
-    await query.answer("Order dibatalkan")
-    
-    if 'selected_product' in context.user_data:
-        del context.user_data['selected_product']
-    if 'order_target' in context.user_data:
-        del context.user_data['order_target']
-    
-    return await show_products(update, context)
-
-async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Cancel the entire order conversation"""
-    query = update.callback_query
-    await query.answer()
-    
-    order_keys = ['selected_product', 'order_target', 'product_page', 'current_group', 'current_products']
-    for key in order_keys:
-        if key in context.user_data:
-            del context.user_data[key]
-    
-    await safe_edit_message_text(
-        update,
-        "❌ Order dibatalkan.",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
-        ])
-    )
-    
-    return ConversationHandler.END
 
 # ==================== ERROR HANDLER ====================
 
