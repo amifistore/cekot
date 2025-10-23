@@ -2,7 +2,7 @@
 """
 Database Management System - PRODUCTION READY VERSION
 FULL FEATURES - NO BUGS - READY FOR DEPLOYMENT
-FIXED FOR ORDER_HANDLER COMPATIBILITY
+FIXED FOR ORDER_HANDLER COMPATIBILITY - COMPLETE VERSION
 """
 
 import sqlite3
@@ -194,6 +194,7 @@ class DatabaseManager:
                         processed_at DATETIME,
                         completed_at DATETIME,
                         refunded_at DATETIME,
+                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                         FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE,
                         FOREIGN KEY (product_code) REFERENCES products (code)
                     )
@@ -327,6 +328,7 @@ class DatabaseManager:
                     'CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id)',
                     'CREATE INDEX IF NOT EXISTS idx_orders_created ON orders(created_at)',
                     'CREATE INDEX IF NOT EXISTS idx_orders_product ON orders(product_code)',
+                    'CREATE INDEX IF NOT EXISTS idx_orders_updated ON orders(updated_at)',
                     
                     # Topup indexes
                     'CREATE INDEX IF NOT EXISTS idx_topup_requests_status ON topup_requests(status)',
@@ -913,8 +915,8 @@ class DatabaseManager:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 
-                update_fields = ["status = ?"]
-                params = [status]
+                update_fields = ["status = ?", "updated_at = ?"]
+                params = [status, datetime.now()]
                 
                 if sn:
                     update_fields.append("sn = ?")
@@ -980,6 +982,45 @@ class DatabaseManager:
                 return [dict(row) for row in cursor.fetchall()]
         except Exception as e:
             logger.error(f"Error getting user orders for {user_id}: {e}")
+            return []
+
+    # ==================== FIXED: MISSING FUNCTION ====================
+    def get_user_recent_orders(self, user_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """Get user's recent orders - FIX for missing function"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT 
+                        id, product_code, product_name, price, status, 
+                        customer_input, sn, note, created_at, updated_at
+                    FROM orders 
+                    WHERE user_id = ? 
+                    ORDER BY created_at DESC 
+                    LIMIT ?
+                ''', (str(user_id), limit))
+                
+                orders = [dict(row) for row in cursor.fetchall()]
+                logger.info(f"📋 Retrieved {len(orders)} recent orders for user {user_id}")
+                return orders
+        except Exception as e:
+            logger.error(f"Error getting recent orders for {user_id}: {e}")
+            return []
+
+    def get_user_order_history(self, user_id: str, days: int = 30) -> List[Dict[str, Any]]:
+        """Get user order history for specific period"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cutoff_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+                cursor.execute('''
+                    SELECT * FROM orders 
+                    WHERE user_id = ? AND created_at >= ?
+                    ORDER BY created_at DESC
+                ''', (str(user_id), cutoff_date))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Error getting order history for {user_id}: {e}")
             return []
 
     # ==================== ORDER HANDLER COMPATIBILITY FUNCTIONS ====================
@@ -1718,6 +1759,14 @@ def update_order_status(order_id: int, status: str, sn: str = "", note: str = ""
 def get_user_orders(user_id: str, limit: int = 10):
     return _db_manager.get_user_orders(user_id, limit)
 
+# ==================== FIXED: MISSING FUNCTIONS ====================
+def get_user_recent_orders(user_id: str, limit: int = 10):
+    """Compatibility function - FIX MISSING FUNCTION"""
+    return _db_manager.get_user_recent_orders(user_id, limit)
+
+def get_user_order_history(user_id: str, days: int = 30):
+    return _db_manager.get_user_order_history(user_id, days)
+
 def get_bot_statistics():
     return _db_manager.get_bot_statistics()
 
@@ -1862,6 +1911,10 @@ if __name__ == "__main__":
     # Test order handler compatibility
     saldo = db.get_user_saldo("test_user")
     print(f"✅ Saldo compatibility test: {saldo}")
+    
+    # Test FIXED function
+    orders = db.get_user_recent_orders("test_user", 5)
+    print(f"✅ Fixed function test: {len(orders)} recent orders")
     
     # Test cleanup
     cleanup = db.cleanup_old_data(1)
