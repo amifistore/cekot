@@ -936,10 +936,10 @@ def main():
         print("✅ Application built successfully")
         
         # ==================== HANDLER REGISTRATION ====================
-        async def show_history_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_history_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Tampilkan menu riwayat transaksi"""
     query = update.callback_query
-    await query.answer()
+     await query.answer()
     
     keyboard = [
         [InlineKeyboardButton("📋 Riwayat Order", callback_data="history_orders")],
