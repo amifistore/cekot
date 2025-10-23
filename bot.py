@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-🤖 Telegram Bot - MODERN VERSION 
+🤖 Telegram Bot - MODERN VERSION dengan KhfyPay Integration
 🎨 Modern UI & Enhanced User Experience
 ⚡ Full Features - Ready for Production
 """
@@ -113,6 +113,25 @@ except Exception as e:
     
     async def topup_command(update, context):
         await show_topup_menu(update, context)
+
+# ==================== KHFYPAY INTEGRATION IMPORTS ====================
+try:
+    from webhook_handler import set_bot_application, start_webhook_server
+    from auto_status_checker import start_auto_status_checker
+    KHFYPAY_AVAILABLE = True
+    print("✅ KhfyPay integration loaded successfully")
+except Exception as e:
+    print(f"⚠️ KhfyPay integration not available: {e}")
+    KHFYPAY_AVAILABLE = False
+    
+    def set_bot_application(app):
+        pass
+    
+    def start_webhook_server():
+        pass
+    
+    def start_auto_status_checker(app, check_interval=120):
+        pass
 
 # ==================== MODERN UI FUNCTIONS ====================
 async def send_modern_message(update, text, callback_data=None, title=None, image_emoji="✨"):
@@ -821,6 +840,26 @@ async def post_init(application: Application):
     logger.info("🤖 Bot has been initialized successfully!")
     
     try:
+        # SET KHFYPAY BOT APPLICATION
+        if KHFYPAY_AVAILABLE:
+            set_bot_application(application)
+            logger.info("✅ KhfyPay bot application set")
+        
+        # START KHFYPAY WEBHOOK SERVER IN BACKGROUND
+        if KHFYPAY_AVAILABLE:
+            import threading
+            webhook_thread = threading.Thread(
+                target=start_webhook_server, 
+                daemon=True
+            )
+            webhook_thread.start()
+            logger.info("✅ KhfyPay Webhook server started in background")
+        
+        # START KHFYPAY AUTO STATUS CHECKER
+        if KHFYPAY_AVAILABLE:
+            start_auto_status_checker(application, check_interval=120)
+            logger.info("✅ KhfyPay Auto Status Checker started")
+        
         bot = await application.bot.get_me()
         
         try:
@@ -836,6 +875,7 @@ async def post_init(application: Application):
             f"🎉 **Bot Started Successfully!**\n\n"
             f"📊 **System Status:**\n"
             f"• Database: ✅\n"
+            f"• KhfyPay Integration: {'✅' if KHFYPAY_AVAILABLE else '❌'}\n"
             f"• Topup: {'✅' if TOPUP_AVAILABLE else '❌'}\n"
             f"• Order: {'✅' if ORDER_AVAILABLE else '❌'}\n"
             f"• Admin: {'✅' if ADMIN_AVAILABLE else '❌'}\n"
@@ -851,10 +891,13 @@ async def post_init(application: Application):
         )
         
         print("=" * 60)
-        print("🤖 BOT STARTED SUCCESSFULLY!")
+        print("🤖 BOT STARTED SUCCESSFULLY WITH KHFYPAY INTEGRATION!")
         print("=" * 60)
         print(status_info)
         print("=" * 60)
+        if KHFYPAY_AVAILABLE:
+            print("📍 KhfyPay Webhook URL: http://your-server-ip:8080/webhook")
+            print("📍 KhfyPay Auto Status Checker: Running every 2 minutes")
         print("📍 Bot is now running and waiting for messages...")
         print("📍 Try sending /start to your bot")
         print("=" * 60)
@@ -866,7 +909,7 @@ async def post_init(application: Application):
 def main():
     """Main function - Initialize dan start bot"""
     try:
-        print("🚀 Starting Modern Telegram Bot...")
+        print("🚀 Starting Modern Telegram Bot with KhfyPay Integration...")
         
         if not BOT_TOKEN or BOT_TOKEN == 'YOUR_BOT_TOKEN_HERE':
             print("❌ Please set BOT_TOKEN in config.py")
@@ -981,9 +1024,10 @@ def main():
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("🤖 MODERN TELEGRAM BOT")
+    print("🤖 MODERN TELEGRAM BOT WITH KHFYPAY INTEGRATION")
     print("🎨 Enhanced UI & User Experience") 
     print("⚡ Full Features - Production Ready")
+    print("🌐 KhfyPay Auto Status Updates")
     print("=" * 60)
     
     main()
