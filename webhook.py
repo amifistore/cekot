@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """
-🤖 KhfyPay Webhook Handler - FULL FEATURE & PRODUCTION READY
-📡 Compatible with KhfyPay API Documentation
-🔧 Complete Logging & Monitoring
+🤖 KhfyPay Webhook Handler - PRODUCTION READY
+🎯 Compatible with KhfyPay API Format
+🔧 Full Feature: Logging, Monitoring, Notifications
 """
 
 import logging
 import re
 import json
 import asyncio
-import sqlite3
 import traceback
 from datetime import datetime
 from flask import Flask, request, jsonify
@@ -82,30 +81,28 @@ def log_webhook_request():
         logger.error(f"Error logging request: {e}")
         return None
 
-# ==================== KHFYPAY CORE PARSER ====================
+# ==================== KHFYPAY PARSER (FIXED) ====================
 def parse_khfypay_message(message):
     """
-    Parser utama untuk format KhfyPay
-    Format: RC=reffid TrxID=trxid PRODUK.tujuan STATUS_TEXT keterangan
+    Parser menggunakan pattern yang SAMA dengan PHP version yang berhasil
+    Pattern: RC=reffid TrxID=trxid PRODUK.tujuan STATUS_TEXT keterangan Saldo... result=status_code
     """
     try:
-        # Regex pattern sesuai dokumentasi KhfyPay
-        pattern = r'RC=(?P<reffid>[a-f0-9-]+)\s+TrxID=(?P<trxid>\d+)\s+(?P<produk>[A-Z0-9]+)\.(?P<tujuan>\d+)\s+(?P<status_text>[A-Za-z]+)\s*(?P<keterangan>.+?)(?:\s+Saldo[\s\S]*?)?(?:\bresult=(?P<status_code>\d+))?\s*>?$'
+        # PATTERN YANG SAMA DENGAN PHP YANG SUDAH BERHASIL
+        pattern = r'RC=(?P<reffid>[a-z0-9_.-]+)\s+TrxID=(?P<trxid>\d+)\s+(?P<produk>[A-Z0-9]+)\.(?P<tujuan>\d+)\s+(?P<status_text>[A-Za-z]+)[, ]*(?P<keterangan>.+?)Saldo[\s\S]*?result=(?P<status_code>\d+)'
         
         match = re.search(pattern, message, re.IGNORECASE | re.DOTALL)
         
         if not match:
-            return None
+            # Fallback pattern jika pattern utama gagal
+            fallback_pattern = r'RC=(?P<reffid>[a-z0-9_.-]+)\s+TrxID=(?P<trxid>\d+)\s+(?P<produk>[A-Z0-9]+)\.(?P<tujuan>\d+)\s+(?P<status_text>[A-Za-z]+)\s*(?P<keterangan>.*)'
+            match = re.search(fallback_pattern, message, re.IGNORECASE | re.DOTALL)
             
-        parsed_data = match.groupdict()
-        
-        # Bersihkan keterangan
-        if parsed_data['keterangan']:
-            parsed_data['keterangan'] = parsed_data['keterangan'].strip()
-        
-        # Normalisasi status_code
-        status_code = parsed_data.get('status_code')
-        if status_code is None:
+            if not match:
+                return None
+            
+            # Untuk fallback, set default status_code
+            parsed_data = match.groupdict()
             status_text = parsed_data['status_text'].upper()
             if 'SUKSES' in status_text or 'SUCCESS' in status_text:
                 parsed_data['status_code'] = '0'
@@ -113,6 +110,15 @@ def parse_khfypay_message(message):
                 parsed_data['status_code'] = '1'
             else:
                 parsed_data['status_code'] = '-1'
+                
+            return parsed_data
+        
+        # Pattern utama berhasil
+        parsed_data = match.groupdict()
+        
+        # Bersihkan keterangan
+        if 'keterangan' in parsed_data:
+            parsed_data['keterangan'] = parsed_data['keterangan'].strip()
         
         log_webhook_detailed(
             "PARSER_SUCCESS",
@@ -127,7 +133,7 @@ def parse_khfypay_message(message):
         log_webhook_detailed(
             "PARSER_ERROR",
             f"Parser error: {str(e)}",
-            {"raw_message": message},
+            {"raw_message": message, "error": traceback.format_exc()},
             "ERROR"
         )
         return None
@@ -151,6 +157,12 @@ def extract_sn_from_keterangan(keterangan):
         if match:
             sn = match.group(1).strip()
             if len(sn) >= 8:
+                log_webhook_detailed(
+                    "SN_EXTRACTED",
+                    f"SN found in keterangan: {sn}",
+                    {"keterangan": keterangan, "sn": sn},
+                    "SUCCESS"
+                )
                 return sn
     
     return None
@@ -159,11 +171,11 @@ def extract_sn_from_keterangan(keterangan):
 def update_order_status_from_webhook(reffid, status_text, status_code, keterangan=None, sn=None):
     """Update order status berdasarkan data webhook"""
     try:
-        # Mapping status
+        # Mapping status code ke internal status
         status_mapping = {
-            '0': 'completed',    # SUKSES
-            '1': 'failed',       # GAGAL
-            '-1': 'pending'      # Unknown
+            '0': 'completed',  # SUKSES
+            '1': 'failed',     # GAGAL
+            '-1': 'pending'    # UNKNOWN
         }
         
         internal_status = status_mapping.get(status_code, 'pending')
@@ -182,6 +194,7 @@ def update_order_status_from_webhook(reffid, status_text, status_code, keteranga
         
         order_id = order['id']
         user_id = order['user_id']
+        price = order['price']
         current_status = order['status']
         
         # Skip jika status sama
@@ -227,7 +240,7 @@ def update_order_status_from_webhook(reffid, status_text, status_code, keteranga
         
         # Process refund untuk order gagal
         if internal_status == 'failed' and current_status != 'failed':
-            process_order_refund(order, reffid)
+            process_order_refund(order, reffid, price, user_id)
         
         # Update stock untuk order completed
         if internal_status == 'completed' and current_status != 'completed':
@@ -238,7 +251,7 @@ def update_order_status_from_webhook(reffid, status_text, status_code, keteranga
             'user_id': user_id,
             'product_name': order['product_name'],
             'customer_input': order['customer_input'],
-            'price': order['price'],
+            'price': price,
             'status': internal_status,
             'provider_order_id': reffid,
             'sn': sn,
@@ -254,12 +267,9 @@ def update_order_status_from_webhook(reffid, status_text, status_code, keteranga
         )
         return None
 
-def process_order_refund(order, reffid):
+def process_order_refund(order, reffid, price, user_id):
     """Process refund untuk order yang gagal"""
     try:
-        user_id = order['user_id']
-        price = order['price']
-        
         database.update_user_balance(
             user_id, 
             price, 
@@ -311,6 +321,12 @@ async def send_order_notification(order_data):
     """Kirim notifikasi ke user via Telegram"""
     try:
         if not bot_application:
+            log_webhook_detailed(
+                "BOT_UNAVAILABLE",
+                "Bot application not available for notifications",
+                {"order_id": order_data.get('id')},
+                "WARNING"
+            )
             return
         
         user_id = order_data['user_id']
@@ -320,6 +336,7 @@ async def send_order_notification(order_data):
         status = order_data['status']
         provider_id = order_data['provider_order_id']
         sn = order_data.get('sn')
+        note = order_data.get('note')
         
         status_emoji = {
             'completed': '✅',
@@ -339,6 +356,9 @@ async def send_order_notification(order_data):
         
         if sn:
             message += f"🔢 *SN:* `{sn}`\n"
+        
+        if note:
+            message += f"📝 *Note:* {note}\n"
         
         message += f"\n⏰ *Update:* {datetime.now().strftime('%d/%m %H:%M')}"
         
@@ -366,7 +386,7 @@ async def send_order_notification(order_data):
 # ==================== WEBHOOK ENDPOINTS ====================
 @app.route("/webhook", methods=["POST", "GET"])
 def webhook():
-    """Main webhook endpoint - Compatible with KhfyPay"""
+    """Main webhook endpoint - Production Ready"""
     request_info = log_webhook_request()
     
     # Extract message dari GET/POST
@@ -399,7 +419,7 @@ def webhook():
         "INFO"
     )
 
-    # Parse message
+    # Parse message menggunakan pattern yang fix
     parsed_data = parse_khfypay_message(message)
     
     if not parsed_data:
@@ -411,7 +431,7 @@ def webhook():
         )
         return jsonify({"ok": False, "error": "format tidak dikenali"}), 400
 
-    # Extract data
+    # Extract data dari parsed result
     reffid = parsed_data['reffid']
     status_text = parsed_data['status_text']
     status_code = parsed_data['status_code']
@@ -420,10 +440,10 @@ def webhook():
     produk = parsed_data.get('produk')
     tujuan = parsed_data.get('tujuan')
     
-    # Extract SN
+    # Extract SN dari keterangan
     sn = extract_sn_from_keterangan(keterangan)
     
-    # Update order status
+    # Update order status di database
     order_data = update_order_status_from_webhook(
         reffid=reffid,
         status_text=status_text,
@@ -433,7 +453,7 @@ def webhook():
     )
     
     if order_data:
-        # Send notification async
+        # Send notification async (non-blocking)
         if bot_application:
             asyncio.create_task(send_order_notification(order_data))
         
@@ -470,14 +490,14 @@ def webhook():
         )
         return jsonify({"ok": False, "error": "gagal memproses order"}), 500
 
-# ==================== MONITORING ENDPOINTS ====================
+# ==================== MONITORING & MANAGEMENT ====================
 @app.route("/health", methods=["GET"])
 def health_check():
     """Health check endpoint"""
     return jsonify({
         "status": "healthy",
         "service": "khfypay-webhook",
-        "version": "3.0-full",
+        "version": "4.0-production",
         "timestamp": datetime.now().isoformat()
     })
 
@@ -512,7 +532,7 @@ def get_webhook_logs():
 
 @app.route("/webhook/status", methods=["GET"])
 def webhook_status():
-    """Webhook statistics"""
+    """Webhook statistics and health"""
     try:
         today = datetime.now().strftime('%Y-%m-%d')
         stats = {
@@ -540,8 +560,15 @@ def webhook_status():
         
         return jsonify({
             "status": "running",
+            "version": "4.0-production",
             "today_stats": stats,
-            "timestamp": datetime.now().isoformat()
+            "server_time": datetime.now().isoformat(),
+            "features": {
+                "parsing": "enabled",
+                "notifications": "enabled" if bot_application else "disabled",
+                "logging": "enabled",
+                "monitoring": "enabled"
+            }
         })
         
     except Exception as e:
@@ -549,16 +576,19 @@ def webhook_status():
 
 @app.route("/", methods=["GET"])
 def index():
-    """Root endpoint"""
+    """Root endpoint dengan informasi"""
     return jsonify({
-        "message": "KhfyPay Webhook Handler",
-        "version": "3.0-full",
+        "service": "KhfyPay Webhook Handler",
+        "version": "4.0-production",
+        "status": "running",
         "endpoints": {
             "webhook": "/webhook",
             "health": "/health",
             "logs": "/webhook/logs",
             "status": "/webhook/status"
-        }
+        },
+        "documentation": "https://khfypay.com",
+        "timestamp": datetime.now().isoformat()
     })
 
 # ==================== BOT INTEGRATION ====================
@@ -567,29 +597,37 @@ def set_bot_application(app):
     global bot_application
     bot_application = app
 
-# ==================== SERVER START ====================
+# ==================== SERVER MANAGEMENT ====================
 def start_webhook_server(host="0.0.0.0", port=8080):
-    """Start webhook server"""
+    """Start production webhook server"""
     try:
-        print("🚀 KHFYPAY WEBHOOK SERVER - FULL FEATURE")
-        print("=" * 50)
+        print("🚀 KHFYPAY WEBHOOK SERVER - PRODUCTION READY")
+        print("=" * 60)
         print(f"📍 Webhook URL: http://{host}:{port}/webhook")
         print(f"📍 Health Check: http://{host}:{port}/health")
         print(f"📍 Logs Monitor: http://{host}:{port}/webhook/logs")
-        print(f"📍 Status Check: http://{host}:{port}/webhook/status")
-        print("📝 Advanced logging: ENABLED")
-        print("🔔 Notifications: ENABLED")
-        print("🔄 Order processing: ENABLED")
-        print("=" * 50)
+        print(f"📍 Status Dashboard: http://{host}:{port}/webhook/status")
+        print("🎯 Features:")
+        print("   ✅ Advanced Logging System")
+        print("   ✅ Real-time Notifications")
+        print("   ✅ Order Processing & Refunds")
+        print("   ✅ Stock Management")
+        print("   ✅ Health Monitoring")
+        print("   ✅ Error Handling")
+        print("=" * 60)
+        print("📝 Server started successfully!")
+        print("💡 Monitoring logs: tail -f webhook_detailed.log")
+        print("=" * 60)
         
-        # Initialize log files
+        # Initialize fresh log files
         open("webhook_detailed.log", "w").close()
         
+        # Start production server
         app.run(host=host, port=port, debug=False)
         
     except Exception as e:
         logger.error(f"❌ Failed to start webhook server: {e}")
-        print(f"❌ Error: {e}")
+        print(f"❌ Error starting server: {e}")
 
 if __name__ == "__main__":
     start_webhook_server()
