@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
 🤖 Telegram Bot - MODERN VERSION dengan KhfyPay Integration
-🎨 Modern UI & Enhanced User Experience
+🎨 Modern UI & Enhanced User Experience  
 ⚡ Full Features - Ready for Production
+🛡️  Conflict Protection & Auto Recovery
 """
 
 import logging
@@ -279,8 +280,8 @@ async def show_order_history(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user_id = str(query.from_user.id)
     
     try:
-        # Get user orders - menggunakan fungsi baru
-        orders = database.get_user_recent_orders(user_id, limit=10)
+        # Get user orders
+        orders = database.get_user_orders(user_id, limit=10)
         
         if not orders:
             await send_modern_message(
@@ -307,12 +308,12 @@ async def show_order_history(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 'cancelled': '🚫'
             }.get(order['status'], '📦')
             
-            # Format date - handle both string and datetime
+            # Format date
             try:
-                if isinstance(order['updated_at'], str):
-                    order_date = datetime.strptime(order['updated_at'], '%Y-%m-%d %H:%M:%S').strftime('%d/%m %H:%M')
+                if isinstance(order['created_at'], str):
+                    order_date = datetime.strptime(order['created_at'], '%Y-%m-%d %H:%M:%S').strftime('%d/%m %H:%M')
                 else:
-                    order_date = order['updated_at'].strftime('%d/%m %H:%M')
+                    order_date = order['created_at'].strftime('%d/%m %H:%M')
             except:
                 order_date = "N/A"
             
@@ -325,10 +326,6 @@ async def show_order_history(update: Update, context: ContextTypes.DEFAULT_TYPE)
             
             if order.get('sn'):
                 orders_text += f"🔢 SN: `{order['sn']}`\n"
-            
-            # Show if order was recently updated
-            if order['updated_at'] != order['created_at']:
-                orders_text += "🔄 *Diperbarui*\n"
             
             orders_text += "━━━━━━━━━━━━━━━━━━━━\n"
             
@@ -385,8 +382,7 @@ async def show_topup_history(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     try:
         # Get user transactions (topups)
-        # Note: You might need to implement get_user_transactions in database.py
-        transactions = []  # Placeholder - implement this based on your database structure
+        transactions = database.get_user_transactions(user_id, limit=10)
         
         if not transactions:
             await send_modern_message(
@@ -485,7 +481,10 @@ async def show_all_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }.get(order['status'], '📦')
             
             try:
-                order_date = datetime.strptime(order['created_at'], '%Y-%m-%d %H:%M:%S').strftime('%d/%m %H:%M')
+                if isinstance(order['created_at'], str):
+                    order_date = datetime.strptime(order['created_at'], '%Y-%m-%d %H:%M:%S').strftime('%d/%m %H:%M')
+                else:
+                    order_date = order['created_at'].strftime('%d/%m %H:%M')
             except:
                 order_date = order['created_at']
             
@@ -921,6 +920,11 @@ async def post_init(application: Application):
             start_auto_status_checker(application, check_interval=120)
             logger.info("✅ KhfyPay Auto Status Checker started")
         
+        # INITIALIZE ORDER SYSTEM WITH POLLING
+        if ORDER_AVAILABLE:
+            initialize_order_system(application)
+            logger.info("✅ Order system with polling initialized")
+        
         bot = await application.bot.get_me()
         
         try:
@@ -952,13 +956,15 @@ async def post_init(application: Application):
         )
         
         print("=" * 60)
-        print("🤖 BOT STARTED SUCCESSFULLY WITH KHFYPAY INTEGRATION!")
+        print("🤖 BOT STARTED SUCCESSFULLY WITH ALL FEATURES!")
         print("=" * 60)
         print(status_info)
         print("=" * 60)
         if KHFYPAY_AVAILABLE:
             print("📍 KhfyPay Webhook URL: http://your-server-ip:8080/webhook")
             print("📍 KhfyPay Auto Status Checker: Running every 2 minutes")
+        if ORDER_AVAILABLE:
+            print("📍 Order Polling System: Active (120s interval)")
         print("📍 Bot is now running and waiting for messages...")
         print("📍 Try sending /start to your bot")
         print("=" * 60)
@@ -982,7 +988,7 @@ def setup_signal_handlers():
 def main():
     """Main function - Initialize dan start bot"""
     try:
-        print("🚀 Starting Modern Telegram Bot with KhfyPay Integration...")
+        print("🚀 Starting Modern Telegram Bot with All Features...")
         
         # Setup signal handlers
         setup_signal_handlers()
@@ -992,6 +998,7 @@ def main():
         if bot_singleton.is_already_running():
             print("❌ Bot is already running! Please stop the existing instance first.")
             print("💡 Run: pkill -f python  (to stop all Python processes)")
+            print("💡 Or run: python stop_bot.py")
             sys.exit(1)
         
         # Create PID file
@@ -1022,11 +1029,6 @@ def main():
             .build()
         
         print("✅ Application built successfully")
-        
-        # Initialize order system
-        if ORDER_AVAILABLE:
-            initialize_order_system(application, webhook_port=5000)
-            print("✅ Order system initialized")
         
         # ==================== HANDLER REGISTRATION ====================
         
@@ -1125,11 +1127,12 @@ def main():
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("🤖 MODERN TELEGRAM BOT WITH KHFYPAY INTEGRATION")
+    print("🤖 MODERN TELEGRAM BOT - PRODUCTION READY")
     print("🎨 Enhanced UI & User Experience") 
-    print("⚡ Full Features - Production Ready")
-    print("🌐 KhfyPay Auto Status Updates")
-    print("🛡️  Conflict Protection - Single Instance")
+    print("⚡ Full Features - Order, Topup, Admin, History")
+    print("🌐 KhfyPay Integration with Auto Polling")
+    print("🛡️  Conflict Protection & Graceful Shutdown")
+    print("📊 Real-time Statistics & Notifications")
     print("=" * 60)
     
     main()
