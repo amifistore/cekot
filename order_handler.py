@@ -6,6 +6,8 @@ import asyncio
 import sqlite3
 import re
 import threading
+import json
+import traceback
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -28,9 +30,8 @@ logger = logging.getLogger(__name__)
 CHOOSING_GROUP, CHOOSING_PRODUCT, ENTER_TUJUAN, CONFIRM_ORDER = range(4)
 PRODUCTS_PER_PAGE = 8
 
-# Global variables untuk webhook
+# Global variables
 bot_application = None
-webhook_app = Flask(__name__)
 
 # ==================== KHFYPAY API INTEGRATION ====================
 
@@ -48,9 +49,11 @@ class KhfyPayAPI:
             response = requests.get(url, params=params, timeout=30)
             response.raise_for_status()
             
-            return response.json()
+            data = response.json()
+            logger.info(f"✅ Got {len(data) if isinstance(data, list) else 'unknown'} products from provider")
+            return data
         except Exception as e:
-            logger.error(f"Error getting KhfyPay products: {e}")
+            logger.error(f"❌ Error getting KhfyPay products: {e}")
             return None
     
     def create_order(self, product_code, target, custom_reffid=None):
@@ -66,7 +69,7 @@ class KhfyPayAPI:
                 "api_key": self.api_key
             }
             
-            logger.info(f"Sending order to KhfyPay: {params}")
+            logger.info(f"🔄 Sending order to KhfyPay: {params}")
             
             response = requests.get(url, params=params, timeout=60)
             response.raise_for_status()
@@ -74,20 +77,21 @@ class KhfyPayAPI:
             result = response.json()
             result['reffid'] = reffid
             
+            logger.info(f"✅ Order created with response: {result}")
             return result
             
         except requests.exceptions.Timeout:
-            logger.error(f"Timeout creating order for {product_code}")
+            logger.error(f"❌ Timeout creating order for {product_code}")
             return {"status": "error", "message": "Timeout - Silakan cek status manual"}
         except requests.exceptions.RequestException as e:
-            logger.error(f"Network error creating order: {e}")
+            logger.error(f"❌ Network error creating order: {e}")
             return {"status": "error", "message": f"Network error: {str(e)}"}
         except Exception as e:
-            logger.error(f"Error creating KhfyPay order: {e}")
+            logger.error(f"❌ Error creating KhfyPay order: {e}")
             return {"status": "error", "message": f"System error: {str(e)}"}
     
     def check_order_status(self, reffid):
-        """Check order status by reffid"""
+        """Check order status by reffid dengan error handling lengkap"""
         try:
             url = f"{self.base_url}/history"
             params = {
@@ -95,12 +99,22 @@ class KhfyPayAPI:
                 "refid": reffid
             }
             
+            logger.info(f"🔍 Checking status for reffid: {reffid}")
             response = requests.get(url, params=params, timeout=30)
             response.raise_for_status()
             
-            return response.json()
+            result = response.json()
+            logger.info(f"📊 Status check response: {result}")
+            return result
+            
+        except requests.exceptions.Timeout:
+            logger.error(f"⏰ Timeout checking status for {reffid}")
+            return None
+        except requests.exceptions.RequestException as e:
+            logger.error(f"🌐 Network error checking status: {e}")
+            return None
         except Exception as e:
-            logger.error(f"Error checking KhfyPay order status: {e}")
+            logger.error(f"❌ Error checking KhfyPay order status: {e}")
             return None
 
     def check_stock_akrab(self):
@@ -111,7 +125,7 @@ class KhfyPayAPI:
             response.raise_for_status()
             return response.json()
         except Exception as e:
-            logger.error(f"Error checking stock akrab: {e}")
+            logger.error(f"❌ Error checking stock akrab: {e}")
             return None
 
 # ==================== DATABASE COMPATIBILITY FIX ====================
@@ -119,13 +133,11 @@ class KhfyPayAPI:
 def get_user_saldo(user_id):
     """Fixed compatibility function for user balance"""
     try:
-        # Coba beberapa kemungkinan nama fungsi
         if hasattr(database, 'get_user_balance'):
             return database.get_user_balance(user_id)
         elif hasattr(database, 'get_user_saldo'):
             return database.get_user_saldo(user_id)
         else:
-            # Fallback: cek langsung di database
             conn = sqlite3.connect('bot_database.db')
             cursor = conn.cursor()
             cursor.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
@@ -133,25 +145,22 @@ def get_user_saldo(user_id):
             conn.close()
             return result[0] if result else 0
     except Exception as e:
-        logger.error(f"Error getting user saldo: {e}")
+        logger.error(f"❌ Error getting user saldo: {e}")
         return 0
 
 def update_user_saldo(user_id, amount, note="", transaction_type="order"):
     """Fixed compatibility function for update balance"""
     try:
-        # Determine transaction type based on amount
         if amount < 0:
             transaction_type = "order"
         else:
             transaction_type = "refund" if "refund" in note.lower() else "adjustment"
         
-        # Coba beberapa kemungkinan nama fungsi
         if hasattr(database, 'update_user_balance'):
             return database.update_user_balance(user_id, amount, note, transaction_type)
         elif hasattr(database, 'update_user_saldo'):
             return database.update_user_saldo(user_id, amount, note, transaction_type)
         else:
-            # Fallback: update langsung di database
             conn = sqlite3.connect('bot_database.db')
             cursor = conn.cursor()
             cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
@@ -159,7 +168,7 @@ def update_user_saldo(user_id, amount, note="", transaction_type="order"):
             conn.close()
             return True
     except Exception as e:
-        logger.error(f"Error updating user saldo: {e}")
+        logger.error(f"❌ Error updating user saldo: {e}")
         return False
 
 def save_order(user_id, product_name, product_code, customer_input, price, 
@@ -179,7 +188,6 @@ def save_order(user_id, product_name, product_code, customer_input, price,
                 note=note
             )
         else:
-            # Fallback: simpan langsung ke database
             conn = sqlite3.connect('bot_database.db')
             cursor = conn.cursor()
             cursor.execute('''
@@ -193,7 +201,7 @@ def save_order(user_id, product_name, product_code, customer_input, price,
             conn.close()
             return order_id
     except Exception as e:
-        logger.error(f"Error saving order: {e}")
+        logger.error(f"❌ Error saving order: {e}")
         return 0
 
 def update_order_status(order_id, status, sn='', note=''):
@@ -202,7 +210,6 @@ def update_order_status(order_id, status, sn='', note=''):
         if hasattr(database, 'update_order_status'):
             return database.update_order_status(order_id, status, sn, note)
         else:
-            # Fallback: update langsung di database
             conn = sqlite3.connect('bot_database.db')
             cursor = conn.cursor()
             cursor.execute('''
@@ -213,7 +220,7 @@ def update_order_status(order_id, status, sn='', note=''):
             conn.close()
             return True
     except Exception as e:
-        logger.error(f"Error updating order status: {e}")
+        logger.error(f"❌ Error updating order status: {e}")
         return False
 
 def get_order_by_provider_id(provider_order_id):
@@ -222,7 +229,6 @@ def get_order_by_provider_id(provider_order_id):
         if hasattr(database, 'get_order_by_provider_id'):
             return database.get_order_by_provider_id(provider_order_id)
         else:
-            # Fallback: cari langsung di database
             conn = sqlite3.connect('bot_database.db')
             cursor = conn.cursor()
             cursor.execute('''
@@ -239,7 +245,7 @@ def get_order_by_provider_id(provider_order_id):
                 ], row))
             return None
     except Exception as e:
-        logger.error(f"Error getting order by provider ID: {e}")
+        logger.error(f"❌ Error getting order by provider ID: {e}")
         return None
 
 def get_pending_orders():
@@ -248,20 +254,19 @@ def get_pending_orders():
         if hasattr(database, 'get_pending_orders'):
             return database.get_pending_orders()
         else:
-            # Fallback: ambil langsung dari database
             conn = sqlite3.connect('bot_database.db')
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT id, user_id, product_code, provider_order_id, created_at, price, product_name, customer_input
+                SELECT id, user_id, product_code, provider_order_id, created_at, price, product_name, customer_input, status
                 FROM orders WHERE status IN ('processing', 'pending')
             ''')
             rows = cursor.fetchall()
             conn.close()
             return [dict(zip([
-                'id', 'user_id', 'product_code', 'provider_order_id', 'created_at', 'price', 'product_name', 'customer_input'
+                'id', 'user_id', 'product_code', 'provider_order_id', 'created_at', 'price', 'product_name', 'customer_input', 'status'
             ], row)) for row in rows]
     except Exception as e:
-        logger.error(f"Error getting pending orders: {e}")
+        logger.error(f"❌ Error getting pending orders: {e}")
         return []
 
 # ==================== STOCK MANAGEMENT SYSTEM ====================
@@ -271,14 +276,14 @@ def sync_product_stock_from_provider():
     try:
         api_key = getattr(config, 'KHFYPAY_API_KEY', '')
         if not api_key:
-            logger.error("API key tidak tersedia untuk sinkronisasi stok")
+            logger.error("❌ API key tidak tersedia untuk sinkronisasi stok")
             return False
         
         khfy_api = KhfyPayAPI(api_key)
         provider_products = khfy_api.get_products()
         
         if not provider_products:
-            logger.error("Gagal mendapatkan produk dari provider")
+            logger.error("❌ Gagal mendapatkan produk dari provider")
             return False
         
         updated_stock_count = 0
@@ -290,7 +295,6 @@ def sync_product_stock_from_provider():
                     product_status = provider_product.get('status', '').lower()
                     
                     if product_code:
-                        # Tentukan stok berdasarkan status dari provider
                         if product_status == 'active':
                             new_stock = 100
                             gangguan = 0
@@ -312,7 +316,6 @@ def sync_product_stock_from_provider():
                             gangguan = 0
                             kosong = 1
                         
-                        # Update stok di database
                         try:
                             if hasattr(database, 'update_product'):
                                 success = database.update_product(
@@ -322,7 +325,6 @@ def sync_product_stock_from_provider():
                                     kosong=kosong
                                 )
                             else:
-                                # Fallback: update langsung di database
                                 conn = sqlite3.connect('bot_database.db')
                                 cursor = conn.cursor()
                                 cursor.execute('''
@@ -336,13 +338,13 @@ def sync_product_stock_from_provider():
                             if success:
                                 updated_stock_count += 1
                         except Exception as update_error:
-                            logger.error(f"Error updating product {product_code}: {update_error}")
+                            logger.error(f"❌ Error updating product {product_code}: {update_error}")
         
-        logger.info(f"Berhasil update stok untuk {updated_stock_count} produk")
+        logger.info(f"✅ Berhasil update stok untuk {updated_stock_count} produk")
         return updated_stock_count > 0
         
     except Exception as e:
-        logger.error(f"Error sync_product_stock_from_provider: {e}")
+        logger.error(f"❌ Error sync_product_stock_from_provider: {e}")
         return False
 
 def get_product_stock_status(stock, gangguan, kosong):
@@ -365,21 +367,18 @@ def get_product_stock_status(stock, gangguan, kosong):
 def update_product_stock_after_order(product_code, quantity=1):
     """Update stok produk setelah order berhasil"""
     try:
-        # Get current product
         product = get_product_by_code_with_stock(product_code)
         if not product:
-            logger.error(f"Product {product_code} not found for stock update")
+            logger.error(f"❌ Product {product_code} not found for stock update")
             return False
         
         current_stock = product.get('stock', 0)
         new_stock = max(0, current_stock - quantity)
         
-        # Update stock
         try:
             if hasattr(database, 'update_product'):
                 success = database.update_product(product_code, stock=new_stock)
             else:
-                # Fallback: update langsung di database
                 conn = sqlite3.connect('bot_database.db')
                 cursor = conn.cursor()
                 cursor.execute('''
@@ -390,16 +389,16 @@ def update_product_stock_after_order(product_code, quantity=1):
                 conn.close()
             
             if success:
-                logger.info(f"Updated stock for {product_code}: {current_stock} -> {new_stock}")
+                logger.info(f"✅ Updated stock for {product_code}: {current_stock} -> {new_stock}")
             else:
-                logger.error(f"Failed to update stock for {product_code}")
+                logger.error(f"❌ Failed to update stock for {product_code}")
                 
             return success
         except Exception as update_error:
-            logger.error(f"Error updating stock in database: {update_error}")
+            logger.error(f"❌ Error updating stock in database: {update_error}")
             return False
     except Exception as e:
-        logger.error(f"Error update_product_stock_after_order: {e}")
+        logger.error(f"❌ Error update_product_stock_after_order: {e}")
         return False
 
 # ==================== UTILITY FUNCTIONS ====================
@@ -423,12 +422,12 @@ async def safe_edit_message_text(update, text, *args, **kwargs):
                     await update.callback_query.message.reply_text(text, *args, **kwargs)
                 return True
             except Exception as send_error:
-                logger.error(f"Failed to send new message: {send_error}")
+                logger.error(f"❌ Failed to send new message: {send_error}")
                 return False
-        logger.error(f"Error editing message: {e}")
+        logger.error(f"❌ Error editing message: {e}")
         return False
     except Exception as e:
-        logger.error(f"Unexpected error in safe_edit_message_text: {e}")
+        logger.error(f"❌ Unexpected error in safe_edit_message_text: {e}")
         return False
 
 async def safe_reply_message(update, text, *args, **kwargs):
@@ -442,7 +441,7 @@ async def safe_reply_message(update, text, *args, **kwargs):
             return True
         return False
     except Exception as e:
-        logger.error(f"Error replying to message: {e}")
+        logger.error(f"❌ Error replying to message: {e}")
         return False
 
 def validate_phone_number(phone):
@@ -462,7 +461,7 @@ def validate_phone_number(phone):
         
         return phone
     except Exception as e:
-        logger.error(f"Error validating phone number: {e}")
+        logger.error(f"❌ Error validating phone number: {e}")
         return None
 
 def validate_pulsa_target(phone, product_code):
@@ -494,23 +493,20 @@ def validate_pulsa_target(phone, product_code):
         
         return phone
     except Exception as e:
-        logger.error(f"Error validating pulsa target: {e}")
+        logger.error(f"❌ Error validating pulsa target: {e}")
         return None
 
-# ==================== PRODUCT MANAGEMENT WITH STOCK DISPLAY ====================
+# ==================== PRODUCT MANAGEMENT ====================
 
 def get_grouped_products_with_stock():
-    """Get products grouped by category from database dengan tampilan stok"""
+    """Get products grouped by category dari database dengan tampilan stok"""
     try:
-        # Sync stok terlebih dahulu sebelum menampilkan
         sync_product_stock_from_provider()
         
-        # Get all active products
         try:
             if hasattr(database, 'get_products_by_category'):
                 products_data = database.get_products_by_category(status='active')
             else:
-                # Fallback: ambil langsung dari database
                 conn = sqlite3.connect('bot_database.db')
                 cursor = conn.cursor()
                 cursor.execute("SELECT code, name, price, category, description, stock, gangguan, kosong FROM products WHERE status = 'active'")
@@ -518,16 +514,15 @@ def get_grouped_products_with_stock():
                                for row in cursor.fetchall()]
                 conn.close()
         except Exception as db_error:
-            logger.error(f"Error getting products from database: {db_error}")
+            logger.error(f"❌ Error getting products from database: {db_error}")
             products_data = []
         
-        logger.info(f"Found {len(products_data)} active products in database with stock sync")
+        logger.info(f"✅ Found {len(products_data)} active products in database")
         
         groups = {}
         for product in products_data:
             group = product.get('category', 'Lainnya')
             
-            # Additional grouping for specific product codes
             if product['code'].startswith("BPAL"):
                 group = "BPAL (Bonus Akrab L)"
             elif product['code'].startswith("BPAXXL"):
@@ -548,7 +543,6 @@ def get_grouped_products_with_stock():
             if group not in groups:
                 groups[group] = []
             
-            # Get stock status untuk tampilan
             stock_status, actual_stock = get_product_stock_status(
                 product.get('stock', 0), 
                 product.get('gangguan', 0), 
@@ -568,7 +562,6 @@ def get_grouped_products_with_stock():
                 'display_stock': actual_stock
             })
         
-        # Sort groups alphabetically
         sorted_groups = {}
         for group in sorted(groups.keys()):
             sorted_groups[group] = groups[group]
@@ -576,20 +569,18 @@ def get_grouped_products_with_stock():
         return sorted_groups
         
     except Exception as e:
-        logger.error(f"Error getting grouped products with stock: {e}")
+        logger.error(f"❌ Error getting grouped products with stock: {e}")
         return {}
 
 def get_product_by_code_with_stock(product_code):
     """Get product details by code dengan info stok ter-update"""
     try:
-        # Sync stok untuk produk ini
         sync_product_stock_from_provider()
         
         try:
             if hasattr(database, 'get_product'):
                 product = database.get_product(product_code)
             else:
-                # Fallback: ambil langsung dari database
                 conn = sqlite3.connect('bot_database.db')
                 cursor = conn.cursor()
                 cursor.execute("SELECT code, name, price, category, description, status, stock, gangguan, kosong FROM products WHERE code = ?", (product_code,))
@@ -597,7 +588,7 @@ def get_product_by_code_with_stock(product_code):
                 conn.close()
                 product = dict(zip(['code', 'name', 'price', 'category', 'description', 'status', 'stock', 'gangguan', 'kosong'], row)) if row else None
         except Exception as db_error:
-            logger.error(f"Error getting product from database: {db_error}")
+            logger.error(f"❌ Error getting product from database: {db_error}")
             product = None
         
         if product:
@@ -622,10 +613,10 @@ def get_product_by_code_with_stock(product_code):
             }
         return None
     except Exception as e:
-        logger.error(f"Error getting product by code with stock: {e}")
+        logger.error(f"❌ Error getting product by code with stock: {e}")
         return None
 
-# ==================== ORDER FLOW HANDLERS WITH STOCK DISPLAY ====================
+# ==================== ORDER FLOW HANDLERS ====================
 
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Main menu handler untuk order"""
@@ -635,7 +626,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         return await show_group_menu(update, context)
     except Exception as e:
-        logger.error(f"Error in order menu_handler: {e}")
+        logger.error(f"❌ Error in order menu_handler: {e}")
         await safe_edit_message_text(
             update,
             "❌ Error memuat menu order. Silakan coba lagi.",
@@ -654,11 +645,11 @@ async def show_group_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             query = None
         
-        logger.info("Loading product groups with stock info...")
+        logger.info("🔄 Loading product groups with stock info...")
         groups = get_grouped_products_with_stock()
         
         if not groups:
-            logger.warning("No products found in database")
+            logger.warning("❌ No products found in database")
             await safe_edit_message_text(
                 update,
                 "❌ Tidak ada produk yang tersedia saat ini.\n\n"
@@ -670,7 +661,6 @@ async def show_group_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return ConversationHandler.END
         
-        # Calculate total products and available stock
         total_products = sum(len(products) for products in groups.values())
         available_products = sum(
             1 for products in groups.values() 
@@ -686,7 +676,6 @@ async def show_group_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if product['display_stock'] > 0 and product['gangguan'] == 0 and product['kosong'] == 0
             )
             
-            # Tampilkan jumlah produk tersedia vs total
             status_emoji = "🟢" if available_count > 0 else "🔴"
             button_text = f"{status_emoji} {group_name} ({available_count}/{product_count})"
             
@@ -724,7 +713,7 @@ async def show_group_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return CHOOSING_GROUP
         
     except Exception as e:
-        logger.error(f"Error in show_group_menu: {e}")
+        logger.error(f"❌ Error in show_group_menu: {e}")
         await safe_reply_message(update, "❌ Error memuat kategori produk. Silakan coba lagi.")
         return ConversationHandler.END
 
@@ -750,7 +739,6 @@ async def show_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['current_group'] = group_name
         context.user_data['current_products'] = products
         
-        # Create pagination if needed
         page = context.user_data.get('product_page', 0)
         start_idx = page * PRODUCTS_PER_PAGE
         end_idx = start_idx + PRODUCTS_PER_PAGE
@@ -758,7 +746,6 @@ async def show_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         keyboard = []
         for product in page_products:
-            # Tampilkan stok secara detail di button
             price_formatted = f"Rp {product['price']:,}"
             
             if product['kosong'] == 1:
@@ -776,7 +763,6 @@ async def show_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             keyboard.append([InlineKeyboardButton(button_text, callback_data=f"order_product_{product['code']}")])
         
-        # Add navigation buttons
         nav_buttons = []
         if page > 0:
             nav_buttons.append(InlineKeyboardButton("⬅️ Sebelumnya", callback_data="order_prev_page"))
@@ -792,7 +778,6 @@ async def show_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        # Hitung statistik untuk group ini
         total_in_group = len(products)
         available_in_group = sum(1 for p in products if p['display_stock'] > 0 and p['gangguan'] == 0 and p['kosong'] == 0)
         
@@ -812,7 +797,7 @@ async def show_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return CHOOSING_PRODUCT
         
     except Exception as e:
-        logger.error(f"Error in show_products: {e}")
+        logger.error(f"❌ Error in show_products: {e}")
         await safe_edit_message_text(
             update,
             "❌ Error memuat produk. Silakan coba lagi.",
@@ -840,7 +825,6 @@ async def back_to_groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    # Clear pagination state
     if 'product_page' in context.user_data:
         del context.user_data['product_page']
     
@@ -855,7 +839,6 @@ async def select_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data = query.data
         product_code = data.replace('order_product_', '')
         
-        # Ambil data produk dengan stok ter-update
         product = get_product_by_code_with_stock(product_code)
         
         if not product:
@@ -866,7 +849,6 @@ async def select_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return ConversationHandler.END
         
-        # Check product availability dengan info stok detail
         if product['kosong'] == 1:
             await safe_edit_message_text(
                 update,
@@ -915,10 +897,8 @@ async def select_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return CHOOSING_PRODUCT
         
-        # Store selected product
         context.user_data['selected_product'] = product
         
-        # Ask for target
         target_example = "Contoh: 081234567890"
         if product['code'].startswith('PLN'):
             target_example = "Contoh: 123456789012345 (ID Pelanggan PLN)"
@@ -944,7 +924,7 @@ async def select_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ENTER_TUJUAN
         
     except Exception as e:
-        logger.error(f"Error in select_product: {e}")
+        logger.error(f"❌ Error in select_product: {e}")
         await safe_edit_message_text(
             update,
             "❌ Error memilih produk. Silakan coba lagi.",
@@ -962,15 +942,14 @@ async def receive_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_reply_message(update, "❌ Sesi telah berakhir. Silakan mulai ulang dari menu.")
             return ConversationHandler.END
         
-        # Validate target based on product type
         validated_target = None
-        if product['code'].startswith(('TS', 'AX', 'XL', 'IN', 'SM', '3')):  # Pulsa/Data
+        if product['code'].startswith(('TS', 'AX', 'XL', 'IN', 'SM', '3')):
             validated_target = validate_pulsa_target(target, product['code'])
-        elif product['code'].startswith('PLN'):  # PLN
+        elif product['code'].startswith('PLN'):
             validated_target = re.sub(r'\D', '', target)
             if len(validated_target) < 10 or len(validated_target) > 20:
                 validated_target = None
-        else:  # Other products
+        else:
             validated_target = target.strip()
         
         if not validated_target:
@@ -983,10 +962,8 @@ async def receive_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return ENTER_TUJUAN
         
-        # Store validated target
         context.user_data['order_target'] = validated_target
         
-        # Show confirmation dengan info stok
         user_id = str(update.effective_user.id)
         saldo = get_user_saldo(user_id)
         
@@ -1014,7 +991,7 @@ async def receive_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return CONFIRM_ORDER
         
     except Exception as e:
-        logger.error(f"Error in receive_target: {e}")
+        logger.error(f"❌ Error in receive_target: {e}")
         await safe_reply_message(update, "❌ Error memproses tujuan. Silakan coba lagi.")
         return ConversationHandler.END
 
@@ -1039,7 +1016,6 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = str(query.from_user.id)
         product_price = product_data['price']
         
-        # === FITUR DARI PHP: DAPATKAN SALDO AWAL ===
         saldo_awal = get_user_saldo(user_id)
         
         if saldo_awal < product_price:
@@ -1057,7 +1033,6 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return ConversationHandler.END
         
-        # Final stock check sebelum order
         await safe_edit_message_text(
             update,
             f"🔍 *MEMERIKSA STOK TERAKHIR*...\n\n"
@@ -1068,7 +1043,6 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
         
-        # Sync stok terakhir untuk produk ini
         sync_product_stock_from_provider()
         updated_product = get_product_by_code_with_stock(product_data['code'])
         
@@ -1087,7 +1061,6 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return CHOOSING_PRODUCT
         
-        # Initialize KhfyPay API
         api_key = getattr(config, 'KHFYPAY_API_KEY', '')
         if not api_key:
             await safe_edit_message_text(
@@ -1099,13 +1072,10 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         khfy_api = KhfyPayAPI(api_key)
         
-        # === FITUR DARI PHP: BUAT REFF_ID UNIK ===
         reffid = f"akrab_{uuid.uuid4().hex[:16]}"
         
-        # Deduct balance FIRST (sebelum ke provider)
         update_user_saldo(user_id, -product_price, "Pembelian produk")
         
-        # Save order to database dengan saldo_awal
         order_id = save_order(
             user_id=user_id,
             product_name=product_data['name'],
@@ -1116,11 +1086,10 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
             provider_order_id=reffid,
             sn='',
             note='Sedang diproses ke provider',
-            saldo_awal=saldo_awal  # === FITUR DARI PHP: SIMPAN SALDO AWAL ===
+            saldo_awal=saldo_awal
         )
         
         if not order_id:
-            # Refund jika gagal save order
             update_user_saldo(user_id, product_price, "Refund: Gagal menyimpan order")
             await safe_edit_message_text(
                 update,
@@ -1129,7 +1098,6 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return ConversationHandler.END
         
-        # Create order in provider system
         await safe_edit_message_text(
             update,
             f"🔄 *MEMPROSES ORDER KE PROVIDER*...\n\n"
@@ -1141,18 +1109,15 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
         
-        # Kirim ke provider
         order_result = khfy_api.create_order(
             product_code=product_data['code'],
             target=target,
             custom_reffid=reffid
         )
         
-        # Handle provider response
         if not order_result or order_result.get('status') == 'error':
             error_msg = order_result.get('message', 'Unknown error from provider') if order_result else 'Gagal terhubung ke provider'
             
-            # REFUND: Order gagal di provider
             update_user_saldo(user_id, product_price, f"Refund: Provider error - {error_msg}")
             update_order_status(order_id, 'failed', note=f"Provider error: {error_msg}")
             
@@ -1172,25 +1137,20 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return ConversationHandler.END
         
-        # Update order dengan data dari provider
         provider_status = order_result.get('status', '')
         provider_message = order_result.get('message', '')
         sn_number = order_result.get('sn', '')
         
-        # === FITUR DARI PHP: STATUS MAPPING ===
         final_status = 'pending'
         if provider_status in ['success', 'SUKSES', 'SUCCESS']:
             final_status = 'completed'
-            # Update stok setelah order berhasil
             update_product_stock_after_order(product_data['code'])
         elif provider_status in ['error', 'GAGAL', 'FAILED']:
             final_status = 'failed'
-            # Auto refund untuk error yang langsung diketahui
             update_user_saldo(user_id, product_price, f"Refund: Provider error - {provider_message}")
         
         update_order_status(order_id, final_status, sn=sn_number, note=provider_message)
         
-        # Prepare success message
         saldo_akhir = get_user_saldo(user_id)
         
         status_info = {
@@ -1209,7 +1169,7 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔗 *Ref ID:* `{reffid}`\n"
             f"📊 *Status:* {status_text} {color}\n"
             f"💬 *Pesan:* {provider_message}\n"
-            f"💰 *Saldo Awal:* Rp {saldo_awal:,}\n"  # === FITUR DARI PHP: TAMPILKAN SALDO AWAL ===
+            f"💰 *Saldo Awal:* Rp {saldo_awal:,}\n"
             f"💰 *Saldo Akhir:* Rp {saldo_akhir:,}\n"
         )
         
@@ -1239,7 +1199,6 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
         
-        # Clean up user data
         order_keys = ['selected_product', 'order_target', 'product_page', 'current_group', 'current_products']
         for key in order_keys:
             if key in user_data:
@@ -1248,9 +1207,8 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
         
     except Exception as e:
-        logger.error(f"Error processing order: {e}")
+        logger.error(f"❌ Error processing order: {e}")
         
-        # Safety refund jika error tidak terduga
         try:
             user_id = str(query.from_user.id)
             update_user_saldo(user_id, product_price, f"Refund: System error - {str(e)}")
@@ -1306,22 +1264,20 @@ class KhfyPayPoller:
                 logger.error("❌ API key not available for polling")
                 return
             
-            # Check each order
             for order in pending_orders:
                 await self.check_order_status(order)
-                await asyncio.sleep(3)  # Delay 3 seconds between API calls
+                await asyncio.sleep(3)
                 
         except Exception as e:
             logger.error(f"❌ Error in check_pending_orders: {e}")
     
     async def check_order_status(self, order):
-        """Check status of a single order"""
+        """Check status of a single order dengan error handling lengkap"""
         try:
             reffid = order['provider_order_id']
             order_id = order['id']
             user_id = order['user_id']
             
-            # Skip if order is too new (< 2 minutes)
             if isinstance(order['created_at'], str):
                 created_at = datetime.strptime(order['created_at'], '%Y-%m-%d %H:%M:%S')
             else:
@@ -1334,7 +1290,6 @@ class KhfyPayPoller:
             
             logger.info(f"📡 Checking order {order_id} with reffid: {reffid}")
             
-            # Check status from KhfyPay API
             khfy_api = KhfyPayAPI(self.api_key)
             status_result = khfy_api.check_order_status(reffid)
             
@@ -1342,85 +1297,109 @@ class KhfyPayPoller:
                 logger.warning(f"⚠️ No response for order {order_id}")
                 return
             
-            # Process the status result
+            logger.info(f"🔍 Raw API response for order {order_id}: {status_result}")
+            
             await self.process_status_result(order, status_result)
                 
         except Exception as e:
             logger.error(f"❌ Error checking order {order.get('id', 'unknown')}: {e}")
     
     async def process_status_result(self, order, status_result):
-        """Process the status result from API"""
+        """Process the status result from API dengan error handling robust"""
         try:
             order_id = order['id']
             user_id = order['user_id']
             reffid = order['provider_order_id']
             current_status = order['status']
             
-            logger.info(f"📊 Order {order_id} API response: {status_result}")
+            logger.info(f"📊 Processing order {order_id}, response type: {type(status_result)}")
             
-            if status_result.get('status') == 'success' and status_result.get('data'):
-                order_data = status_result['data']
-                provider_status = order_data.get('status', '').lower()
-                sn = order_data.get('sn', '')
-                message = order_data.get('message', '')
-                
-                logger.info(f"📊 Order {order_id} provider status: {provider_status}")
-                
-                # Update based on provider status
-                if provider_status in ['success', 'sukses', 'completed']:
-                    # ORDER SUKSES
-                    if current_status != 'completed':
-                        update_order_status(order_id, 'completed', sn=sn, note=f"Polling: {message}")
-                        update_product_stock_after_order(order['product_code'])
-                        
-                        logger.info(f"✅ Order {order_id} completed via polling")
-                        
-                        # Send notification to user
-                        success_message = (
-                            f"✅ *ORDER BERHASIL* (Auto-Update)\n\n"
-                            f"📦 *Produk:* {order['product_name']}\n"
-                            f"📮 *Tujuan:* `{order['customer_input']}`\n"
-                            f"💰 *Harga:* Rp {order['price']:,}\n"
-                            f"🔗 *Ref ID:* `{reffid}`\n"
-                        )
-                        
-                        if sn:
-                            success_message += f"🔢 *SN:* `{sn}`\n"
-                        
-                        success_message += f"💬 *Pesan:* {message}\n"
-                        success_message += f"⏰ *Update:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-                        
-                        await send_telegram_notification(user_id, success_message)
+            # Handle berbagai format response
+            provider_status = None
+            message = ""
+            sn = ""
+            
+            # Format 1: Response dengan data field (format standar)
+            if isinstance(status_result, dict):
+                if status_result.get('data'):
+                    data = status_result['data']
+                    if isinstance(data, dict):
+                        provider_status = data.get('status') or data.get('Status')
+                        message = data.get('message') or data.get('Message') or data.get('keterangan', '')
+                        sn = data.get('sn') or data.get('SN') or data.get('serial', '')
+                    else:
+                        # Data bukan dictionary, mungkin string langsung
+                        provider_status = str(data).lower()
+                        message = str(data)
+                else:
+                    # Response langsung di root
+                    provider_status = status_result.get('status') or status_result.get('Status')
+                    message = status_result.get('message') or status_result.get('Message') or status_result.get('keterangan', '')
+                    sn = status_result.get('sn') or status_result.get('SN')
+            
+            # Jika tidak ada status yang ditemukan
+            if not provider_status:
+                logger.warning(f"⚠️ No status found in response for order {order_id}")
+                logger.info(f"🔍 Full response: {status_result}")
+                return
+            
+            # Normalize status
+            provider_status = str(provider_status).lower().strip()
+            logger.info(f"📊 Order {order_id} provider status: '{provider_status}'")
+            
+            # Process status dengan berbagai kemungkinan
+            if any(s in provider_status for s in ['sukses', 'success', 'berhasil', 'completed']):
+                if current_status != 'completed':
+                    update_order_status(order_id, 'completed', sn=sn, note=f"Polling: {message}")
+                    update_product_stock_after_order(order['product_code'])
                     
-                elif provider_status in ['failed', 'gagal', 'error']:
-                    # ORDER GAGAL - REFUND
-                    if current_status != 'failed':
-                        update_order_status(order_id, 'failed', note=f"Polling Gagal: {message}")
-                        
-                        # Refund balance
-                        update_user_saldo(user_id, order['price'], f"Refund: Order gagal - {message}")
-                        
-                        logger.info(f"❌ Order {order_id} failed via polling - refund processed")
-                        
-                        # Send notification to user
-                        failed_message = (
-                            f"❌ *ORDER GAGAL* (Auto-Update)\n\n"
-                            f"📦 *Produk:* {order['product_name']}\n"
-                            f"📮 *Tujuan:* `{order['customer_input']}`\n"
-                            f"💰 *Harga:* Rp {order['price']:,}\n"
-                            f"🔗 *Ref ID:* `{reffid}`\n"
-                            f"💬 *Pesan:* {message}\n\n"
-                            f"✅ *Saldo telah dikembalikan otomatis*\n"
-                            f"⏰ *Update:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-                        )
-                        
-                        await send_telegram_notification(user_id, failed_message)
+                    logger.info(f"✅ Order {order_id} completed via polling")
                     
+                    success_message = (
+                        f"✅ *ORDER BERHASIL* (Auto-Update)\n\n"
+                        f"📦 *Produk:* {order['product_name']}\n"
+                        f"📮 *Tujuan:* `{order['customer_input']}`\n"
+                        f"💰 *Harga:* Rp {order['price']:,}\n"
+                        f"🔗 *Ref ID:* `{reffid}`\n"
+                    )
+                    
+                    if sn:
+                        success_message += f"🔢 *SN:* `{sn}`\n"
+                    
+                    success_message += f"💬 *Pesan:* {message}\n"
+                    success_message += f"⏰ *Update:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                    
+                    await send_telegram_notification(user_id, success_message)
+            
+            elif any(s in provider_status for s in ['gagal', 'failed', 'error', 'batal']):
+                if current_status != 'failed':
+                    update_order_status(order_id, 'failed', note=f"Polling Gagal: {message}")
+                    
+                    update_user_saldo(user_id, order['price'], f"Refund: Order gagal - {message}")
+                    
+                    logger.info(f"❌ Order {order_id} failed via polling - refund processed")
+                    
+                    failed_message = (
+                        f"❌ *ORDER GAGAL* (Auto-Update)\n\n"
+                        f"📦 *Produk:* {order['product_name']}\n"
+                        f"📮 *Tujuan:* `{order['customer_input']}`\n"
+                        f"💰 *Harga:* Rp {order['price']:,}\n"
+                        f"🔗 *Ref ID:* `{reffid}`\n"
+                        f"💬 *Pesan:* {message}\n\n"
+                        f"✅ *Saldo telah dikembalikan otomatis*\n"
+                        f"⏰ *Update:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                    )
+                    
+                    await send_telegram_notification(user_id, failed_message)
+            
             else:
-                logger.warning(f"⚠️ Invalid response for order {order_id}: {status_result}")
+                logger.warning(f"⚠️ Unknown status '{provider_status}' for order {order_id}")
+                logger.info(f"🔍 Full response: {status_result}")
                 
         except Exception as e:
             logger.error(f"❌ Error processing status for order {order.get('id', 'unknown')}: {e}")
+            logger.error(f"🔍 Full response that caused error: {status_result}")
+            logger.error(f"📋 Traceback: {traceback.format_exc()}")
 
 # Global poller instance
 khfy_poller = None
@@ -1436,7 +1415,7 @@ async def send_telegram_notification(user_id, message):
             )
             return True
     except Exception as e:
-        logger.error(f"Failed to send Telegram notification to {user_id}: {e}")
+        logger.error(f"❌ Failed to send Telegram notification to {user_id}: {e}")
     return False
 
 def start_polling_system(application, api_key=None, poll_interval=120):
@@ -1452,8 +1431,6 @@ def start_polling_system(application, api_key=None, poll_interval=120):
     
     khfy_poller = KhfyPayPoller(api_key, poll_interval)
     
-    # Start polling in background
-    import asyncio
     loop = asyncio.get_event_loop()
     loop.create_task(khfy_poller.start_polling(application))
     
@@ -1545,16 +1522,14 @@ def initialize_order_system(application, webhook_port=5000):
     global bot_application
     bot_application = application
     
-    # Start polling system
     start_polling_system(application, poll_interval=120)
-    
     logger.info("✅ Order system initialized with Polling System")
 
 # ==================== ERROR HANDLER ====================
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle errors in the order handler"""
-    logger.error(f"Exception while handling an update in order handler: {context.error}", exc_info=context.error)
+    logger.error(f"❌ Exception while handling an update in order handler: {context.error}", exc_info=True)
     
     try:
         await safe_reply_message(
@@ -1563,6 +1538,6 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]])
         )
     except Exception as e:
-        logger.error(f"Error in order error handler: {e}")
+        logger.error(f"❌ Error in order error handler: {e}")
     
     return ConversationHandler.END
