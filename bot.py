@@ -10,6 +10,8 @@ import sys
 import os
 import asyncio
 import traceback
+import signal
+import time
 from typing import Dict, Any
 from datetime import datetime
 
@@ -29,6 +31,61 @@ from telegram.ext import (
 # Custom Module Imports
 import config
 import database
+
+# ==================== SINGLETON PATTERN UNTUK MENCEGAH MULTIPLE INSTANCE ====================
+class BotSingleton:
+    _instance = None
+    _pid_file = 'bot.pid'
+    
+    @classmethod
+    def get_instance(cls):
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+    
+    def __init__(self):
+        if not hasattr(self, '_initialized'):
+            self._initialized = True
+            self._application = None
+    
+    def is_already_running(self):
+        """Check if bot is already running"""
+        try:
+            if os.path.exists(self._pid_file):
+                with open(self._pid_file, 'r') as f:
+                    old_pid = int(f.read().strip())
+                    # Check if process is still running
+                    try:
+                        os.kill(old_pid, 0)  # This will throw an error if process doesn't exist
+                        return True
+                    except OSError:
+                        # Process doesn't exist, remove stale PID file
+                        os.remove(self._pid_file)
+                        return False
+            return False
+        except Exception as e:
+            print(f"⚠️ Error checking running status: {e}")
+            return False
+    
+    def create_pid_file(self):
+        """Create PID file"""
+        try:
+            with open(self._pid_file, 'w') as f:
+                f.write(str(os.getpid()))
+            return True
+        except Exception as e:
+            print(f"❌ Error creating PID file: {e}")
+            return False
+    
+    def remove_pid_file(self):
+        """Remove PID file"""
+        try:
+            if os.path.exists(self._pid_file):
+                os.remove(self._pid_file)
+            return True
+        except Exception as e:
+            print(f"⚠️ Error removing PID file: {e}")
+            return False
 
 # ==================== IMPORTS DENGAN ERROR HANDLING ====================
 print("🔄 Loading handlers...")
@@ -74,7 +131,8 @@ except Exception as e:
 try:
     from order_handler import (
         get_conversation_handler as get_order_conversation_handler,
-        menu_handler as order_menu_handler
+        menu_handler as order_menu_handler,
+        initialize_order_system
     )
     ORDER_AVAILABLE = True
     print("✅ Order handler loaded successfully")
@@ -87,6 +145,9 @@ except Exception as e:
     
     async def order_menu_handler(update, context):
         await send_modern_message(update, "❌ Fitur order sedang dalam perbaikan.", "main_menu_main")
+    
+    def initialize_order_system(app, webhook_port=5000):
+        print("⚠️ Order system initialization skipped")
 
 # Topup Handler
 try:
@@ -905,14 +966,41 @@ async def post_init(application: Application):
     except Exception as e:
         logger.error(f"Error in post_init: {e}")
 
+# ==================== SIGNAL HANDLERS ====================
+def setup_signal_handlers():
+    """Setup signal handlers for graceful shutdown"""
+    def signal_handler(signum, frame):
+        print(f"\n🛑 Received signal {signum}. Shutting down gracefully...")
+        bot_singleton = BotSingleton.get_instance()
+        bot_singleton.remove_pid_file()
+        sys.exit(0)
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
 # ==================== MAIN FUNCTION ====================
 def main():
     """Main function - Initialize dan start bot"""
     try:
         print("🚀 Starting Modern Telegram Bot with KhfyPay Integration...")
         
+        # Setup signal handlers
+        setup_signal_handlers()
+        
+        # Check for existing bot instance
+        bot_singleton = BotSingleton.get_instance()
+        if bot_singleton.is_already_running():
+            print("❌ Bot is already running! Please stop the existing instance first.")
+            print("💡 Run: pkill -f python  (to stop all Python processes)")
+            sys.exit(1)
+        
+        # Create PID file
+        if not bot_singleton.create_pid_file():
+            print("⚠️ Warning: Could not create PID file")
+        
         if not BOT_TOKEN or BOT_TOKEN == 'YOUR_BOT_TOKEN_HERE':
             print("❌ Please set BOT_TOKEN in config.py")
+            bot_singleton.remove_pid_file()
             sys.exit(1)
         
         # Initialize database
@@ -934,6 +1022,11 @@ def main():
             .build()
         
         print("✅ Application built successfully")
+        
+        # Initialize order system
+        if ORDER_AVAILABLE:
+            initialize_order_system(application, webhook_port=5000)
+            print("✅ Order system initialized")
         
         # ==================== HANDLER REGISTRATION ====================
         
@@ -1010,9 +1103,13 @@ def main():
         # ==================== START BOT ====================
         print("🎯 Starting bot polling...")
         
+        # Store application in singleton
+        bot_singleton._application = application
+        
         application.run_polling(
             drop_pending_updates=True,
-            allowed_updates=Update.ALL_TYPES
+            allowed_updates=Update.ALL_TYPES,
+            close_loop=False
         )
                 
     except KeyboardInterrupt:
@@ -1020,7 +1117,11 @@ def main():
     except Exception as e:
         print(f"❌ Failed to start bot: {e}")
         logger.error(f"Failed to start bot: {e}", exc_info=True)
-        sys.exit(1)
+    finally:
+        # Cleanup
+        bot_singleton = BotSingleton.get_instance()
+        bot_singleton.remove_pid_file()
+        print("🧹 Cleanup completed")
 
 if __name__ == "__main__":
     print("=" * 60)
@@ -1028,6 +1129,7 @@ if __name__ == "__main__":
     print("🎨 Enhanced UI & User Experience") 
     print("⚡ Full Features - Production Ready")
     print("🌐 KhfyPay Auto Status Updates")
+    print("🛡️  Conflict Protection - Single Instance")
     print("=" * 60)
     
     main()
