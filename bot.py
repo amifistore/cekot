@@ -128,27 +128,27 @@ except Exception as e:
     async def stock_command(update, context):
         await send_modern_message(update, "❌ Fitur stok sedang dalam perbaikan.", "main_menu_main")
 
-# Order Handler
+# ORDER HANDLER MODERN - IMPORT YANG BARU
 try:
     from order_handler import (
-        get_conversation_handler as get_order_conversation_handler,
-        menu_handler as order_menu_handler,
-        initialize_order_system
+        modern_order_handler,  # Ganti dengan handler modern
+        initialize_modern_order_system,  # Ganti dengan init modern
+        menu_handler as order_menu_handler  # Tetap sama
     )
     ORDER_AVAILABLE = True
-    print("✅ Order handler loaded successfully")
+    print("✅ MODERN Order handler loaded successfully")
 except Exception as e:
-    print(f"❌ Error importing order_handler: {e}")
+    print(f"❌ Error importing MODERN order_handler: {e}")
     ORDER_AVAILABLE = False
     
-    def get_order_conversation_handler():
+    def modern_order_handler():
         return None
     
     async def order_menu_handler(update, context):
         await send_modern_message(update, "❌ Fitur order sedang dalam perbaikan.", "main_menu_main")
     
-    def initialize_order_system(app, webhook_port=5000):
-        print("⚠️ Order system initialization skipped")
+    def initialize_modern_order_system(app):
+        print("⚠️ MODERN Order system initialization skipped")
 
 # Topup Handler
 try:
@@ -920,10 +920,10 @@ async def post_init(application: Application):
             start_auto_status_checker(application, check_interval=120)
             logger.info("✅ KhfyPay Auto Status Checker started")
         
-        # INITIALIZE ORDER SYSTEM WITH POLLING
+        # INITIALIZE MODERN ORDER SYSTEM WITH POLLING - YANG BARU
         if ORDER_AVAILABLE:
-            initialize_order_system(application)
-            logger.info("✅ Order system with polling initialized")
+            initialize_modern_order_system(application)  # GANTI DENGAN YANG MODERN
+            logger.info("✅ MODERN Order system with polling initialized")
         
         bot = await application.bot.get_me()
         
@@ -964,7 +964,9 @@ async def post_init(application: Application):
             print("📍 KhfyPay Webhook URL: http://your-server-ip:8080/webhook")
             print("📍 KhfyPay Auto Status Checker: Running every 2 minutes")
         if ORDER_AVAILABLE:
-            print("📍 Order Polling System: Active (120s interval)")
+            print("📍 MODERN Order Polling System: Active (60s interval)")
+            print("📍 Auto Timeout: 5 minutes + Auto Refund")
+            print("📍 Modern UI: Animations & Progress Bars")
         print("📍 Bot is now running and waiting for messages...")
         print("📍 Try sending /start to your bot")
         print("=" * 60)
@@ -1039,11 +1041,10 @@ def main():
                 application.add_handler(topup_conv_handler)
                 print("✅ Topup conversation handler registered")
         
+        # ORDER CONVERSATION HANDLER - YANG BARU
         if ORDER_AVAILABLE:
-            order_conv_handler = get_order_conversation_handler()
-            if order_conv_handler:
-                application.add_handler(order_conv_handler)
-                print("✅ Order conversation handler registered")
+            application.add_handler(modern_order_handler)  # GANTI DENGAN YANG MODERN
+            print("✅ MODERN Order conversation handler registered")
         
         # 2. TOPUP CALLBACK HANDLERS
         if TOPUP_AVAILABLE:
