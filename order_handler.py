@@ -5,7 +5,9 @@ import aiohttp
 import asyncio
 import sqlite3
 import re
+import threading
 from datetime import datetime, timedelta
+from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ConversationHandler,
@@ -13,7 +15,8 @@ from telegram.ext import (
     MessageHandler,
     filters,
     ContextTypes,
-    CommandHandler
+    CommandHandler,
+    Application
 )
 import database
 import config
@@ -24,6 +27,71 @@ logger = logging.getLogger(__name__)
 # States untuk order conversation
 CHOOSING_GROUP, CHOOSING_PRODUCT, ENTER_TUJUAN, CONFIRM_ORDER = range(4)
 PRODUCTS_PER_PAGE = 8
+
+# Global variables untuk webhook
+bot_application = None
+webhook_app = Flask(__name__)
+
+# ==================== FLASK WEBHOOK SERVER ====================
+
+@webhook_app.route('/khfy-webhook', methods=['GET', 'POST'])
+def khfy_webhook():
+    """Endpoint untuk webhook KhfyPay"""
+    try:
+        # Get message dari parameter atau body
+        if request.method == 'GET':
+            message = request.args.get('message', '')
+        else:
+            # Coba dari JSON body
+            data = request.get_json(silent=True)
+            if data and 'message' in data:
+                message = data['message']
+            else:
+                # Coba dari form data
+                message = request.form.get('message', '')
+        
+        if not message:
+            logger.error("No message parameter found")
+            return jsonify({"status": "error", "message": "No message provided"}), 400
+        
+        logger.info(f"📨 Received webhook: {message}")
+        
+        # Process webhook secara async
+        def process_webhook():
+            try:
+                success = handle_webhook_callback(message)
+                if success:
+                    logger.info("✅ Webhook processed successfully")
+                else:
+                    logger.error("❌ Webhook processing failed")
+            except Exception as e:
+                logger.error(f"Error processing webhook: {e}")
+        
+        # Jalankan di thread terpisah
+        thread = threading.Thread(target=process_webhook)
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({"status": "success", "message": "Webhook received"}), 200
+        
+    except Exception as e:
+        logger.error(f"Error in webhook endpoint: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@webhook_app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
+    return jsonify({"status": "healthy"}), 200
+
+def start_webhook_server(port=5000):
+    """Start Flask webhook server"""
+    def run_flask():
+        webhook_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+    
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+    logger.info(f"🔗 Webhook server started on port {port}")
 
 # ==================== KHFYPAY API INTEGRATION ====================
 
@@ -209,6 +277,240 @@ def update_order_status(order_id, status, sn='', note=''):
         logger.error(f"Error updating order status: {e}")
         return False
 
+def get_order_by_provider_id(provider_order_id):
+    """Get order by provider order ID"""
+    try:
+        if hasattr(database, 'get_order_by_provider_id'):
+            return database.get_order_by_provider_id(provider_order_id)
+        else:
+            # Fallback: cari langsung di database
+            conn = sqlite3.connect('bot_database.db')
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id, user_id, product_name, product_code, customer_input, price, 
+                       status, provider_order_id, created_at 
+                FROM orders WHERE provider_order_id = ?
+            ''', (provider_order_id,))
+            row = cursor.fetchone()
+            conn.close()
+            if row:
+                return dict(zip([
+                    'id', 'user_id', 'product_name', 'product_code', 'customer_input', 
+                    'price', 'status', 'provider_order_id', 'created_at'
+                ], row))
+            return None
+    except Exception as e:
+        logger.error(f"Error getting order by provider ID: {e}")
+        return None
+
+def get_pending_orders():
+    """Get all pending orders"""
+    try:
+        if hasattr(database, 'get_pending_orders'):
+            return database.get_pending_orders()
+        else:
+            # Fallback: ambil langsung dari database
+            conn = sqlite3.connect('bot_database.db')
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id, user_id, product_code, provider_order_id, created_at, price 
+                FROM orders WHERE status IN ('processing', 'pending')
+            ''')
+            rows = cursor.fetchall()
+            conn.close()
+            return [dict(zip([
+                'id', 'user_id', 'product_code', 'provider_order_id', 'created_at', 'price'
+            ], row)) for row in rows]
+    except Exception as e:
+        logger.error(f"Error getting pending orders: {e}")
+        return []
+
+# ==================== WEBHOOK PARSER & HANDLER ====================
+
+def parse_khfypay_webhook(message):
+    """Parse webhook message dari KhfyPay dengan regex yang robust"""
+    try:
+        # Multiple regex patterns untuk handle berbagai format
+        patterns = [
+            # Pattern utama dari dokumentasi
+            r'RC=(?P<reffid>[a-f0-9-]+)\s+TrxID=(?P<trxid>\d+)\s+(?P<produk>[A-Z0-9]+)\.(?P<tujuan>\d+)\s+(?P<status_text>[A-Za-z]+)\s*(?P<keterangan>.+?)(?:\s+Saldo[\s\S]*?)?(?:\bresult=(?P<status_code>\d+))?\s*>?$',
+            
+            # Pattern alternatif 1
+            r'RC=(?P<reffid>\S+)\s+TrxID=(?P<trxid>\d+)\s+(?P<produk>\S+)\.(?P<tujuan>\d+)\s+(?P<status_text>\w+)\s+(?P<keterangan>[^>]+)',
+            
+            # Pattern alternatif 2 (lebih sederhana)
+            r'RC=(?P<reffid>[^\s]+).*?TrxID=(?P<trxid>\d+).*?(?P<produk>[A-Z0-9]+)\.(?P<tujuan>\d+).*?(?P<status_text>SUKSES|GAGAL|PENDING)',
+        ]
+        
+        for pattern in patterns:
+            match = re.match(pattern, message, re.IGNORECASE | re.DOTALL)
+            if match:
+                groups = match.groupdict()
+                
+                # Extract data dengan default values
+                reffid = groups.get('reffid', '').strip()
+                trxid = groups.get('trxid', '')
+                product_code = groups.get('produk', '')
+                target = groups.get('tujuan', '')
+                status_text = groups.get('status_text', '').upper()
+                keterangan = groups.get('keterangan', '').strip()
+                status_code = groups.get('status_code')
+                
+                # Extract SN dari keterangan jika ada
+                sn = ''
+                sn_match = re.search(r'SN[:=]?\s*([A-Z0-9]+)', keterangan, re.IGNORECASE)
+                if sn_match:
+                    sn = sn_match.group(1)
+                
+                # Determine status
+                if status_code == '0' or 'SUKSES' in status_text:
+                    final_status = 'completed'
+                    is_success = True
+                elif status_code == '1' or 'GAGAL' in status_text or 'BATAL' in status_text:
+                    final_status = 'failed' 
+                    is_success = False
+                else:
+                    final_status = 'pending'
+                    is_success = False
+                
+                return {
+                    'reffid': reffid,
+                    'trxid': trxid,
+                    'product_code': product_code,
+                    'target': target,
+                    'status_text': status_text,
+                    'keterangan': keterangan,
+                    'status_code': status_code,
+                    'final_status': final_status,
+                    'is_success': is_success,
+                    'sn': sn,
+                    'raw_message': message
+                }
+        
+        logger.error(f"No pattern matched for webhook message: {message}")
+        return None
+        
+    except Exception as e:
+        logger.error(f"Error parsing webhook: {e}")
+        return None
+
+async def send_telegram_notification(user_id, message):
+    """Send notification to Telegram user"""
+    try:
+        if bot_application:
+            await bot_application.bot.send_message(
+                chat_id=user_id,
+                text=message,
+                parse_mode="Markdown"
+            )
+            return True
+    except Exception as e:
+        logger.error(f"Failed to send Telegram notification to {user_id}: {e}")
+    return False
+
+def handle_webhook_callback(message):
+    """Enhanced webhook handler dengan update real-time ke Telegram"""
+    try:
+        logger.info(f"🔔 Processing webhook: {message}")
+        
+        # Parse webhook message
+        webhook_data = parse_khfypay_webhook(message)
+        if not webhook_data:
+            logger.error("❌ Failed to parse webhook message")
+            return False
+        
+        reffid = webhook_data['reffid']
+        
+        # Cari order di database
+        order = get_order_by_provider_id(reffid)
+        if not order:
+            logger.warning(f"Order not found for reffid: {reffid}")
+            return False
+        
+        order_id = order['id']
+        user_id = order['user_id']
+        price = order['price']
+        current_status = order['status']
+        
+        # Skip jika status sudah sama
+        if current_status == webhook_data['final_status']:
+            logger.info(f"Order {order_id} status unchanged: {current_status}")
+            return True
+        
+        # Process berdasarkan status
+        if webhook_data['is_success']:
+            # ORDER SUKSES
+            update_order_status(
+                order_id, 
+                'completed', 
+                sn=webhook_data.get('sn', ''),
+                note=f"Webhook: {webhook_data['keterangan']}"
+            )
+            
+            # Update stok
+            update_product_stock_after_order(webhook_data['product_code'])
+            
+            logger.info(f"✅ Order {order_id} completed via webhook")
+            
+            # Prepare success message
+            success_message = (
+                f"✅ *ORDER BERHASIL* - {webhook_data['status_text']}\n\n"
+                f"📦 *Produk:* {order['product_name']}\n"
+                f"📮 *Tujuan:* `{order['customer_input']}`\n"
+                f"💰 *Harga:* Rp {price:,}\n"
+                f"🔗 *Ref ID:* `{reffid}`\n"
+                f"💬 *Pesan:* {webhook_data['keterangan']}\n"
+            )
+            
+            if webhook_data.get('sn'):
+                success_message += f"🔢 *SN:* `{webhook_data['sn']}`\n"
+            
+            success_message += f"\n⏰ *Update:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            
+        else:
+            # ORDER GAGAL - REFUND OTOMATIS
+            update_order_status(
+                order_id, 
+                'failed', 
+                note=f"Webhook Gagal: {webhook_data['keterangan']}"
+            )
+            
+            # Refund saldo
+            refund_success = update_user_saldo(
+                user_id, 
+                price, 
+                f"Refund: Order gagal - {webhook_data['keterangan']}"
+            )
+            
+            if refund_success:
+                logger.info(f"💰 Refund processed for order {order_id}")
+            else:
+                logger.error(f"❌ Refund failed for order {order_id}")
+            
+            # Prepare failed message
+            success_message = (
+                f"❌ *ORDER GAGAL* - {webhook_data['status_text']}\n\n"
+                f"📦 *Produk:* {order['product_name']}\n"
+                f"📮 *Tujuan:* `{order['customer_input']}`\n"
+                f"💰 *Harga:* Rp {price:,}\n"
+                f"🔗 *Ref ID:* `{reffid}`\n"
+                f"💬 *Pesan:* {webhook_data['keterangan']}\n\n"
+                f"✅ *Saldo telah dikembalikan otomatis*\n"
+                f"⏰ *Update:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+        
+        # Kirim notifikasi ke Telegram
+        asyncio.run_coroutine_threadsafe(
+            send_telegram_notification(user_id, success_message),
+            bot_application._get_running_loop()
+        )
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error in enhanced webhook handler: {e}")
+        return False
+
 # ==================== STOCK MANAGEMENT SYSTEM ====================
 
 def sync_product_stock_from_provider():
@@ -347,35 +649,101 @@ def update_product_stock_after_order(product_code, quantity=1):
         logger.error(f"Error update_product_stock_after_order: {e}")
         return False
 
-# ==================== REFUND SYSTEM ====================
+# ==================== PERIODIC STATUS CHECKER ====================
 
-def process_refund(order_id, user_id, amount, reason="Order gagal"):
-    """Process refund untuk order yang gagal"""
+async def check_pending_orders(context: ContextTypes.DEFAULT_TYPE):
+    """Periodic task untuk check status order yang pending di provider"""
     try:
-        # Update saldo user
-        update_success = update_user_saldo(user_id, amount, f"Refund: {reason}")
+        logger.info("🔄 Checking pending orders...")
         
-        if not update_success:
-            logger.error(f"Failed to update balance for refund: user {user_id}, amount {amount}")
-            return False
+        # Get pending orders dari database
+        pending_orders = get_pending_orders()
         
-        # Update status order
-        status_success = update_order_status(
-            order_id, 
-            'refunded', 
-            note=f"Refund: {reason}"
-        )
+        if not pending_orders:
+            logger.info("No pending orders found")
+            return
         
-        if not status_success:
-            logger.error(f"Failed to update order status for refund: order {order_id}")
-            return False
+        logger.info(f"Found {len(pending_orders)} pending orders")
         
-        logger.info(f"Successfully refunded {amount} to user {user_id} for order {order_id}")
-        return True
+        # Check each order status di provider
+        api_key = getattr(config, 'KHFYPAY_API_KEY', '')
+        if not api_key:
+            logger.error("API key not available for status check")
+            return
+        
+        khfy_api = KhfyPayAPI(api_key)
+        
+        for order in pending_orders:
+            try:
+                reffid = order['provider_order_id']
+                
+                # Skip jika baru dibuat (< 2 menit)
+                order_age = datetime.now() - datetime.fromisoformat(order['created_at'])
+                if order_age.total_seconds() < 120:  # 2 menit
+                    continue
+                
+                # Check status di provider
+                status_result = khfy_api.check_order_status(reffid)
+                
+                if status_result and status_result.get('data'):
+                    order_data = status_result['data']
+                    provider_status = order_data.get('status', '').lower()
+                    
+                    # Update status berdasarkan response provider
+                    if provider_status in ['success', 'sukses', 'completed']:
+                        update_order_status(order['id'], 'completed', note="Auto-check: Success")
+                        update_product_stock_after_order(order['product_code'])
+                        logger.info(f"✅ Order {order['id']} completed via periodic check")
+                        
+                        # Send notification
+                        success_message = (
+                            f"✅ *ORDER BERHASIL* (Auto-Check)\n\n"
+                            f"📦 *Produk:* {order_data.get('product_name', order['product_code'])}\n"
+                            f"📮 *Tujuan:* `{order_data.get('target', '')}`\n"
+                            f"💰 *Harga:* Rp {order['price']:,}\n"
+                            f"🔗 *Ref ID:* `{reffid}`\n"
+                            f"⏰ *Update:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                        )
+                        await send_telegram_notification(order['user_id'], success_message)
+                        
+                    elif provider_status in ['failed', 'gagal', 'error']:
+                        update_order_status(order['id'], 'failed', note="Auto-check: Failed")
+                        # Refund saldo
+                        update_user_saldo(order['user_id'], order['price'], "Refund: Auto-check failed")
+                        logger.info(f"❌ Order {order['id']} failed via periodic check")
+                        
+                        # Send notification
+                        failed_message = (
+                            f"❌ *ORDER GAGAL* (Auto-Check)\n\n"
+                            f"📦 *Produk:* {order_data.get('product_name', order['product_code'])}\n"
+                            f"📮 *Tujuan:* `{order_data.get('target', '')}`\n"
+                            f"💰 *Harga:* Rp {order['price']:,}\n"
+                            f"🔗 *Ref ID:* `{reffid}`\n"
+                            f"💬 *Pesan:* {order_data.get('message', 'Gagal di provider')}\n\n"
+                            f"✅ *Saldo telah dikembalikan*\n"
+                            f"⏰ *Update:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                        )
+                        await send_telegram_notification(order['user_id'], failed_message)
+                
+                # Tunggu sebentar antara request
+                await asyncio.sleep(2)
+                
+            except Exception as order_error:
+                logger.error(f"Error checking order {order['id']}: {order_error}")
+                continue
+                
+    except Exception as e:
+        logger.error(f"Error in check_pending_orders: {e}")
+
+async def periodic_stock_sync_task(context: ContextTypes.DEFAULT_TYPE):
+    """Periodic task untuk sync stok dari provider"""
+    try:
+        logger.info("🔄 Running periodic stock sync task...")
+        sync_product_stock_from_provider()
+        logger.info("✅ Periodic stock sync completed")
         
     except Exception as e:
-        logger.error(f"Error process_refund: {e}")
-        return False
+        logger.error(f"Error in periodic_stock_sync_task: {e}")
 
 # ==================== UTILITY FUNCTIONS ====================
 
@@ -1239,93 +1607,6 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
 
-# ==================== WEBHOOK HANDLER ====================
-
-def handle_webhook_callback(message):
-    """Handle webhook callback dari KhfyPay"""
-    try:
-        # Regex pattern dari dokumentasi KhfyPay
-        pattern = r'RC=(?P<reffid>[a-f0-9-]+)\s+TrxID=(?P<trxid>\d+)\s+(?P<produk>[A-Z0-9]+)\.(?P<tujuan>\d+)\s+(?P<status_text>[A-Za-z]+)\s*(?P<keterangan>.+?)(?:\s+Saldo[\s\S]*?)?(?:\bresult=(?P<status_code>\d+))?\s*>?$'
-        
-        match = re.match(pattern, message, re.IGNORECASE)
-        if not match:
-            logger.error(f"Webhook format tidak dikenali: {message}")
-            return False
-        
-        groups = match.groupdict()
-        reffid = groups.get('reffid')
-        status_text = groups.get('status_text', '').lower()
-        status_code = groups.get('status_code')
-        product_code = groups.get('produk')
-        
-        # Determine final status
-        is_success = False
-        if status_code == '0' or 'sukses' in status_text:
-            is_success = True
-        elif status_code == '1' or 'gagal' in status_text or 'batal' in status_text:
-            is_success = False
-        
-        # Cari order di database
-        try:
-            if hasattr(database, 'get_order_by_provider_id'):
-                order = database.get_order_by_provider_id(reffid)
-            else:
-                # Fallback: cari langsung di database
-                conn = sqlite3.connect('bot_database.db')
-                cursor = conn.cursor()
-                cursor.execute("SELECT id, user_id, price FROM orders WHERE provider_order_id = ?", (reffid,))
-                row = cursor.fetchone()
-                conn.close()
-                order = dict(zip(['id', 'user_id', 'price'], row)) if row else None
-        except Exception as db_error:
-            logger.error(f"Error finding order in database: {db_error}")
-            order = None
-        
-        if not order:
-            logger.warning(f"Order tidak ditemukan untuk reffid: {reffid}")
-            return False
-        
-        order_id = order['id']
-        user_id = order['user_id']
-        price = order['price']
-        
-        if is_success:
-            # Update jadi completed
-            update_order_status(order_id, 'completed', note=f"Webhook: {message}")
-            
-            # Update stok untuk produk yang berhasil
-            if product_code:
-                update_product_stock_after_order(product_code)
-            
-            logger.info(f"Webhook: Order {order_id} completed")
-            
-        else:
-            # REFUND otomatis untuk yang gagal
-            update_order_status(order_id, 'failed', note=f"Webhook Gagal: {message}")
-            
-            # Refund saldo
-            update_user_saldo(user_id, price, "Refund: Order gagal via webhook")
-            
-            logger.info(f"Webhook: Order {order_id} failed - refund processed")
-        
-        return True
-        
-    except Exception as e:
-        logger.error(f"Error handling webhook: {e}")
-        return False
-
-# ==================== PERIODIC TASKS ====================
-
-async def periodic_stock_sync_task(context: ContextTypes.DEFAULT_TYPE):
-    """Periodic task untuk sync stok dari provider"""
-    try:
-        logger.info("Running periodic stock sync task...")
-        sync_product_stock_from_provider()
-        logger.info("Periodic stock sync completed")
-        
-    except Exception as e:
-        logger.error(f"Error in periodic_stock_sync_task: {e}")
-
 # ==================== CANCEL HANDLERS ====================
 
 async def cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1397,6 +1678,38 @@ def get_conversation_handler():
         name="order_conversation",
         persistent=False
     )
+
+# ==================== INITIALIZATION FUNCTION ====================
+
+def initialize_order_system(application: Application, webhook_port=5000):
+    """Initialize the complete order system dengan webhook dan periodic tasks"""
+    global bot_application
+    bot_application = application
+    
+    # Start webhook server
+    start_webhook_server(webhook_port)
+    
+    # Setup periodic tasks
+    job_queue = application.job_queue
+    
+    if job_queue:
+        # Check pending orders setiap 3 menit
+        job_queue.run_repeating(
+            check_pending_orders,
+            interval=180,  # 3 menit
+            first=10
+        )
+        
+        # Sync stock setiap 10 menit
+        job_queue.run_repeating(
+            periodic_stock_sync_task,
+            interval=600,  # 10 menit
+            first=30
+        )
+        
+        logger.info("✅ Order system initialized with webhook and periodic tasks")
+    else:
+        logger.warning("❌ Job queue not available - periodic tasks disabled")
 
 # ==================== ERROR HANDLER ====================
 
