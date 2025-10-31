@@ -33,6 +33,173 @@ bot_application = None
 pending_admin_notifications = {}
 pending_orders_timeout = {}
 
+# ==================== OPERATOR DETECTION SYSTEM ====================
+
+def detect_operator(phone):
+    """Deteksi operator berdasarkan prefix nomor"""
+    try:
+        # Bersihkan nomor
+        phone = re.sub(r'\D', '', phone)
+        
+        # Konversi format
+        if phone.startswith('0'):
+            phone = '62' + phone[1:]
+        elif phone.startswith('8'):
+            phone = '62' + phone
+        elif phone.startswith('+62'):
+            phone = phone[1:]
+        
+        # XL Axiata prefixes
+        xl_prefixes = ['62817', '62818', '62819', '62859', '62878', '62877', '62876']
+        
+        # Axis prefixes (sebenarnya sama dengan XL karena merger)
+        axis_prefixes = ['62838', '62839', '62837', '62888']
+        
+        # Other operators
+        telkomsel_prefixes = ['62852', '62853', '62811', '62812', '62813', '62821', '62822', '62823']
+        indosat_prefixes = ['62814', '62815', '62816', '62855', '62856', '62857', '62858']
+        three_prefixes = ['62895', '62896', '62897', '62898', '62899']
+        smartfren_prefixes = ['62888', '62889']
+        
+        # Check XL first
+        for prefix in xl_prefixes:
+            if phone.startswith(prefix):
+                return "XL"
+        
+        # Check Axis
+        for prefix in axis_prefixes:
+            if phone.startswith(prefix):
+                return "AXIS"
+        
+        # Check other operators
+        for prefix in telkomsel_prefixes:
+            if phone.startswith(prefix):
+                return "TELKOMSEL"
+        
+        for prefix in indosat_prefixes:
+            if phone.startswith(prefix):
+                return "INDOSAT"
+        
+        for prefix in three_prefixes:
+            if phone.startswith(prefix):
+                return "THREE"
+        
+        for prefix in smartfren_prefixes:
+            if phone.startswith(prefix):
+                return "SMARTFREN"
+        
+        return "UNKNOWN"
+        
+    except Exception as e:
+        logger.error(f"❌ Error detecting operator: {e}")
+        return "UNKNOWN"
+
+def get_operator_from_product_code(product_code):
+    """Get operator dari kode produk"""
+    try:
+        product_code_upper = product_code.upper()
+        
+        if any(prefix in product_code_upper for prefix in ['XL', 'XLA']):
+            return "XL"
+        elif any(prefix in product_code_upper for prefix in ['AX', 'AXIS']):
+            return "AXIS"
+        elif any(prefix in product_code_upper for prefix in ['TS', 'TELKOMSEL']):
+            return "TELKOMSEL"
+        elif any(prefix in product_code_upper for prefix in ['IN', 'INDOSAT', 'IM']):
+            return "INDOSAT"
+        elif any(prefix in product_code_upper for prefix in ['SM', 'SMARTFREN', 'SF']):
+            return "SMARTFREN"
+        elif any(prefix in product_code_upper for prefix in ['3', 'THREE']):
+            return "THREE"
+        else:
+            return None  # Untuk produk non-pulsa
+            
+    except Exception as e:
+        logger.error(f"❌ Error getting operator from product code: {e}")
+        return None
+
+def validate_phone_number_modern(phone, product_code=None):
+    """Validasi nomor telepon dengan deteksi otomatis operator"""
+    try:
+        original_phone = phone
+        phone = re.sub(r'\D', '', phone)
+        
+        if not phone:
+            return None, "Nomor tidak valid - hanya mengandung angka"
+        
+        # Validasi panjang dasar
+        if len(phone) < 10:
+            return None, "Nomor terlalu pendek (minimal 10 digit)"
+        if len(phone) > 14:
+            return None, "Nomor terlalu panjang (maksimal 14 digit)"
+        
+        # Konversi format ke 62
+        if phone.startswith('0'):
+            phone = '62' + phone[1:]
+        elif phone.startswith('8'):
+            phone = '62' + phone
+        elif phone.startswith('+62'):
+            phone = phone[1:]
+        
+        # Pastikan sekarang format 62
+        if not phone.startswith('62'):
+            return None, "Format nomor tidak valid (harus diawali 0, 62, atau +62)"
+        
+        # Deteksi operator
+        operator = detect_operator(phone)
+        
+        # Jika product_code diberikan, validasi kecocokan
+        if product_code:
+            expected_operator = get_operator_from_product_code(product_code)
+            if expected_operator:
+                if operator == "UNKNOWN":
+                    return None, f"Operator tidak dikenali. Pastikan nomor sesuai dengan produk {expected_operator}"
+                elif operator != expected_operator:
+                    return None, f"Nomor {operator} tidak cocok dengan produk {expected_operator}. Harus menggunakan nomor {expected_operator}"
+        
+        return phone, operator
+        
+    except Exception as e:
+        logger.error(f"❌ Error validating phone: {e}")
+        return None, "Error sistem dalam validasi nomor"
+
+def validate_target_modern(target, product_code):
+    """Validasi target dengan deteksi operator otomatis"""
+    try:
+        # Untuk produk non-pulsa (PLN, dll)
+        if product_code.startswith('PLN'):
+            target = re.sub(r'\D', '', target)
+            if len(target) < 10 or len(target) > 20:
+                return None, "ID Pelanggan PLN harus 10-20 digit"
+            return target, "PLN"
+        
+        elif product_code.startswith('VOUCHER'):
+            target = target.strip()
+            if len(target) < 5:
+                return None, "ID Game terlalu pendek (minimal 5 karakter)"
+            return target, "GAME"
+        
+        elif product_code.startswith('LISTRIK'):
+            target = re.sub(r'\D', '', target)
+            if len(target) < 10 or len(target) > 20:
+                return None, "ID Pelanggan Listrik harus 10-20 digit"
+            return target, "LISTRIK"
+        
+        # Untuk produk pulsa - gunakan validasi modern
+        elif product_code.startswith(('TS', 'AX', 'XL', 'IN', 'SM', '3')):
+            return validate_phone_number_modern(target, product_code)
+        
+        # Default untuk produk lain
+        else:
+            target = target.strip()
+            if len(target) < 3:
+                return None, "Input terlalu pendek (minimal 3 karakter)"
+            return target, "OTHER"
+        
+    except Exception as e:
+        logger.error(f"❌ Error in validate_target_modern: {e}")
+        return None, "Error validasi input"
+
 # ==================== KHFYPAY API INTEGRATION ====================
 
 class KhfyPayAPI:
@@ -231,25 +398,58 @@ def get_user_saldo(user_id):
         logger.error(f"❌ Error getting user saldo: {e}")
         return 0
 
-def update_user_saldo(user_id, amount, note="", transaction_type="order"):
-    """Fixed compatibility function for update balance"""
+def update_user_saldo_modern(user_id, amount, note=""):
+    """Update user balance dengan error handling - FIXED VERSION"""
     try:
-        if amount < 0:
-            transaction_type = "order"
-        else:
-            transaction_type = "refund" if "refund" in note.lower() else "adjustment"
-        
+        # Coba function database yang ada
         if hasattr(database, 'update_user_balance'):
-            return database.update_user_balance(user_id, amount, note, transaction_type)
+            try:
+                return database.update_user_balance(user_id, amount, note)
+            except TypeError:
+                # Coba tanpa note parameter
+                return database.update_user_balance(user_id, amount)
         elif hasattr(database, 'update_user_saldo'):
-            return database.update_user_saldo(user_id, amount, note, transaction_type)
+            try:
+                return database.update_user_saldo(user_id, amount, note)
+            except TypeError:
+                # Coba tanpa note parameter
+                return database.update_user_saldo(user_id, amount)
         else:
+            # Fallback ke SQL langsung
             conn = sqlite3.connect('bot_database.db')
             cursor = conn.cursor()
-            cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
+            
+            # Get current balance
+            cursor.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
+            result = cursor.fetchone()
+            
+            if not result:
+                conn.close()
+                return False
+            
+            current_balance = result[0]
+            new_balance = current_balance + amount
+            
+            # Update balance
+            cursor.execute(
+                "UPDATE users SET balance = ? WHERE user_id = ?", 
+                (new_balance, user_id)
+            )
+            
+            # Save transaction
+            transaction_type = "refund" if amount > 0 else "order"
+            
+            cursor.execute('''
+                INSERT INTO transactions (user_id, amount, type, note, created_at)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (user_id, amount, transaction_type, note, datetime.now()))
+            
             conn.commit()
             conn.close()
+            
+            logger.info(f"✅ Updated balance for {user_id}: {amount} (New: {new_balance})")
             return True
+            
     except Exception as e:
         logger.error(f"❌ Error updating user saldo: {e}")
         return False
@@ -653,7 +853,7 @@ async def show_modern_group_menu(update: Update, context: ContextTypes.DEFAULT_T
         return ConversationHandler.END
 
 async def show_modern_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show modern products list"""
+    """Show modern products list dengan info operator"""
     query = update.callback_query
     await query.answer()
     
@@ -677,20 +877,24 @@ async def show_modern_products(update: Update, context: ContextTypes.DEFAULT_TYP
         
         keyboard = []
         for product in page_products:
+            # Dapatkan info operator
+            operator = get_operator_from_product_code(product['code'])
+            operator_text = f" | {operator}" if operator else ""
+            
             price_formatted = f"Rp {product['price']:,}"
             
             if product['kosong'] == 1:
-                button_text = f"🔴 {product['name']} - {price_formatted} | HABIS"
+                button_text = f"🔴 {product['name']} - {price_formatted}{operator_text} | HABIS"
             elif product['gangguan'] == 1:
-                button_text = f"🚧 {product['name']} - {price_formatted} | GANGGUAN"
+                button_text = f"🚧 {product['name']} - {price_formatted}{operator_text} | GANGGUAN"
             elif product['display_stock'] > 10:
-                button_text = f"🟢 {product['name']} - {price_formatted} | Stock: {product['display_stock']}+"
+                button_text = f"🟢 {product['name']} - {price_formatted}{operator_text} | Stock: {product['display_stock']}+"
             elif product['display_stock'] > 5:
-                button_text = f"🟢 {product['name']} - {price_formatted} | Stock: {product['display_stock']}"
+                button_text = f"🟢 {product['name']} - {price_formatted}{operator_text} | Stock: {product['display_stock']}"
             elif product['display_stock'] > 0:
-                button_text = f"🟡 {product['name']} - {price_formatted} | Stock: {product['display_stock']}"
+                button_text = f"🟡 {product['name']} - {price_formatted}{operator_text} | Stock: {product['display_stock']}"
             else:
-                button_text = f"🔴 {product['name']} - {price_formatted} | HABIS"
+                button_text = f"🔴 {product['name']} - {price_formatted}{operator_text} | HABIS"
             
             keyboard.append([InlineKeyboardButton(button_text, callback_data=f"morder_product_{product['code']}")])
         
@@ -732,7 +936,7 @@ async def show_modern_products(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception as e:
         logger.error(f"❌ Error in show_modern_products: {e}")
         await show_modern_error(update, "Error memuat produk")
-        return ConversationHandler.END
+        return CHOOSING_PRODUCT
 
 async def handle_modern_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle modern pagination"""
@@ -760,14 +964,12 @@ async def back_to_modern_groups(update: Update, context: ContextTypes.DEFAULT_TY
     return await show_modern_group_menu(update, context)
 
 async def select_modern_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle modern product selection"""
+    """Select product dengan info operator yang jelas"""
     query = update.callback_query
     await query.answer()
     
     try:
-        data = query.data
-        product_code = data.replace('morder_product_', '')
-        
+        product_code = query.data.replace('morder_product_', '')
         product = get_product_by_code_with_stock(product_code)
         
         if not product:
@@ -775,7 +977,7 @@ async def select_modern_product(update: Update, context: ContextTypes.DEFAULT_TY
             return CHOOSING_PRODUCT
         
         # Validasi stok
-        if product['kosong'] == 1:
+        if product['kosong'] == 1 or product['display_stock'] <= 0:
             message = ModernMessageBuilder.create_order_message(
                 product, 'failed',
                 ["❌ **Stok sedang habis**", "🔄 Silakan pilih produk lain"]
@@ -803,37 +1005,34 @@ async def select_modern_product(update: Update, context: ContextTypes.DEFAULT_TY
             await safe_edit_modern_message(update, message, InlineKeyboardMarkup(keyboard))
             return CHOOSING_PRODUCT
         
-        if product['display_stock'] <= 0:
-            message = ModernMessageBuilder.create_order_message(
-                product, 'failed',
-                ["🔴 **Stok produk habis**", "🔄 Silakan pilih produk lain"]
-            )
-            
-            keyboard = [
-                [InlineKeyboardButton("🔙 Kembali ke Produk", callback_data=f"morder_group_{product['category']}")],
-                [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
-            ]
-            
-            await safe_edit_modern_message(update, message, InlineKeyboardMarkup(keyboard))
-            return CHOOSING_PRODUCT
-        
         context.user_data['selected_product'] = product
         
-        target_example = "Contoh: 081234567890"
-        if product['code'].startswith('PLN'):
-            target_example = "Contoh: 123456789012345 (ID Pelanggan PLN)"
-        elif product['code'].startswith('VOUCHER'):
-            target_example = "Contoh: 1234567890 (ID Game)"
+        # Tentukan contoh input berdasarkan operator
+        operator = get_operator_from_product_code(product['code'])
+        examples = {
+            'XL': "Contoh: 0817xxxxxxx, 0818xxxxxxx, 0819xxxxxxx",
+            'AXIS': "Contoh: 0838xxxxxxx, 0839xxxxxxx", 
+            'TELKOMSEL': "Contoh: 0812xxxxxxx, 0813xxxxxxx, 0821xxxxxxx",
+            'INDOSAT': "Contoh: 0814xxxxxxx, 0815xxxxxxx, 0816xxxxxxx",
+            'SMARTFREN': "Contoh: 0888xxxxxxx, 0889xxxxxxx",
+            'THREE': "Contoh: 0895xxxxxxx, 0896xxxxxxx, 0897xxxxxxx",
+            'PLN': "Contoh: 123456789012345 (ID Pelanggan PLN)",
+            'GAME': "Contoh: 1234567890 (ID Game)",
+            'OTHER': "Contoh: Sesuai kebutuhan produk"
+        }
+        
+        example = examples.get(operator, "Contoh: 081234567890")
+        operator_text = f"**Operator:** {operator}\n" if operator else ""
         
         message = (
             f"🛒 **PILIHAN PRODUK**\n"
             f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n\n"
             f"📦 **{product['name']}**\n"
             f"💰 Harga: Rp {product['price']:,}\n"
-            f"📊 Stok: {product['stock_status']} ({product['display_stock']} unit)\n"
-            f"📝 {product['description'] or 'Tidak ada deskripsi'}\n\n"
-            f"📮 **Masukkan nomor tujuan:**\n"
-            f"`{target_example}`\n\n"
+            f"📊 Stok: {product['stock_status']}\n"
+            f"{operator_text}"
+            f"📝 **Masukkan nomor tujuan:**\n"
+            f"`{example}`\n\n"
             f"Ketik nomor tujuan dan kirim:"
         )
         
@@ -852,12 +1051,12 @@ async def select_modern_product(update: Update, context: ContextTypes.DEFAULT_TY
         return ENTER_TUJUAN
         
     except Exception as e:
-        logger.error(f"❌ Error in select_modern_product: {e}")
+        logger.error(f"❌ Error selecting product: {e}")
         await show_modern_error(update, "Error memilih produk")
         return CHOOSING_PRODUCT
 
 async def receive_modern_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Receive modern target input"""
+    """Receive target dengan validasi dan deteksi operator otomatis"""
     try:
         target = update.message.text.strip()
         product = context.user_data.get('selected_product')
@@ -866,37 +1065,46 @@ async def receive_modern_target(update: Update, context: ContextTypes.DEFAULT_TY
             await show_modern_error(update, "Sesi telah berakhir")
             return ConversationHandler.END
         
-        validated_target = None
-        if product['code'].startswith(('TS', 'AX', 'XL', 'IN', 'SM', '3')):
-            validated_target = validate_pulsa_target(target, product['code'])
-        elif product['code'].startswith('PLN'):
-            validated_target = re.sub(r'\D', '', target)
-            if len(validated_target) < 10 or len(validated_target) > 20:
-                validated_target = None
-        else:
-            validated_target = target.strip()
+        # Validasi target dengan deteksi operator
+        validated_target, operator_info = validate_target_modern(target, product['code'])
         
         if not validated_target:
+            # Tampilkan pesan error yang informatif
+            error_message = f"❌ **FORMAT TIDAK VALID!**\n\n"
+            error_message += f"📦 **Produk:** {product['name']}\n"
+            error_message += f"📮 **Input:** `{target}`\n\n"
+            error_message += f"**Error:** {operator_info}\n\n"
+            
+            # Berikan contoh berdasarkan produk
+            expected_operator = get_operator_from_product_code(product['code'])
+            if expected_operator:
+                error_message += f"**Produk ini untuk operator:** {expected_operator}\n\n"
+                error_message += "**Contoh format yang benar:**\n"
+                if expected_operator == "XL":
+                    error_message += "• 0817xxxxxxx\n• 0818xxxxxxx\n• 0819xxxxxxx\n"
+                elif expected_operator == "AXIS":
+                    error_message += "• 0838xxxxxxx\n• 0839xxxxxxx\n"
+                elif expected_operator == "TELKOMSEL":
+                    error_message += "• 0812xxxxxxx\n• 0813xxxxxxx\n• 0821xxxxxxx\n"
+                elif expected_operator == "INDOSAT":
+                    error_message += "• 0814xxxxxxx\n• 0815xxxxxxx\n• 0816xxxxxxx\n"
+                else:
+                    error_message += "• 081234567890\n• 81234567890\n• +6281234567890\n"
+            
             await update.message.reply_text(
-                "❌ **Format tujuan tidak valid!**\n\n"
-                f"Produk: {product['name']}\n"
-                f"Tujuan: {target}\n\n"
-                f"Silakan masukkan format yang benar:",
+                error_message,
                 parse_mode="Markdown"
             )
             return ENTER_TUJUAN
         
         context.user_data['order_target'] = validated_target
+        context.user_data['detected_operator'] = operator_info
         
+        # Tampilkan konfirmasi dengan info operator
         user_id = str(update.effective_user.id)
         saldo = get_user_saldo(user_id)
         
-        keyboard = [
-            [
-                InlineKeyboardButton("✅ KONFIRMASI ORDER", callback_data="morder_confirm"),
-                InlineKeyboardButton("❌ BATALKAN", callback_data="morder_cancel")
-            ]
-        ]
+        operator_message = f"📡 **Operator Terdeteksi:** {operator_info}"
         
         message = ModernMessageBuilder.create_order_message(
             {
@@ -907,11 +1115,19 @@ async def receive_modern_target(update: Update, context: ContextTypes.DEFAULT_TY
             },
             'processing',
             [
+                operator_message,
                 f"💰 **Saldo Anda:** Rp {saldo:,}",
                 f"🔰 **Sisa Saldo:** Rp {saldo - product['price']:,}",
                 f"📦 **Stok:** {product['stock_status']}"
             ]
         )
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ LANJUTKAN ORDER", callback_data="morder_confirm"),
+                InlineKeyboardButton("❌ BATALKAN", callback_data="morder_cancel")
+            ]
+        ]
         
         await update.message.reply_text(
             message,
@@ -922,7 +1138,7 @@ async def receive_modern_target(update: Update, context: ContextTypes.DEFAULT_TY
         return CONFIRM_ORDER
         
     except Exception as e:
-        logger.error(f"❌ Error in receive_modern_target: {e}")
+        logger.error(f"❌ Error receiving target: {e}")
         await show_modern_error(update, "Error memproses tujuan")
         return ENTER_TUJUAN
 
@@ -1006,7 +1222,7 @@ async def process_modern_order(update: Update, context: ContextTypes.DEFAULT_TYP
         # 3. POTONG SALDO
         await ModernAnimations.typing_effect(update, context, 1)
         
-        if not update_user_saldo(user_id, -price, f"Order: {product['name']}"):
+        if not update_user_saldo_modern(user_id, -price, f"Order: {product['name']}"):
             await show_modern_error(update, "Gagal memotong saldo")
             return ConversationHandler.END
         
@@ -1026,7 +1242,7 @@ async def process_modern_order(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         
         if not order_id:
-            update_user_saldo(user_id, price, "Refund: Gagal save order")
+            update_user_saldo_modern(user_id, price, "Refund: Gagal save order")
             await show_modern_error(update, "Gagal menyimpan order")
             return ConversationHandler.END
         
@@ -1061,7 +1277,7 @@ async def process_modern_order(update: Update, context: ContextTypes.DEFAULT_TYP
             status_info = ["⏳ **Menunggu Konfirmasi**", "📡 Polling system aktif"]
         else:
             final_status = 'failed'
-            update_user_saldo(user_id, price, f"Refund: {provider_message}")
+            update_user_saldo_modern(user_id, price, f"Refund: {provider_message}")
             status_info = ["❌ **Gagal di Provider**", f"💡 {provider_message}", "✅ Saldo telah dikembalikan"]
         
         # Update order status
@@ -1121,7 +1337,7 @@ async def process_modern_order(update: Update, context: ContextTypes.DEFAULT_TYP
         # REFUND JIKA ERROR
         try:
             user_id = str(query.from_user.id)
-            update_user_saldo(user_id, product['price'], "Refund: System error")
+            update_user_saldo_modern(user_id, product['price'], "Refund: System error")
         except:
             pass
         
@@ -1207,10 +1423,10 @@ class ModernPoller:
             )
             
             # Refund saldo user
-            refund_success = update_user_saldo(
+            refund_success = update_user_saldo_modern(
                 user_id, 
                 order['price'], 
-                f"Refund auto: Order timeout - {order['product_name']}"
+                f"Refund: Order timeout - {order['product_name']}"
             )
             
             # Notify user
@@ -1320,7 +1536,7 @@ class ModernPoller:
             elif any(s in provider_status for s in ['gagal', 'failed', 'error', 'batal']):
                 if current_status != 'failed':
                     update_order_status(order_id, 'failed', note=f"Polling Gagal: {message}")
-                    update_user_saldo(user_id, order['price'], f"Refund: Order gagal - {message}")
+                    update_user_saldo_modern(user_id, order['price'], f"Refund: Order gagal - {message}")
                     
                     failed_message = ModernMessageBuilder.create_order_message(
                         order,
@@ -1381,46 +1597,6 @@ async def send_modern_notification(user_id, message):
     except Exception as e:
         logger.error(f"❌ Failed to send notification: {e}")
     return False
-
-def validate_pulsa_target(phone, product_code):
-    """Validate pulsa target"""
-    try:
-        phone = re.sub(r'\D', '', phone)
-        
-        if phone.startswith('0'):
-            phone = '62' + phone[1:]
-        elif phone.startswith('8'):
-            phone = '62' + phone
-        elif phone.startswith('+62'):
-            phone = phone[1:]
-        
-        if len(phone) < 10 or len(phone) > 14:
-            return None
-        
-        # Validasi berdasarkan operator
-        if product_code.startswith('TS'):  # Telkomsel
-            if not any(phone.startswith(prefix) for prefix in ['62852', '62853', '62811', '62812', '62813', '62821', '62822', '62823']):
-                return None
-        elif product_code.startswith('AX'):  # Axis
-            if not any(phone.startswith(prefix) for prefix in ['62838', '62839', '62837']):
-                return None
-        elif product_code.startswith('XL'):  # XL
-            if not any(phone.startswith(prefix) for prefix in ['62817', '62818', '62819', '62859']):
-                return None
-        elif product_code.startswith('IN'):  # Indosat
-            if not any(phone.startswith(prefix) for prefix in ['62814', '62815', '62816', '62855', '62856', '62857', '62858']):
-                return None
-        elif product_code.startswith('SM'):  # Smartfren
-            if not any(phone.startswith(prefix) for prefix in ['62888', '62889']):
-                return None
-        elif product_code.startswith('3'):  # Three
-            if not any(phone.startswith(prefix) for prefix in ['62895', '62896', '62897', '62898', '62899']):
-                return None
-        
-        return phone
-    except Exception as e:
-        logger.error(f"❌ Error validating pulsa target: {e}")
-        return None
 
 # ==================== CANCEL HANDLERS ====================
 
@@ -1509,7 +1685,7 @@ def initialize_modern_order_system(application):
     loop = asyncio.get_event_loop()
     loop.create_task(modern_poller.start_polling(application))
     
-    logger.info("✅ Modern Order System Initialized with Polling System!")
+    logger.info("✅ Modern Order System Initialized with Auto Operator Detection!")
 
 # Export handler untuk main.py
 modern_order_handler = get_modern_conversation_handler()
