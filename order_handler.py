@@ -200,7 +200,7 @@ def validate_target_modern(target, product_code):
         logger.error(f"❌ Error in validate_target_modern: {e}")
         return None, "Error validasi input"
 
-# ==================== KHFYPAY API INTEGRATION ====================
+# ==================== KHFYPAY API REAL-TIME INTEGRATION ====================
 
 class KhfyPayAPI:
     def __init__(self, api_key):
@@ -284,6 +284,54 @@ class KhfyPayAPI:
             logger.error(f"❌ Error checking KhfyPay order status: {e}")
             return None
 
+    def check_order_status_detailed(self, reffid):
+        """Check order status dengan parsing detail untuk berbagai format response"""
+        try:
+            result = self.check_order_status(reffid)
+            if not result:
+                return None, "Tidak ada response dari provider"
+            
+            # Parse berbagai format response KhfyPay
+            status = None
+            message = ""
+            sn = ""
+            
+            # Format 1: { "data": { "status": "...", "message": "...", "sn": "..." } }
+            if isinstance(result, dict) and result.get('data'):
+                data = result['data']
+                if isinstance(data, dict):
+                    status = data.get('status') or data.get('Status')
+                    message = data.get('message') or data.get('Message') or data.get('keterangan', '')
+                    sn = data.get('sn') or data.get('SN') or data.get('serial', '')
+                else:
+                    # Data bukan dict, mungkin string langsung
+                    status = str(data).lower()
+                    message = str(data)
+            
+            # Format 2: { "status": "...", "message": "...", "sn": "..." }
+            elif isinstance(result, dict):
+                status = result.get('status') or result.get('Status')
+                message = result.get('message') or result.get('Message') or result.get('keterangan', '')
+                sn = result.get('sn') or result.get('SN') or result.get('serial', '')
+            
+            # Format 3: Array response
+            elif isinstance(result, list) and len(result) > 0:
+                first_item = result[0]
+                if isinstance(first_item, dict):
+                    status = first_item.get('status') or first_item.get('Status')
+                    message = first_item.get('message') or first_item.get('Message') or first_item.get('keterangan', '')
+                    sn = first_item.get('sn') or first_item.get('SN') or first_item.get('serial', '')
+            
+            # Format tidak dikenali
+            else:
+                message = f"Format response tidak dikenali: {result}"
+            
+            return status, message, sn
+            
+        except Exception as e:
+            logger.error(f"❌ Error parsing order status: {e}")
+            return None, f"Error parsing: {str(e)}", ""
+
 # ==================== MODERN ANIMATION SYSTEM ====================
 
 class ModernAnimations:
@@ -339,7 +387,7 @@ class ModernMessageBuilder:
     @staticmethod
     def create_header(emoji, title, status):
         """Create modern header"""
-        status_emojis = {'success': '🟢', 'pending': '🟡', 'failed': '🔴', 'processing': '🔵'}
+        status_emojis = {'success': '🟢', 'pending': '🟡', 'failed': '🔴', 'processing': '🔵', 'timeout': '🟠'}
         status_emoji = status_emojis.get(status, '🟡')
         return f"{emoji} **{title}** {status_emoji}\n" + "▬" * 35 + "\n\n"
 
@@ -350,7 +398,8 @@ class ModernMessageBuilder:
             'success': {'emoji': '✅', 'title': 'ORDER BERHASIL', 'color': '🟢'},
             'pending': {'emoji': '⏳', 'title': 'ORDER DIPROSES', 'color': '🟡'},
             'failed': {'emoji': '❌', 'title': 'ORDER GAGAL', 'color': '🔴'},
-            'processing': {'emoji': '🔄', 'title': 'PROSES ORDER', 'color': '🔵'}
+            'processing': {'emoji': '🔄', 'title': 'PROSES ORDER', 'color': '🔵'},
+            'timeout': {'emoji': '⏰', 'title': 'ORDER TIMEOUT', 'color': '🟠'}
         }
         
         config = status_configs.get(status_type, status_configs['pending'])
@@ -526,6 +575,31 @@ def get_pending_orders():
     except Exception as e:
         logger.error(f"❌ Error getting pending orders: {e}")
         return []
+
+def get_order_by_id(order_id):
+    """Get order by ID"""
+    try:
+        if hasattr(database, 'get_order_by_id'):
+            return database.get_order_by_id(order_id)
+        else:
+            conn = sqlite3.connect('bot_database.db')
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id, user_id, product_name, product_code, customer_input, price, 
+                       status, provider_order_id, sn, note, created_at 
+                FROM orders WHERE id = ?
+            ''', (order_id,))
+            row = cursor.fetchone()
+            conn.close()
+            if row:
+                return dict(zip([
+                    'id', 'user_id', 'product_name', 'product_code', 'customer_input', 
+                    'price', 'status', 'provider_order_id', 'sn', 'note', 'created_at'
+                ], row))
+            return None
+    except Exception as e:
+        logger.error(f"❌ Error getting order by ID: {e}")
+        return None
 
 # ==================== STOCK MANAGEMENT SYSTEM ====================
 
@@ -778,6 +852,237 @@ def get_product_by_code_with_stock(product_code):
     except Exception as e:
         logger.error(f"❌ Error getting product by code with stock: {e}")
         return None
+
+# ==================== REAL-TIME STATUS POLLING SYSTEM ====================
+
+class RealTimePoller:
+    def __init__(self, api_key, poll_interval=30):  # Poll lebih sering untuk real-time
+        self.api_key = api_key
+        self.poll_interval = poll_interval
+        self.is_running = False
+        self.application = None
+        self.khfy_api = KhfyPayAPI(api_key)
+    
+    async def start_polling(self, application):
+        """Start real-time polling system"""
+        self.application = application
+        self.is_running = True
+        
+        logger.info("🚀 Starting REAL-TIME Polling System...")
+        
+        # Start all services
+        asyncio.create_task(self.real_time_status_service())
+        asyncio.create_task(self.timeout_service())
+    
+    async def real_time_status_service(self):
+        """Service untuk real-time status checking"""
+        while self.is_running:
+            try:
+                await self.check_all_pending_orders_real_time()
+                await asyncio.sleep(self.poll_interval)  # Check setiap 30 detik
+            except Exception as e:
+                logger.error(f"❌ Real-time service error: {e}")
+                await asyncio.sleep(30)
+    
+    async def timeout_service(self):
+        """Service untuk handle timeout orders (3 menit)"""
+        while self.is_running:
+            try:
+                await self.process_timeout_orders()
+                await asyncio.sleep(20)  # Check timeout setiap 20 detik
+            except Exception as e:
+                logger.error(f"❌ Timeout service error: {e}")
+                await asyncio.sleep(20)
+    
+    async def check_all_pending_orders_real_time(self):
+        """Check semua pending orders dengan real-time update"""
+        try:
+            pending_orders = get_pending_orders()
+            
+            if not pending_orders:
+                return
+            
+            logger.info(f"🔍 REAL-TIME Checking {len(pending_orders)} pending orders...")
+            
+            for order in pending_orders:
+                await self.check_single_order_real_time(order)
+                await asyncio.sleep(1)  # Jeda 1 detik antar request
+            
+        except Exception as e:
+            logger.error(f"❌ Error in real-time order checking: {e}")
+    
+    async def check_single_order_real_time(self, order):
+        """Check single order dengan real-time update ke user"""
+        try:
+            reffid = order['provider_order_id']
+            order_id = order['id']
+            user_id = order['user_id']
+            
+            # Skip order yang terlalu baru (kurang dari 30 detik)
+            created_at = order['created_at']
+            if isinstance(created_at, str):
+                created_at = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S')
+            
+            if (datetime.now() - created_at).total_seconds() < 30:
+                return
+            
+            # Check status dengan parsing detail
+            status, message, sn = self.khfy_api.check_order_status_detailed(reffid)
+            
+            if not status:
+                logger.warning(f"⚠️ No status for order {order_id}")
+                return
+            
+            status = str(status).lower().strip()
+            current_status = order['status']
+            
+            # Process status real-time
+            new_status = None
+            refund_amount = 0
+            
+            if any(s in status for s in ['sukses', 'success', 'berhasil', 'completed']):
+                if current_status != 'completed':
+                    new_status = 'completed'
+                    update_product_stock_after_order(order['product_code'])
+                    logger.info(f"✅ REAL-TIME: Order {order_id} completed")
+            
+            elif any(s in status for s in ['gagal', 'failed', 'error', 'batal']):
+                if current_status != 'failed':
+                    new_status = 'failed'
+                    refund_amount = order['price']
+                    logger.info(f"❌ REAL-TIME: Order {order_id} failed")
+            
+            elif any(s in status for s in ['pending', 'proses', 'processing', 'waiting']):
+                if current_status != 'pending':
+                    new_status = 'pending'
+                    logger.info(f"⏳ REAL-TIME: Order {order_id} still pending")
+            
+            # Update status jika ada perubahan
+            if new_status:
+                # Update database
+                update_order_status(order_id, new_status, sn=sn, note=f"Real-time: {message}")
+                
+                # Refund jika gagal
+                if refund_amount > 0:
+                    update_user_saldo_modern(user_id, refund_amount, f"Refund: Order failed - {message}")
+                
+                # Notify user
+                await self.send_real_time_notification(user_id, order, new_status, message, sn)
+                
+        except Exception as e:
+            logger.error(f"❌ Error in real-time order check {order.get('id', 'unknown')}: {e}")
+    
+    async def send_real_time_notification(self, user_id, order, new_status, message, sn):
+        """Send real-time notification to user"""
+        try:
+            status_configs = {
+                'completed': {'emoji': '✅', 'title': 'ORDER BERHASIL', 'color': '🟢'},
+                'failed': {'emoji': '❌', 'title': 'ORDER GAGAL', 'color': '🔴'},
+                'pending': {'emoji': '⏳', 'title': 'ORDER DIPROSES', 'color': '🟡'}
+            }
+            
+            config = status_configs.get(new_status, status_configs['pending'])
+            
+            notification_text = (
+                f"{config['emoji']} **{config['title']}** {config['color']}\n"
+                f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n\n"
+                f"📦 **Produk:** {order['product_name']}\n"
+                f"📮 **Tujuan:** `{order['customer_input']}`\n"
+                f"💰 **Harga:** Rp {order['price']:,}\n"
+                f"🔗 **Ref ID:** `{order['provider_order_id']}`\n"
+            )
+            
+            if sn:
+                notification_text += f"🔢 **SN:** `{sn}`\n"
+            
+            notification_text += f"💬 **Pesan:** {message}\n\n"
+            
+            if new_status == 'failed':
+                notification_text += "✅ **Saldo telah dikembalikan otomatis**\n\n"
+            
+            notification_text += f"🕒 **Update:** {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
+            
+            keyboard = [
+                [InlineKeyboardButton("🛒 BELI LAGI", callback_data="main_menu_order")],
+                [InlineKeyboardButton("📋 RIWAYAT", callback_data="main_menu_history")],
+                [InlineKeyboardButton("🏠 MENU UTAMA", callback_data="main_menu_main")]
+            ]
+            
+            await bot_application.bot.send_message(
+                chat_id=user_id,
+                text=notification_text,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="Markdown"
+            )
+            
+            logger.info(f"📢 Real-time notification sent for order {order['id']}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error sending real-time notification: {e}")
+    
+    async def process_timeout_orders(self):
+        """Process orders that timeout after 3 menit (lebih cepat)"""
+        try:
+            pending_orders = get_pending_orders()
+            current_time = datetime.now()
+            
+            for order in pending_orders:
+                order_id = order['id']
+                created_at = order['created_at']
+                
+                if isinstance(created_at, str):
+                    created_at = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S')
+                
+                time_diff = (current_time - created_at).total_seconds()
+                
+                # Jika sudah lebih dari 3 menit, auto failed dan refund
+                if time_diff >= 180 and order_id not in pending_orders_timeout:
+                    await self.auto_fail_timeout_order(order)
+                    pending_orders_timeout[order_id] = current_time
+                    
+        except Exception as e:
+            logger.error(f"❌ Error in process_timeout_orders: {e}")
+    
+    async def auto_fail_timeout_order(self, order):
+        """Auto fail timeout order dan refund"""
+        try:
+            order_id = order['id']
+            user_id = order['user_id']
+            
+            logger.info(f"⏰ Auto-failing timeout order {order_id}")
+            
+            # Update status order
+            update_order_status(
+                order_id, 
+                'failed', 
+                note=f"Auto failed: Timeout 3 menit tanpa respon provider"
+            )
+            
+            # Refund saldo user
+            refund_success = update_user_saldo_modern(
+                user_id, 
+                order['price'], 
+                f"Refund: Order timeout - {order['product_name']}"
+            )
+            
+            # Notify user
+            message = ModernMessageBuilder.create_order_message(
+                order,
+                'failed',
+                [
+                    "⏰ **Timeout 3 Menit**",
+                    "❌ Tidak ada respon dari provider",
+                    "✅ **Saldo telah dikembalikan**",
+                    "🔄 Silakan order ulang"
+                ]
+            )
+            
+            await send_modern_notification(user_id, message)
+            
+            logger.info(f"✅ Auto-failed timeout order {order_id}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error auto-failing order: {e}")
 
 # ==================== MODERN ORDER FLOW HANDLERS ====================
 
@@ -1143,7 +1448,7 @@ async def receive_modern_target(update: Update, context: ContextTypes.DEFAULT_TY
         return ENTER_TUJUAN
 
 async def process_modern_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Process modern order dengan animasi lengkap"""
+    """Process modern order dengan real-time status tracking"""
     query = update.callback_query
     await query.answer()
     
@@ -1237,7 +1542,7 @@ async def process_modern_order(update: Update, context: ContextTypes.DEFAULT_TYP
             status='processing',
             provider_order_id=reffid,
             sn='',
-            note='Sedang diproses ke provider',
+            note='Sedang diproses ke provider - REAL-TIME TRACKING',
             saldo_awal=saldo_awal
         )
         
@@ -1262,20 +1567,28 @@ async def process_modern_order(update: Update, context: ContextTypes.DEFAULT_TYP
         
         order_result = khfy_api.create_order(product['code'], target, reffid)
         
-        # 6. PROCESS RESULT
-        provider_status = order_result.get('status', '').lower() if order_result else 'error'
-        provider_message = order_result.get('message', 'Timeout') if order_result else 'Gagal terhubung'
-        sn_number = order_result.get('sn', '')
+        # 6. PROCESS RESULT DENGAN REAL-TIME PARSING
+        provider_status = None
+        provider_message = "Menunggu konfirmasi provider"
+        sn_number = ""
         
-        # Determine final status
-        if any(s in provider_status for s in ['sukses', 'success', 'berhasil']):
+        if order_result:
+            # Parse response dengan method baru
+            status, message, sn = khfy_api.check_order_status_detailed(reffid)
+            if status:
+                provider_status = status
+                provider_message = message
+                sn_number = sn
+        
+        # Determine final status berdasarkan real-time response
+        final_status = 'pending'  # Default pending untuk real-time tracking
+        status_info = ["⏳ **Menunggu Konfirmasi Provider**", "📡 **Real-time tracking aktif**"]
+        
+        if provider_status and any(s in provider_status for s in ['sukses', 'success', 'berhasil']):
             final_status = 'completed'
             update_product_stock_after_order(product['code'])
             status_info = ["✅ **Pembelian Berhasil**", f"📦 Stok produk diperbarui"]
-        elif any(s in provider_status for s in ['pending', 'proses', 'processing']):
-            final_status = 'pending'
-            status_info = ["⏳ **Menunggu Konfirmasi**", "📡 Polling system aktif"]
-        else:
+        elif provider_status and any(s in provider_status for s in ['gagal', 'failed', 'error']):
             final_status = 'failed'
             update_user_saldo_modern(user_id, price, f"Refund: {provider_message}")
             status_info = ["❌ **Gagal di Provider**", f"💡 {provider_message}", "✅ Saldo telah dikembalikan"]
@@ -1289,7 +1602,8 @@ async def process_modern_order(update: Update, context: ContextTypes.DEFAULT_TYP
         additional_info = status_info + [
             f"💰 **Saldo Awal:** Rp {saldo_awal:,}",
             f"💰 **Saldo Akhir:** Rp {saldo_akhir:,}",
-            f"🔗 **Ref ID:** `{reffid}`"
+            f"🔗 **Ref ID:** `{reffid}`",
+            f"🔄 **Status:** Real-time tracking aktif"
         ]
         
         if sn_number:
@@ -1309,6 +1623,7 @@ async def process_modern_order(update: Update, context: ContextTypes.DEFAULT_TYP
         keyboard = [
             [InlineKeyboardButton("🛒 BELI LAGI", callback_data="main_menu_order")],
             [InlineKeyboardButton("📋 RIWAYAT", callback_data="main_menu_history")],
+            [InlineKeyboardButton("🔄 CEK STATUS", callback_data=f"check_status_{order_id}")],
             [InlineKeyboardButton("🏠 MENU UTAMA", callback_data="main_menu_main")]
         ]
         
@@ -1343,211 +1658,6 @@ async def process_modern_order(update: Update, context: ContextTypes.DEFAULT_TYP
         
         await show_modern_error(update, f"System error: {str(e)}")
         return ConversationHandler.END
-
-# ==================== POLLING SYSTEM MODERN ====================
-
-class ModernPoller:
-    def __init__(self, api_key, poll_interval=60):
-        self.api_key = api_key
-        self.poll_interval = poll_interval
-        self.is_running = False
-        self.application = None
-    
-    async def start_polling(self, application):
-        """Start modern polling system"""
-        self.application = application
-        self.is_running = True
-        
-        logger.info("🚀 Starting Modern Polling System...")
-        
-        # Start all services
-        asyncio.create_task(self.timeout_service())
-        asyncio.create_task(self.polling_service())
-    
-    async def timeout_service(self):
-        """Service untuk handle timeout orders (5 menit)"""
-        while self.is_running:
-            try:
-                await self.process_timeout_orders()
-                await asyncio.sleep(30)
-            except Exception as e:
-                logger.error(f"❌ Timeout service error: {e}")
-                await asyncio.sleep(30)
-    
-    async def polling_service(self):
-        """Service untuk check order status"""
-        while self.is_running:
-            try:
-                await self.check_pending_orders()
-                await asyncio.sleep(self.poll_interval)
-            except Exception as e:
-                logger.error(f"❌ Polling service error: {e}")
-                await asyncio.sleep(30)
-    
-    async def process_timeout_orders(self):
-        """Process orders that timeout after 5 minutes"""
-        try:
-            pending_orders = get_pending_orders()
-            current_time = datetime.now()
-            
-            for order in pending_orders:
-                order_id = order['id']
-                created_at = order['created_at']
-                
-                if isinstance(created_at, str):
-                    created_at = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S')
-                
-                time_diff = (current_time - created_at).total_seconds()
-                
-                # Jika sudah lebih dari 5 menit, auto failed dan refund
-                if time_diff >= 300 and order_id not in pending_orders_timeout:
-                    await self.auto_fail_timeout_order(order)
-                    pending_orders_timeout[order_id] = current_time
-                    
-        except Exception as e:
-            logger.error(f"❌ Error in process_timeout_orders: {e}")
-    
-    async def auto_fail_timeout_order(self, order):
-        """Auto fail timeout order dan refund"""
-        try:
-            order_id = order['id']
-            user_id = order['user_id']
-            
-            logger.info(f"⏰ Auto-failing timeout order {order_id}")
-            
-            # Update status order
-            update_order_status(
-                order_id, 
-                'failed', 
-                note=f"Auto failed: Timeout 5 menit tanpa respon provider"
-            )
-            
-            # Refund saldo user
-            refund_success = update_user_saldo_modern(
-                user_id, 
-                order['price'], 
-                f"Refund: Order timeout - {order['product_name']}"
-            )
-            
-            # Notify user
-            message = ModernMessageBuilder.create_order_message(
-                order,
-                'failed',
-                [
-                    "⏰ **Timeout 5 Menit**",
-                    "❌ Tidak ada respon dari provider",
-                    "✅ **Saldo telah dikembalikan**",
-                    "🔄 Silakan order ulang"
-                ]
-            )
-            
-            await send_modern_notification(order['user_id'], message)
-            
-            logger.info(f"✅ Auto-failed timeout order {order_id}")
-            
-        except Exception as e:
-            logger.error(f"❌ Error auto-failing order: {e}")
-    
-    async def check_pending_orders(self):
-        """Check all pending orders"""
-        try:
-            pending_orders = get_pending_orders()
-            
-            if not pending_orders:
-                return
-            
-            logger.info(f"🔍 Checking {len(pending_orders)} pending orders...")
-            
-            api_key = getattr(config, 'KHFYPAY_API_KEY', '')
-            if not api_key:
-                return
-            
-            khfy_api = KhfyPayAPI(api_key)
-            
-            for order in pending_orders:
-                await self.check_order_status(order, khfy_api)
-                await asyncio.sleep(2)
-                
-        except Exception as e:
-            logger.error(f"❌ Error in check_pending_orders: {e}")
-    
-    async def check_order_status(self, order, khfy_api):
-        """Check status of a single order"""
-        try:
-            reffid = order['provider_order_id']
-            order_id = order['id']
-            
-            status_result = khfy_api.check_order_status(reffid)
-            
-            if not status_result:
-                return
-            
-            await self.process_status_result(order, status_result)
-                
-        except Exception as e:
-            logger.error(f"❌ Error checking order {order.get('id', 'unknown')}: {e}")
-    
-    async def process_status_result(self, order, status_result):
-        """Process the status result from API"""
-        try:
-            order_id = order['id']
-            user_id = order['user_id']
-            current_status = order['status']
-            
-            # Handle berbagai format response
-            provider_status = None
-            message = ""
-            sn = ""
-            
-            if isinstance(status_result, dict):
-                if status_result.get('data'):
-                    data = status_result['data']
-                    if isinstance(data, dict):
-                        provider_status = data.get('status') or data.get('Status')
-                        message = data.get('message') or data.get('Message') or data.get('keterangan', '')
-                        sn = data.get('sn') or data.get('SN') or data.get('serial', '')
-                    else:
-                        provider_status = str(data).lower()
-                        message = str(data)
-                else:
-                    provider_status = status_result.get('status') or status_result.get('Status')
-                    message = status_result.get('message') or status_result.get('Message') or status_result.get('keterangan', '')
-                    sn = status_result.get('sn') or status_result.get('SN')
-            
-            if not provider_status:
-                return
-            
-            provider_status = str(provider_status).lower().strip()
-            
-            # Process status
-            if any(s in provider_status for s in ['sukses', 'success', 'berhasil']):
-                if current_status != 'completed':
-                    update_order_status(order_id, 'completed', sn=sn, note=f"Polling: {message}")
-                    update_product_stock_after_order(order['product_code'])
-                    
-                    success_message = ModernMessageBuilder.create_order_message(
-                        order,
-                        'success',
-                        [f"✅ **Order berhasil** via polling", f"💬 {message}"]
-                    )
-                    
-                    await send_modern_notification(user_id, success_message)
-            
-            elif any(s in provider_status for s in ['gagal', 'failed', 'error', 'batal']):
-                if current_status != 'failed':
-                    update_order_status(order_id, 'failed', note=f"Polling Gagal: {message}")
-                    update_user_saldo_modern(user_id, order['price'], f"Refund: Order gagal - {message}")
-                    
-                    failed_message = ModernMessageBuilder.create_order_message(
-                        order,
-                        'failed',
-                        [f"❌ **Order gagal** via polling", f"💬 {message}", "✅ **Saldo telah dikembalikan**"]
-                    )
-                    
-                    await send_modern_notification(user_id, failed_message)
-            
-        except Exception as e:
-            logger.error(f"❌ Error processing status: {e}")
 
 # ==================== UTILITY FUNCTIONS ====================
 
@@ -1671,21 +1781,21 @@ def get_modern_conversation_handler():
 
 # ==================== INITIALIZATION FUNCTION ====================
 
-modern_poller = None
+real_time_poller = None
 
 def initialize_modern_order_system(application):
-    """Initialize the complete modern order system dengan polling system"""
-    global bot_application, modern_poller
+    """Initialize the complete modern order system dengan REAL-TIME polling"""
+    global bot_application, real_time_poller
     bot_application = application
     
     api_key = getattr(config, 'KHFYPAY_API_KEY', '')
-    modern_poller = ModernPoller(api_key)
+    real_time_poller = RealTimePoller(api_key, poll_interval=30)  # 30 detik untuk real-time
     
     # Start polling system
     loop = asyncio.get_event_loop()
-    loop.create_task(modern_poller.start_polling(application))
+    loop.create_task(real_time_poller.start_polling(application))
     
-    logger.info("✅ Modern Order System Initialized with Auto Operator Detection!")
+    logger.info("✅ REAL-TIME Order System Initialized with Auto Operator Detection!")
 
 # Export handler untuk main.py
 modern_order_handler = get_modern_conversation_handler()
