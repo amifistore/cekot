@@ -144,8 +144,8 @@ except Exception as e:
     print(f"❌ Error importing MODERN order_handler: {e}")
     ORDER_AVAILABLE = False
     
-    def modern_order_handler():
-        return None
+    # Buat dummy modern_order_handler yang return None
+    modern_order_handler = None
     
     async def order_menu_handler(update, context):
         await send_modern_message(update, "❌ Fitur order sedang dalam perbaikan.", "main_menu_main")
@@ -1051,12 +1051,12 @@ def main():
                 application.add_handler(topup_conv_handler)
                 print("✅ Topup conversation handler registered")
         
-        # ORDER CONVERSATION HANDLER
-        if ORDER_AVAILABLE:
-            order_conv_handler = modern_order_handler()
-            if order_conv_handler:
-                application.add_handler(order_conv_handler)
-                print("✅ MODERN Order conversation handler registered")
+        # ORDER CONVERSATION HANDLER - FIXED
+        if ORDER_AVAILABLE and modern_order_handler is not None:
+            application.add_handler(modern_order_handler)
+            print("✅ MODERN Order conversation handler registered")
+        else:
+            print("⚠️ Order conversation handler not available")
         
         # 2. TOPUP CALLBACK HANDLERS
         if TOPUP_AVAILABLE:
