@@ -32,6 +32,7 @@ PRODUCTS_PER_PAGE = 8
 bot_application = None
 pending_admin_notifications = {}
 pending_orders_timeout = {}
+order_lock = asyncio.Lock()  # Untuk prevent race condition
 
 # ==================== OPERATOR DETECTION SYSTEM ====================
 
@@ -52,7 +53,7 @@ def detect_operator(phone):
         # XL Axiata prefixes
         xl_prefixes = ['62817', '62818', '62819', '62859', '62878', '62877', '62876']
         
-        # Axis prefixes (sebenarnya sama dengan XL karena merger)
+        # Axis prefixes
         axis_prefixes = ['62838', '62839', '62837', '62888']
         
         # Other operators
@@ -112,7 +113,7 @@ def get_operator_from_product_code(product_code):
         elif any(prefix in product_code_upper for prefix in ['3', 'THREE']):
             return "THREE"
         else:
-            return None  # Untuk produk non-pulsa
+            return None
             
     except Exception as e:
         logger.error(f"❌ Error getting operator from product code: {e}")
@@ -200,15 +201,65 @@ def validate_target_modern(target, product_code):
         logger.error(f"❌ Error in validate_target_modern: {e}")
         return None, "Error validasi input"
 
+# ==================== CIRCUIT BREAKER SYSTEM ====================
+
+class CircuitBreaker:
+    def __init__(self, failure_threshold=5, timeout=60):
+        self.failure_threshold = failure_threshold
+        self.timeout = timeout
+        self.failure_count = 0
+        self.last_failure_time = None
+        self.state = "CLOSED"  # CLOSED, OPEN, HALF_OPEN
+    
+    def is_open(self):
+        if self.state == "OPEN":
+            if self.last_failure_time and (datetime.now() - self.last_failure_time).total_seconds() > self.timeout:
+                self.state = "HALF_OPEN"
+                return False
+            return True
+        return False
+    
+    def record_success(self):
+        self.state = "CLOSED"
+        self.failure_count = 0
+        self.last_failure_time = None
+    
+    def record_failure(self):
+        self.failure_count += 1
+        self.last_failure_time = datetime.now()
+        if self.failure_count >= self.failure_threshold:
+            self.state = "OPEN"
+    
+    async def execute(self, func, *args, **kwargs):
+        if self.is_open():
+            raise Exception("Circuit breaker is OPEN - service temporarily unavailable")
+        
+        try:
+            result = await func(*args, **kwargs)
+            self.record_success()
+            return result
+        except Exception as e:
+            self.record_failure()
+            raise e
+
 # ==================== KHFYPAY API REAL-TIME INTEGRATION ====================
 
 class KhfyPayAPI:
     def __init__(self, api_key):
         self.api_key = api_key
         self.base_url = "https://panel.khfy-store.com/api_v2"
+        self.circuit_breaker = CircuitBreaker()
     
-    def get_products(self):
-        """Get list products from KhfyPay"""
+    async def get_products(self):
+        """Get list products from KhfyPay dengan circuit breaker"""
+        try:
+            return await self.circuit_breaker.execute(self._get_products_sync)
+        except Exception as e:
+            logger.error(f"❌ Circuit breaker blocked get_products: {e}")
+            return None
+    
+    def _get_products_sync(self):
+        """Sync implementation of get_products"""
         try:
             url = f"{self.base_url}/list_product"
             params = {"api_key": self.api_key}
@@ -221,10 +272,18 @@ class KhfyPayAPI:
             return data
         except Exception as e:
             logger.error(f"❌ Error getting KhfyPay products: {e}")
-            return None
+            raise e
     
-    def create_order(self, product_code, target, custom_reffid=None):
-        """Create new order in KhfyPay"""
+    async def create_order(self, product_code, target, custom_reffid=None):
+        """Create new order in KhfyPay dengan circuit breaker"""
+        try:
+            return await self.circuit_breaker.execute(self._create_order_sync, product_code, target, custom_reffid)
+        except Exception as e:
+            logger.error(f"❌ Circuit breaker blocked create_order: {e}")
+            return {"status": "error", "message": "Service temporarily unavailable"}
+    
+    def _create_order_sync(self, product_code, target, custom_reffid=None):
+        """Sync implementation of create_order"""
         try:
             url = f"{self.base_url}/trx"
             reffid = custom_reffid or f"akrab_{uuid.uuid4().hex[:16]}"
@@ -257,8 +316,16 @@ class KhfyPayAPI:
             logger.error(f"❌ Error creating KhfyPay order: {e}")
             return {"status": "error", "message": f"System error: {str(e)}"}
     
-    def check_order_status(self, reffid):
-        """Check order status by reffid dengan error handling lengkap"""
+    async def check_order_status(self, reffid):
+        """Check order status by reffid dengan circuit breaker"""
+        try:
+            return await self.circuit_breaker.execute(self._check_order_status_sync, reffid)
+        except Exception as e:
+            logger.error(f"❌ Circuit breaker blocked check_order_status: {e}")
+            return None
+    
+    def _check_order_status_sync(self, reffid):
+        """Sync implementation of check_order_status"""
         try:
             url = f"{self.base_url}/history"
             params = {
@@ -285,52 +352,84 @@ class KhfyPayAPI:
             return None
 
     def check_order_status_detailed(self, reffid):
-        """Check order status dengan parsing detail untuk berbagai format response"""
+        """Check order status dengan parsing detail untuk user-friendly display"""
         try:
-            result = self.check_order_status(reffid)
+            result = self._check_order_status_sync(reffid)
             if not result:
-                return None, "Tidak ada response dari provider"
+                return None, "Menunggu konfirmasi provider", "", ""
             
-            # Parse berbagai format response KhfyPay
+            # Parse response untuk tampilan user-friendly
             status = None
             message = ""
             sn = ""
+            trx_id = ""
+            timestamp = ""
             
-            # Format 1: { "data": { "status": "...", "message": "...", "sn": "..." } }
+            # Format 1: { "data": { "status": "...", ... } }
             if isinstance(result, dict) and result.get('data'):
                 data = result['data']
                 if isinstance(data, dict):
                     status = data.get('status') or data.get('Status')
-                    message = data.get('message') or data.get('Message') or data.get('keterangan', '')
                     sn = data.get('sn') or data.get('SN') or data.get('serial', '')
-                else:
-                    # Data bukan dict, mungkin string langsung
-                    status = str(data).lower()
-                    message = str(data)
+                    trx_id = data.get('kode') or data.get('trx_id') or data.get('ref_id', '')
+                    
+                    # Format message yang user-friendly
+                    if trx_id:
+                        message = f"TRX ID: {trx_id}"
+                    elif sn:
+                        message = f"SN: {sn}"
+                    else:
+                        message = "Pembelian berhasil"
+                    
+                    # Format timestamp
+                    tgl_status = data.get('tgl_status') or data.get('timestamp') or data.get('created_at')
+                    if tgl_status:
+                        try:
+                            # Parse format ISO
+                            if 'T' in tgl_status:
+                                dt = datetime.fromisoformat(tgl_status.replace('Z', '+00:00'))
+                                timestamp = dt.strftime('%d/%m/%Y %H:%M:%S')
+                            else:
+                                timestamp = tgl_status
+                        except:
+                            timestamp = ""
             
-            # Format 2: { "status": "...", "message": "...", "sn": "..." }
+            # Format 2: Direct response
             elif isinstance(result, dict):
                 status = result.get('status') or result.get('Status')
-                message = result.get('message') or result.get('Message') or result.get('keterangan', '')
                 sn = result.get('sn') or result.get('SN') or result.get('serial', '')
+                trx_id = result.get('kode') or result.get('trx_id') or data.get('ref_id', '')
+                
+                # User-friendly message
+                if trx_id:
+                    message = f"TRX ID: {trx_id}"
+                elif sn:
+                    message = f"SN: {sn}"
+                else:
+                    message = "Pembelian diproses"
             
             # Format 3: Array response
             elif isinstance(result, list) and len(result) > 0:
                 first_item = result[0]
                 if isinstance(first_item, dict):
                     status = first_item.get('status') or first_item.get('Status')
-                    message = first_item.get('message') or first_item.get('Message') or first_item.get('keterangan', '')
                     sn = first_item.get('sn') or first_item.get('SN') or first_item.get('serial', '')
+                    trx_id = first_item.get('kode') or first_item.get('trx_id') or data.get('ref_id', '')
+                    
+                    if trx_id:
+                        message = f"TRX ID: {trx_id}"
+                    else:
+                        message = "Pembelian berhasil"
             
             # Format tidak dikenali
             else:
-                message = f"Format response tidak dikenali: {result}"
+                message = "Pembelian diproses"
             
-            return status, message, sn
+            return status, message, sn, timestamp
             
         except Exception as e:
             logger.error(f"❌ Error parsing order status: {e}")
-            return None, f"Error parsing: {str(e)}", ""
+            return None, "Pembelian diproses", "", ""
 
 # ==================== MODERN ANIMATION SYSTEM ====================
 
@@ -424,6 +523,31 @@ class ModernMessageBuilder:
         # Footer
         message += "─" * 25 + "\n"
         message += f"🕒 **Waktu:** {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
+        
+        return message
+
+    @staticmethod
+    def create_success_message(order_data, trx_id="", sn="", timestamp=""):
+        """Create success message yang clean dan professional"""
+        message = (
+            f"✅ **ORDER BERHASIL** 🟢\n"
+            f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n\n"
+            f"📦 **Produk:** {order_data.get('product_name', 'N/A')}\n"
+            f"📮 **Tujuan:** `{order_data.get('customer_input', 'N/A')}`\n"
+            f"💰 **Harga:** Rp {order_data.get('price', 0):,}\n"
+            f"🔗 **Ref ID:** `{order_data.get('provider_order_id', 'N/A')}`\n"
+        )
+        
+        if trx_id:
+            message += f"📋 **TRX ID:** {trx_id}\n"
+        
+        if sn:
+            message += f"🔢 **SN:** `{sn}`\n"
+        
+        if timestamp:
+            message += f"🕒 **Waktu:** {timestamp}\n"
+        else:
+            message += f"🕒 **Waktu:** {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n"
         
         return message
 
@@ -612,7 +736,7 @@ def sync_product_stock_from_provider():
             return False
         
         khfy_api = KhfyPayAPI(api_key)
-        provider_products = khfy_api.get_products()
+        provider_products = asyncio.run(khfy_api.get_products())
         
         if not provider_products:
             logger.error("❌ Gagal mendapatkan produk dari provider")
@@ -856,7 +980,7 @@ def get_product_by_code_with_stock(product_code):
 # ==================== REAL-TIME STATUS POLLING SYSTEM ====================
 
 class RealTimePoller:
-    def __init__(self, api_key, poll_interval=30):  # Poll lebih sering untuk real-time
+    def __init__(self, api_key, poll_interval=30):
         self.api_key = api_key
         self.poll_interval = poll_interval
         self.is_running = False
@@ -873,13 +997,14 @@ class RealTimePoller:
         # Start all services
         asyncio.create_task(self.real_time_status_service())
         asyncio.create_task(self.timeout_service())
+        asyncio.create_task(self.cleanup_service())
     
     async def real_time_status_service(self):
         """Service untuk real-time status checking"""
         while self.is_running:
             try:
                 await self.check_all_pending_orders_real_time()
-                await asyncio.sleep(self.poll_interval)  # Check setiap 30 detik
+                await asyncio.sleep(self.poll_interval)
             except Exception as e:
                 logger.error(f"❌ Real-time service error: {e}")
                 await asyncio.sleep(30)
@@ -889,10 +1014,44 @@ class RealTimePoller:
         while self.is_running:
             try:
                 await self.process_timeout_orders()
-                await asyncio.sleep(20)  # Check timeout setiap 20 detik
+                await asyncio.sleep(20)
             except Exception as e:
                 logger.error(f"❌ Timeout service error: {e}")
                 await asyncio.sleep(20)
+    
+    async def cleanup_service(self):
+        """Service untuk cleanup data lama"""
+        while self.is_running:
+            try:
+                await self.cleanup_old_data()
+                await asyncio.sleep(3600)  # Cleanup setiap 1 jam
+            except Exception as e:
+                logger.error(f"❌ Cleanup service error: {e}")
+                await asyncio.sleep(3600)
+    
+    async def cleanup_old_data(self):
+        """Cleanup data lama dari memory"""
+        try:
+            current_time = datetime.now()
+            # Cleanup pending_orders_timeout yang lebih dari 1 jam
+            global pending_orders_timeout
+            pending_orders_timeout = {
+                order_id: timeout_time 
+                for order_id, timeout_time in pending_orders_timeout.items()
+                if (current_time - timeout_time).total_seconds() < 3600
+            }
+            
+            # Cleanup pending_admin_notifications yang lebih dari 24 jam
+            global pending_admin_notifications
+            pending_admin_notifications = {
+                notif_id: notif_data 
+                for notif_id, notif_data in pending_admin_notifications.items()
+                if (current_time - notif_data.get('timestamp', current_time)).total_seconds() < 86400
+            }
+            
+            logger.info("🧹 Cleanup completed")
+        except Exception as e:
+            logger.error(f"❌ Error in cleanup: {e}")
     
     async def check_all_pending_orders_real_time(self):
         """Check semua pending orders dengan real-time update"""
@@ -927,7 +1086,7 @@ class RealTimePoller:
                 return
             
             # Check status dengan parsing detail
-            status, message, sn = self.khfy_api.check_order_status_detailed(reffid)
+            status, message, sn, timestamp = self.khfy_api.check_order_status_detailed(reffid)
             
             if not status:
                 logger.warning(f"⚠️ No status for order {order_id}")
@@ -967,13 +1126,13 @@ class RealTimePoller:
                     update_user_saldo_modern(user_id, refund_amount, f"Refund: Order failed - {message}")
                 
                 # Notify user
-                await self.send_real_time_notification(user_id, order, new_status, message, sn)
+                await self.send_real_time_notification(user_id, order, new_status, message, sn, timestamp)
                 
         except Exception as e:
             logger.error(f"❌ Error in real-time order check {order.get('id', 'unknown')}: {e}")
     
-    async def send_real_time_notification(self, user_id, order, new_status, message, sn):
-        """Send real-time notification to user"""
+    async def send_real_time_notification(self, user_id, order, new_status, message, sn, timestamp=""):
+        """Send real-time notification to user dengan format yang clean"""
         try:
             status_configs = {
                 'completed': {'emoji': '✅', 'title': 'ORDER BERHASIL', 'color': '🟢'},
@@ -983,24 +1142,41 @@ class RealTimePoller:
             
             config = status_configs.get(new_status, status_configs['pending'])
             
-            notification_text = (
-                f"{config['emoji']} **{config['title']}** {config['color']}\n"
-                f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n\n"
-                f"📦 **Produk:** {order['product_name']}\n"
-                f"📮 **Tujuan:** `{order['customer_input']}`\n"
-                f"💰 **Harga:** Rp {order['price']:,}\n"
-                f"🔗 **Ref ID:** `{order['provider_order_id']}`\n"
-            )
-            
-            if sn:
-                notification_text += f"🔢 **SN:** `{sn}`\n"
-            
-            notification_text += f"💬 **Pesan:** {message}\n\n"
-            
-            if new_status == 'failed':
-                notification_text += "✅ **Saldo telah dikembalikan otomatis**\n\n"
-            
-            notification_text += f"🕒 **Update:** {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
+            # Gunakan message builder yang clean
+            if new_status == 'completed':
+                notification_text = ModernMessageBuilder.create_success_message(
+                    order, 
+                    trx_id=message.replace('TRX ID: ', '') if message.startswith('TRX ID:') else "",
+                    sn=sn,
+                    timestamp=timestamp
+                )
+            else:
+                notification_text = (
+                    f"{config['emoji']} **{config['title']}** {config['color']}\n"
+                    f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n\n"
+                    f"📦 **Produk:** {order['product_name']}\n"
+                    f"📮 **Tujuan:** `{order['customer_input']}`\n"
+                    f"💰 **Harga:** Rp {order['price']:,}\n"
+                    f"🔗 **Ref ID:** `{order['provider_order_id']}`\n"
+                )
+                
+                if message and message.startswith('TRX ID:'):
+                    notification_text += f"📋 **{message}**\n"
+                elif message:
+                    notification_text += f"💬 **Pesan:** {message}\n"
+                
+                if sn:
+                    notification_text += f"🔢 **SN:** `{sn}`\n"
+                
+                if timestamp:
+                    notification_text += f"🕒 **Waktu:** {timestamp}\n"
+                
+                notification_text += "\n"
+                
+                if new_status == 'failed':
+                    notification_text += "✅ **Saldo telah dikembalikan otomatis**\n\n"
+                
+                notification_text += f"📊 **Update:** {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
             
             keyboard = [
                 [InlineKeyboardButton("🛒 BELI LAGI", callback_data="main_menu_order")],
@@ -1021,7 +1197,7 @@ class RealTimePoller:
             logger.error(f"❌ Error sending real-time notification: {e}")
     
     async def process_timeout_orders(self):
-        """Process orders that timeout after 3 menit (lebih cepat)"""
+        """Process orders that timeout after 3 menit"""
         try:
             pending_orders = get_pending_orders()
             current_time = datetime.now()
@@ -1364,6 +1540,12 @@ async def receive_modern_target(update: Update, context: ContextTypes.DEFAULT_TY
     """Receive target dengan validasi dan deteksi operator otomatis"""
     try:
         target = update.message.text.strip()
+        
+        # Handle cancel command
+        if target.lower() in ['/cancel', 'cancel', 'batal']:
+            await cancel_modern_conversation(update, context)
+            return ConversationHandler.END
+        
         product = context.user_data.get('selected_product')
         
         if not product:
@@ -1464,92 +1646,94 @@ async def process_modern_order(update: Update, context: ContextTypes.DEFAULT_TYP
         user_id = str(query.from_user.id)
         price = product['price']
         
-        # 1. CHECK SALDO
-        saldo_awal = get_user_saldo(user_id)
-        if saldo_awal < price:
-            message = ModernMessageBuilder.create_order_message(
-                {
-                    'product_name': product['name'],
-                    'customer_input': target,
-                    'price': price,
-                    'provider_order_id': 'N/A'
-                },
-                'failed',
-                [
-                    f"💰 **Saldo:** Rp {saldo_awal:,}",
-                    f"💳 **Dibutuhkan:** Rp {price:,}",
-                    f"🔶 **Kurang:** Rp {price - saldo_awal:,}",
-                    "💸 **Silakan top up saldo terlebih dahulu**"
-                ]
-            )
-            
-            keyboard = [
-                [InlineKeyboardButton("💸 TOP UP", callback_data="topup_menu")],
-                [InlineKeyboardButton("🏠 MENU UTAMA", callback_data="main_menu_main")]
-            ]
-            
-            await safe_edit_modern_message(update, message, InlineKeyboardMarkup(keyboard))
-            return ConversationHandler.END
-        
-        # 2. CHECK STOK TERAKHIR DENGAN ANIMASI
-        anim_message = await ModernAnimations.show_processing(
-            update, context, 
-            "Memeriksa Stok Terbaru...", 2
-        )
-        
-        sync_product_stock_from_provider()
-        updated_product = get_product_by_code_with_stock(product['code'])
-        
-        if not updated_product or updated_product.get('kosong') == 1 or updated_product.get('display_stock', 0) <= 0:
-            message = ModernMessageBuilder.create_order_message(
-                product, 'failed',
-                ["❌ **Stok sudah habis**", "🔄 Silakan pilih produk lain"]
-            )
-            
-            keyboard = [
-                [InlineKeyboardButton("🛒 PRODUK LAIN", callback_data="morder_back_to_groups")],
-                [InlineKeyboardButton("🏠 MENU UTAMA", callback_data="main_menu_main")]
-            ]
-            
-            try:
-                await context.bot.edit_message_text(
-                    chat_id=anim_message.chat_id,
-                    message_id=anim_message.message_id,
-                    text=message,
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode="Markdown"
+        # Gunakan lock untuk prevent race condition
+        async with order_lock:
+            # 1. CHECK SALDO
+            saldo_awal = get_user_saldo(user_id)
+            if saldo_awal < price:
+                message = ModernMessageBuilder.create_order_message(
+                    {
+                        'product_name': product['name'],
+                        'customer_input': target,
+                        'price': price,
+                        'provider_order_id': 'N/A'
+                    },
+                    'failed',
+                    [
+                        f"💰 **Saldo:** Rp {saldo_awal:,}",
+                        f"💳 **Dibutuhkan:** Rp {price:,}",
+                        f"🔶 **Kurang:** Rp {price - saldo_awal:,}",
+                        "💸 **Silakan top up saldo terlebih dahulu**"
+                    ]
                 )
-            except:
+                
+                keyboard = [
+                    [InlineKeyboardButton("💸 TOP UP", callback_data="topup_menu")],
+                    [InlineKeyboardButton("🏠 MENU UTAMA", callback_data="main_menu_main")]
+                ]
+                
                 await safe_edit_modern_message(update, message, InlineKeyboardMarkup(keyboard))
+                return ConversationHandler.END
             
-            return CHOOSING_PRODUCT
-        
-        # 3. POTONG SALDO
-        await ModernAnimations.typing_effect(update, context, 1)
-        
-        if not update_user_saldo_modern(user_id, -price, f"Order: {product['name']}"):
-            await show_modern_error(update, "Gagal memotong saldo")
-            return ConversationHandler.END
-        
-        # 4. BUAT ORDER DI DATABASE
-        reffid = f"akrab_{uuid.uuid4().hex[:16]}"
-        order_id = save_order(
-            user_id=user_id,
-            product_name=product['name'],
-            product_code=product['code'],
-            customer_input=target,
-            price=price,
-            status='processing',
-            provider_order_id=reffid,
-            sn='',
-            note='Sedang diproses ke provider - REAL-TIME TRACKING',
-            saldo_awal=saldo_awal
-        )
-        
-        if not order_id:
-            update_user_saldo_modern(user_id, price, "Refund: Gagal save order")
-            await show_modern_error(update, "Gagal menyimpan order")
-            return ConversationHandler.END
+            # 2. CHECK STOK TERAKHIR DENGAN ANIMASI
+            anim_message = await ModernAnimations.show_processing(
+                update, context, 
+                "Memeriksa Stok Terbaru...", 2
+            )
+            
+            sync_product_stock_from_provider()
+            updated_product = get_product_by_code_with_stock(product['code'])
+            
+            if not updated_product or updated_product.get('kosong') == 1 or updated_product.get('display_stock', 0) <= 0:
+                message = ModernMessageBuilder.create_order_message(
+                    product, 'failed',
+                    ["❌ **Stok sudah habis**", "🔄 Silakan pilih produk lain"]
+                )
+                
+                keyboard = [
+                    [InlineKeyboardButton("🛒 PRODUK LAIN", callback_data="morder_back_to_groups")],
+                    [InlineKeyboardButton("🏠 MENU UTAMA", callback_data="main_menu_main")]
+                ]
+                
+                try:
+                    await context.bot.edit_message_text(
+                        chat_id=anim_message.chat_id,
+                        message_id=anim_message.message_id,
+                        text=message,
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                        parse_mode="Markdown"
+                    )
+                except:
+                    await safe_edit_modern_message(update, message, InlineKeyboardMarkup(keyboard))
+                
+                return CHOOSING_PRODUCT
+            
+            # 3. POTONG SALDO
+            await ModernAnimations.typing_effect(update, context, 1)
+            
+            if not update_user_saldo_modern(user_id, -price, f"Order: {product['name']}"):
+                await show_modern_error(update, "Gagal memotong saldo")
+                return ConversationHandler.END
+            
+            # 4. BUAT ORDER DI DATABASE
+            reffid = f"akrab_{uuid.uuid4().hex[:16]}"
+            order_id = save_order(
+                user_id=user_id,
+                product_name=product['name'],
+                product_code=product['code'],
+                customer_input=target,
+                price=price,
+                status='processing',
+                provider_order_id=reffid,
+                sn='',
+                note='Sedang diproses ke provider - REAL-TIME TRACKING',
+                saldo_awal=saldo_awal
+            )
+            
+            if not order_id:
+                update_user_saldo_modern(user_id, price, "Refund: Gagal save order")
+                await show_modern_error(update, "Gagal menyimpan order")
+                return ConversationHandler.END
         
         # 5. PROSES KE PROVIDER DENGAN ANIMASI
         try:
@@ -1565,20 +1749,22 @@ async def process_modern_order(update: Update, context: ContextTypes.DEFAULT_TYP
         api_key = getattr(config, 'KHFYPAY_API_KEY', '')
         khfy_api = KhfyPayAPI(api_key)
         
-        order_result = khfy_api.create_order(product['code'], target, reffid)
+        order_result = await khfy_api.create_order(product['code'], target, reffid)
         
-        # 6. PROCESS RESULT DENGAN REAL-TIME PARSING
+        # 6. PROCESS RESULT DENGAN REAL-TIME PARSING YANG USER-FRIENDLY
         provider_status = None
         provider_message = "Menunggu konfirmasi provider"
         sn_number = ""
+        timestamp = ""
         
         if order_result:
-            # Parse response dengan method baru
-            status, message, sn = khfy_api.check_order_status_detailed(reffid)
+            # Parse response dengan method baru yang user-friendly
+            status, message, sn, time_str = khfy_api.check_order_status_detailed(reffid)
             if status:
                 provider_status = status
                 provider_message = message
                 sn_number = sn
+                timestamp = time_str
         
         # Determine final status berdasarkan real-time response
         final_status = 'pending'  # Default pending untuk real-time tracking
@@ -1596,29 +1782,57 @@ async def process_modern_order(update: Update, context: ContextTypes.DEFAULT_TYP
         # Update order status
         update_order_status(order_id, final_status, sn=sn_number, note=provider_message)
         
-        # 7. TAMPILKAN HASIL FINAL
+        # 7. TAMPILKAN HASIL FINAL DENGAN FORMAT BERSIH
         saldo_akhir = get_user_saldo(user_id)
         
-        additional_info = status_info + [
-            f"💰 **Saldo Awal:** Rp {saldo_awal:,}",
-            f"💰 **Saldo Akhir:** Rp {saldo_akhir:,}",
-            f"🔗 **Ref ID:** `{reffid}`",
-            f"🔄 **Status:** Real-time tracking aktif"
-        ]
-        
-        if sn_number:
-            additional_info.append(f"🔢 **SN:** `{sn_number}`")
-        
-        message = ModernMessageBuilder.create_order_message(
-            {
-                'product_name': product['name'],
-                'customer_input': target,
-                'price': price,
-                'provider_order_id': reffid
-            },
-            final_status,
-            additional_info
-        )
+        # Gunakan message builder yang clean untuk success
+        if final_status == 'completed':
+            message = ModernMessageBuilder.create_success_message(
+                {
+                    'product_name': product['name'],
+                    'customer_input': target,
+                    'price': price,
+                    'provider_order_id': reffid
+                },
+                trx_id=provider_message.replace('TRX ID: ', '') if provider_message.startswith('TRX ID:') else "",
+                sn=sn_number,
+                timestamp=timestamp
+            )
+            
+            # Tambahkan info saldo
+            message += f"\n💰 **Saldo Awal:** Rp {saldo_awal:,}\n"
+            message += f"💰 **Saldo Akhir:** Rp {saldo_akhir:,}\n"
+            message += f"🔄 **Status:** Real-time tracking aktif"
+        else:
+            additional_info = status_info + [
+                f"💰 **Saldo Awal:** Rp {saldo_awal:,}",
+                f"💰 **Saldo Akhir:** Rp {saldo_akhir:,}",
+                f"🔗 **Ref ID:** `{reffid}`"
+            ]
+            
+            if provider_message and provider_message.startswith('TRX ID:'):
+                additional_info.append(f"📋 **{provider_message}**")
+            elif provider_message:
+                additional_info.append(f"💬 **Pesan:** {provider_message}")
+            
+            if sn_number:
+                additional_info.append(f"🔢 **SN:** `{sn_number}`")
+            
+            if timestamp:
+                additional_info.append(f"🕒 **Waktu:** {timestamp}")
+            
+            additional_info.append("🔄 **Status:** Real-time tracking aktif")
+            
+            message = ModernMessageBuilder.create_order_message(
+                {
+                    'product_name': product['name'],
+                    'customer_input': target,
+                    'price': price,
+                    'provider_order_id': reffid
+                },
+                final_status,
+                additional_info
+            )
         
         keyboard = [
             [InlineKeyboardButton("🛒 BELI LAGI", callback_data="main_menu_order")],
@@ -1638,7 +1852,15 @@ async def process_modern_order(update: Update, context: ContextTypes.DEFAULT_TYP
         except:
             await safe_edit_modern_message(update, message, InlineKeyboardMarkup(keyboard))
         
-        # 8. CLEANUP
+        # 8. LOG METRICS
+        log_order_metrics({
+            'product_code': product['code'],
+            'operator': get_operator_from_product_code(product['code']),
+            'price': price,
+            'status': final_status
+        }, final_status, 0)
+        
+        # 9. CLEANUP
         order_keys = ['selected_product', 'order_target', 'product_page', 'current_group', 'current_products']
         for key in order_keys:
             if key in user_data:
@@ -1707,6 +1929,27 @@ async def send_modern_notification(user_id, message):
     except Exception as e:
         logger.error(f"❌ Failed to send notification: {e}")
     return False
+
+def log_order_metrics(order_data, status, processing_time):
+    """Log metrics untuk analytics"""
+    try:
+        metrics = {
+            'product_type': order_data['product_code'],
+            'operator': order_data.get('operator', 'UNKNOWN'),
+            'price': order_data['price'],
+            'processing_time': processing_time,
+            'success': status == 'completed',
+            'timestamp': datetime.now().isoformat()
+        }
+        logger.info(f"📊 ORDER_METRICS: {metrics}")
+    except Exception as e:
+        logger.error(f"❌ Error logging metrics: {e}")
+
+def sanitize_user_input(input_data):
+    """Sanitize user input untuk prevent injection"""
+    if isinstance(input_data, str):
+        return re.sub(r'[^\w\s\-@\.\+]', '', input_data)
+    return input_data
 
 # ==================== CANCEL HANDLERS ====================
 
@@ -1789,13 +2032,13 @@ def initialize_modern_order_system(application):
     bot_application = application
     
     api_key = getattr(config, 'KHFYPAY_API_KEY', '')
-    real_time_poller = RealTimePoller(api_key, poll_interval=30)  # 30 detik untuk real-time
+    real_time_poller = RealTimePoller(api_key, poll_interval=30)
     
     # Start polling system
     loop = asyncio.get_event_loop()
     loop.create_task(real_time_poller.start_polling(application))
     
-    logger.info("✅ REAL-TIME Order System Initialized with Auto Operator Detection!")
+    logger.info("✅ REAL-TIME Order System Initialized with Enhanced Features!")
 
 # Export handler untuk main.py
 modern_order_handler = get_modern_conversation_handler()
