@@ -113,15 +113,11 @@ except Exception as e:
     def get_admin_handlers():
         return []
 
-# Stok Handler - OPTIMIZED VERSION
+# Stok Handler
 try:
-    from stok_handler import (
-        stock_akrab_callback, 
-        stock_command,
-        initialize_stock_sync
-    )
+    from stok_handler import stock_akrab_callback, stock_command
     STOK_AVAILABLE = True
-    print("✅ OPTIMIZED Stok handler loaded successfully")
+    print("✅ Stok handler loaded successfully")
 except Exception as e:
     print(f"❌ Error importing stok_handler: {e}")
     STOK_AVAILABLE = False
@@ -131,26 +127,18 @@ except Exception as e:
     
     async def stock_command(update, context):
         await send_modern_message(update, "❌ Fitur stok sedang dalam perbaikan.", "main_menu_main")
-    
-    def initialize_stock_sync():
-        print("⚠️ Stock sync initialization skipped")
 
-# ORDER HANDLER - COMPATIBLE VERSION
+# ORDER HANDLER MODERN - IMPORT YANG BARU
 try:
     from order_handler import (
-        order_menu_handler,
-        get_order_conversation_handler,
-        initialize_order_system
+        modern_order_handler,  # Ganti dengan handler modern
+        initialize_modern_order_system,  # Ganti dengan init modern
+        menu_handler as order_menu_handler  # Tetap sama
     )
     ORDER_AVAILABLE = True
-    print("✅ COMPATIBLE Order handler loaded successfully")
-    
-    # Define untuk compatibility
-    modern_order_handler = get_order_conversation_handler()
-    initialize_modern_order_system = initialize_order_system
-    
+    print("✅ MODERN Order handler loaded successfully")
 except Exception as e:
-    print(f"❌ Error importing COMPATIBLE order_handler: {e}")
+    print(f"❌ Error importing MODERN order_handler: {e}")
     ORDER_AVAILABLE = False
     
     def modern_order_handler():
@@ -160,7 +148,7 @@ except Exception as e:
         await send_modern_message(update, "❌ Fitur order sedang dalam perbaikan.", "main_menu_main")
     
     def initialize_modern_order_system(app):
-        print("⚠️ Order system initialization skipped")
+        print("⚠️ MODERN Order system initialization skipped")
 
 # Topup Handler
 try:
@@ -932,15 +920,10 @@ async def post_init(application: Application):
             start_auto_status_checker(application, check_interval=120)
             logger.info("✅ KhfyPay Auto Status Checker started")
         
-        # INITIALIZE STOCK SYNC SYSTEM - OPTIMIZED
-        if STOK_AVAILABLE:
-            initialize_stock_sync()
-            logger.info("✅ OPTIMIZED Stock sync system initialized")
-        
-        # INITIALIZE ORDER SYSTEM - COMPATIBLE
+        # INITIALIZE MODERN ORDER SYSTEM WITH POLLING - YANG BARU
         if ORDER_AVAILABLE:
-            initialize_modern_order_system(application)
-            logger.info("✅ COMPATIBLE Order system initialized")
+            initialize_modern_order_system(application)  # GANTI DENGAN YANG MODERN
+            logger.info("✅ MODERN Order system with polling initialized")
         
         bot = await application.bot.get_me()
         
@@ -981,11 +964,9 @@ async def post_init(application: Application):
             print("📍 KhfyPay Webhook URL: http://your-server-ip:8080/webhook")
             print("📍 KhfyPay Auto Status Checker: Running every 2 minutes")
         if ORDER_AVAILABLE:
-            print("📍 COMPATIBLE Order System: Active")
+            print("📍 MODERN Order Polling System: Active (60s interval)")
             print("📍 Auto Timeout: 5 minutes + Auto Refund")
-        if STOK_AVAILABLE:
-            print("📍 OPTIMIZED Stock Sync: Active (5 minutes interval)")
-            print("📍 Real-time Stock Updates: Enabled")
+            print("📍 Modern UI: Animations & Progress Bars")
         print("📍 Bot is now running and waiting for messages...")
         print("📍 Try sending /start to your bot")
         print("=" * 60)
@@ -1060,10 +1041,10 @@ def main():
                 application.add_handler(topup_conv_handler)
                 print("✅ Topup conversation handler registered")
         
-        # ORDER CONVERSATION HANDLER - COMPATIBLE
-        if ORDER_AVAILABLE and modern_order_handler:
-            application.add_handler(modern_order_handler)
-            print("✅ COMPATIBLE Order conversation handler registered")
+        # ORDER CONVERSATION HANDLER - YANG BARU
+        if ORDER_AVAILABLE:
+            application.add_handler(modern_order_handler)  # GANTI DENGAN YANG MODERN
+            print("✅ MODERN Order conversation handler registered")
         
         # 2. TOPUP CALLBACK HANDLERS
         if TOPUP_AVAILABLE:
@@ -1079,11 +1060,10 @@ def main():
                 application.add_handler(handler)
             print("✅ Admin callback handlers registered")
         
-        # 4. STOK HANDLER - OPTIMIZED
+        # 4. STOK HANDLER
         if STOK_AVAILABLE:
-            application.add_handler(CallbackQueryHandler(stock_akrab_callback, pattern="^menu_stock$"))
             application.add_handler(CallbackQueryHandler(stock_akrab_callback, pattern="^stock_"))
-            print("✅ OPTIMIZED Stok handler registered")
+            print("✅ Stok handler registered")
         
         # 5. HISTORY HANDLERS
         application.add_handler(CallbackQueryHandler(show_history_menu, pattern="^history_menu$"))
