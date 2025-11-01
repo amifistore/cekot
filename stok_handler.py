@@ -33,13 +33,12 @@ class KhfyPayStockAPI:
             return None
     
     async def _get_products_v2(self):
-        """Get products from API v2 - sesuai dokumentasi resmi"""
+        """Get products from API v2 - dengan format yang benar"""
         try:
             url = f"{self.base_url}/list_product"
             params = {"api_key": self.api_key}
             
             logger.info(f"🔍 Calling API v2: {url}")
-            logger.info(f"🔍 Using API Key: {self.api_key[:8]}...")  # Log partial API key for security
             
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, params=params, timeout=15) as response:
@@ -56,17 +55,9 @@ class KhfyPayStockAPI:
                                 first_item = data[0]
                                 if isinstance(first_item, dict):
                                     logger.info(f"✅ First item keys: {list(first_item.keys())}")
-                                    # Check required fields
-                                    required_fields = ['code', 'name', 'price', 'status']
-                                    missing_fields = [field for field in required_fields if field not in first_item]
-                                    if missing_fields:
-                                        logger.warning(f"⚠️ Missing fields in first item: {missing_fields}")
-                                    else:
-                                        logger.info("✅ All required fields present")
                             return data
                         else:
                             logger.error(f"❌ API v2 returned non-list data: {type(data)}")
-                            logger.error(f"❌ Response content: {data}")
                             return None
                     else:
                         error_text = await response.text()
@@ -82,7 +73,7 @@ class KhfyPayStockAPI:
 # ==================== STOCK PROCESSING ====================
 
 def process_real_time_stock(products_data):
-    """Process real-time stock data dari API v2"""
+    """Process real-time stock data dari API v2 dengan format yang benar"""
     try:
         if not products_data or not isinstance(products_data, list):
             return {}
@@ -94,11 +85,13 @@ def process_real_time_stock(products_data):
             if not isinstance(product, dict):
                 continue
                 
-            code = product.get('code', '').strip()
-            name = product.get('name', 'Unknown Product')
-            price = product.get('price', 0)
-            status = product.get('status', '').lower()
-            category = product.get('category', 'Umum')
+            # Gunakan field yang sesuai dengan response API
+            code = product.get('kode_produk', '').strip()
+            name = product.get('nama_produk', 'Unknown Product')
+            price = product.get('harga_final', 0)
+            gangguan = product.get('gangguan', 0)
+            kosong = product.get('kosong', 0)
+            provider = product.get('kode_provider', 'Unknown')
             
             # Skip jika code kosong
             if not code:
@@ -110,27 +103,25 @@ def process_real_time_stock(products_data):
             except (ValueError, TypeError):
                 price = 0
             
-            # Determine stock status berdasarkan status field
-            if status == 'active':
-                stock_text = "Tersedia"
-                stock_emoji = "🟢"
-                is_available = True
-            elif status == 'empty':
-                stock_text = "Habis" 
+            # Determine stock status berdasarkan gangguan dan kosong
+            if kosong == 1:
+                stock_text = "Habis"
                 stock_emoji = "🔴"
                 is_available = False
-            elif status == 'problem':
+                status = "empty"
+            elif gangguan == 1:
                 stock_text = "Gangguan"
                 stock_emoji = "🚧"
                 is_available = False
-            elif status == 'inactive':
-                stock_text = "Nonaktif"
-                stock_emoji = "⚫"
-                is_available = False
+                status = "problem"
             else:
-                stock_text = "Unknown"
-                stock_emoji = "⚫"
-                is_available = False
+                stock_text = "Tersedia"
+                stock_emoji = "🟢"
+                is_available = True
+                status = "active"
+            
+            # Tentukan kategori berdasarkan kode produk
+            category = determine_category(code, provider)
             
             # Simpan info produk
             stock_info[code] = {
@@ -141,6 +132,7 @@ def process_real_time_stock(products_data):
                 'category': category,
                 'status': status,
                 'is_available': is_available,
+                'provider': provider,
                 'real_time': True
             }
             
@@ -155,7 +147,8 @@ def process_real_time_stock(products_data):
                 'stock_text': stock_text,
                 'stock_emoji': stock_emoji,
                 'status': status,
-                'is_available': is_available
+                'is_available': is_available,
+                'provider': provider
             })
         
         logger.info(f"📊 Processed {len(stock_info)} products into {len(categorized_products)} categories")
@@ -169,6 +162,35 @@ def process_real_time_stock(products_data):
     except Exception as e:
         logger.error(f"❌ Error processing real-time stock: {e}")
         return {}
+
+def determine_category(code, provider):
+    """Determine category based on product code and provider"""
+    code_upper = code.upper()
+    
+    # Kategori berdasarkan prefix kode produk
+    if code_upper.startswith('XLA'):
+        return "XL A"
+    elif code_upper.startswith('XLB'):
+        return "XL B"
+    elif code_upper.startswith('AXIS'):
+        return "AXIS"
+    elif code_upper.startswith('TELKOMSEL'):
+        return "TELKOMSEL"
+    elif code_upper.startswith('INDOSAT'):
+        return "INDOSAT"
+    elif code_upper.startswith('SMARTFREN'):
+        return "SMARTFREN"
+    elif code_upper.startswith('THREE'):
+        return "THREE"
+    else:
+        # Kategori berdasarkan provider
+        provider_map = {
+            'KUBER': 'Kuota Berbagi',
+            'IM': 'Internet Murah',
+            'REG': 'Reguler',
+            'PROMO': 'Promo'
+        }
+        return provider_map.get(provider, 'Umum')
 
 # ==================== TELEGRAM STOCK HANDLERS ====================
 
@@ -260,7 +282,7 @@ async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🔄 **Data langsung dari provider**\n"
                 f"📦 Total produk: **{total_products}**\n"
                 f"✅ Tersedia: **{available_products}**\n"
-                f"❌ Habis: **{total_products - available_products}**\n"
+                f"❌ Habis/Gangguan: **{total_products - available_products}**\n"
                 f"⏰ Update: **{datetime.now().strftime('%d/%m/%Y %H:%M:%S')}**\n\n"
                 "✨ **Fitur REAL-TIME:**\n"
                 "• 📡 Data langsung dari server provider\n"
@@ -319,6 +341,7 @@ def format_stock_message(processed_data):
             category_available = sum(1 for p in products if p['is_available'])
             
             for product in products:
+                # Format: 🟢 XL 10GB - Rp 10.000 | Tersedia
                 message += f"{product['stock_emoji']} {product['name']} - Rp {product['price']:,.0f} | {product['stock_text']}\n"
             
             message += f"*Tersedia: {category_available}/{category_count} produk*\n\n"
@@ -327,7 +350,7 @@ def format_stock_message(processed_data):
         message += f"**📈 SUMMARY REAL-TIME:**\n"
         message += f"• Total Produk: {total_products}\n"
         message += f"• Tersedia: {available_products}\n"
-        message += f"• Habis: {total_products - available_products}\n"
+        message += f"• Habis/Gangguan: {total_products - available_products}\n"
         message += f"• Sumber: 📡 KhfyPay API v2\n"
         message += f"• Status: ✅ LIVE\n"
         
@@ -395,16 +418,17 @@ async def quick_stock_check(product_code):
         
         if real_time_data:
             for product in real_time_data:
-                if isinstance(product, dict) and product.get('code') == product_code:
-                    status = product.get('status', '').lower()
-                    is_available = status == 'active'
+                if isinstance(product, dict) and product.get('kode_produk') == product_code:
+                    gangguan = product.get('gangguan', 0)
+                    kosong = product.get('kosong', 0)
+                    is_available = gangguan == 0 and kosong == 0
                     
                     return {
-                        'name': product.get('name', 'Unknown'),
-                        'price': product.get('price', 0),
-                        'status': status,
+                        'name': product.get('nama_produk', 'Unknown'),
+                        'price': product.get('harga_final', 0),
+                        'status': "active" if is_available else "problem",
                         'is_available': is_available,
-                        'stock_text': "Tersedia" if is_available else "Habis",
+                        'stock_text': "Tersedia" if is_available else "Habis/Gangguan",
                         'stock_emoji': "🟢" if is_available else "🔴",
                         'real_time': True
                     }
@@ -418,7 +442,7 @@ async def quick_stock_check(product_code):
 # ==================== BACKGROUND STOCK SYNC ====================
 
 async def background_stock_sync():
-    """Background task untuk monitoring stok (optional)"""
+    """Background task untuk monitoring stok"""
     while True:
         try:
             await asyncio.sleep(300)  # Check every 5 minutes
