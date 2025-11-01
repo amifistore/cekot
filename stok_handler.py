@@ -352,10 +352,11 @@ async def stock_akrab_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             message += f"• Tersedia: {available_products}\n"
             message += f"• Habis: {total_products - available_products}\n"
         
+        # PERBAIKAN: Sesuaikan callback data dengan main.py
         keyboard = [
-            [InlineKeyboardButton("🔄 Refresh Stok", callback_data="menu_stock")],
+            [InlineKeyboardButton("🔄 Refresh Stok", callback_data="main_menu_stock")],
             [InlineKeyboardButton("🛒 Beli Produk", callback_data="main_menu_order")],
-            [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
+            [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -367,9 +368,18 @@ async def stock_akrab_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         
     except Exception as e:
         logger.error(f"❌ Error in stock_akrab_callback: {e}")
+        
+        # PERBAIKAN: Error handler dengan callback yang sesuai
+        keyboard = [
+            [InlineKeyboardButton("🔄 Coba Lagi", callback_data="main_menu_stock")],
+            [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
         await query.edit_message_text(
             "❌ **Gagal memuat data stok**\n\n"
             "Silakan coba lagi nanti atau hubungi admin.",
+            reply_markup=reply_markup,
             parse_mode='Markdown'
         )
 
@@ -391,10 +401,11 @@ async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Klik tombol di bawah untuk melihat detail stok:"
         )
         
+        # PERBAIKAN: Sesuaikan callback data dengan main.py
         keyboard = [
-            [InlineKeyboardButton("📋 Lihat Detail Stok", callback_data="menu_stock")],
+            [InlineKeyboardButton("📋 Lihat Detail Stok", callback_data="main_menu_stock")],
             [InlineKeyboardButton("🛒 Beli Sekarang", callback_data="main_menu_order")],
-            [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_main")]
+            [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -406,8 +417,16 @@ async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         logger.error(f"❌ Error in stock_command: {e}")
+        
+        # PERBAIKAN: Error handler dengan callback yang sesuai
+        keyboard = [
+            [InlineKeyboardButton("🏠 Menu Utama", callback_data="main_menu_main")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
         await update.message.reply_text(
-            "❌ Gagal memuat data stok.\nSilakan coba lagi nanti."
+            "❌ Gagal memuat data stok.\nSilakan coba lagi nanti.",
+            reply_markup=reply_markup
         )
 
 # ==================== UTILITY FUNCTIONS ====================
