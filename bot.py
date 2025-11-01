@@ -115,7 +115,7 @@ except Exception as e:
 
 # Stok Handler
 try:
-    from stok_handler import stock_akrab_callback, stock_command
+    from stok_handler import stock_akrab_callback, stock_command, initialize_stock_sync
     STOK_AVAILABLE = True
     print("✅ Stok handler loaded successfully")
 except Exception as e:
@@ -127,13 +127,16 @@ except Exception as e:
     
     async def stock_command(update, context):
         await send_modern_message(update, "❌ Fitur stok sedang dalam perbaikan.", "main_menu_main")
+    
+    def initialize_stock_sync():
+        print("⚠️ Background stock sync skipped")
 
-# ORDER HANDLER MODERN - IMPORT YANG BARU
+# ORDER HANDLER MODERN
 try:
     from order_handler import (
-        modern_order_handler,  # Ganti dengan handler modern
-        initialize_modern_order_system,  # Ganti dengan init modern
-        menu_handler as order_menu_handler  # Tetap sama
+        modern_order_handler,
+        initialize_modern_order_system,
+        menu_handler as order_menu_handler
     )
     ORDER_AVAILABLE = True
     print("✅ MODERN Order handler loaded successfully")
@@ -920,10 +923,15 @@ async def post_init(application: Application):
             start_auto_status_checker(application, check_interval=120)
             logger.info("✅ KhfyPay Auto Status Checker started")
         
-        # INITIALIZE MODERN ORDER SYSTEM WITH POLLING - YANG BARU
+        # INITIALIZE MODERN ORDER SYSTEM WITH POLLING
         if ORDER_AVAILABLE:
-            initialize_modern_order_system(application)  # GANTI DENGAN YANG MODERN
+            initialize_modern_order_system(application)
             logger.info("✅ MODERN Order system with polling initialized")
+        
+        # INITIALIZE BACKGROUND STOCK SYNC
+        if STOK_AVAILABLE:
+            initialize_stock_sync()
+            logger.info("✅ Background stock sync initialized")
         
         bot = await application.bot.get_me()
         
@@ -967,6 +975,8 @@ async def post_init(application: Application):
             print("📍 MODERN Order Polling System: Active (60s interval)")
             print("📍 Auto Timeout: 5 minutes + Auto Refund")
             print("📍 Modern UI: Animations & Progress Bars")
+        if STOK_AVAILABLE:
+            print("📍 Background Stock Sync: Active (5 minutes interval)")
         print("📍 Bot is now running and waiting for messages...")
         print("📍 Try sending /start to your bot")
         print("=" * 60)
@@ -1041,10 +1051,12 @@ def main():
                 application.add_handler(topup_conv_handler)
                 print("✅ Topup conversation handler registered")
         
-        # ORDER CONVERSATION HANDLER - YANG BARU
+        # ORDER CONVERSATION HANDLER
         if ORDER_AVAILABLE:
-            application.add_handler(modern_order_handler)  # GANTI DENGAN YANG MODERN
-            print("✅ MODERN Order conversation handler registered")
+            order_conv_handler = modern_order_handler()
+            if order_conv_handler:
+                application.add_handler(order_conv_handler)
+                print("✅ MODERN Order conversation handler registered")
         
         # 2. TOPUP CALLBACK HANDLERS
         if TOPUP_AVAILABLE:
@@ -1060,9 +1072,12 @@ def main():
                 application.add_handler(handler)
             print("✅ Admin callback handlers registered")
         
-        # 4. STOK HANDLER
+        # 4. STOK HANDLER - FIXED VERSION
         if STOK_AVAILABLE:
+            # Handler untuk callback pattern "stock_" dari stok_handler
             application.add_handler(CallbackQueryHandler(stock_akrab_callback, pattern="^stock_"))
+            # Handler khusus untuk main_menu_stock
+            application.add_handler(CallbackQueryHandler(stock_akrab_callback, pattern="^main_menu_stock$"))
             print("✅ Stok handler registered")
         
         # 5. HISTORY HANDLERS
@@ -1132,6 +1147,7 @@ if __name__ == "__main__":
     print("🎨 Enhanced UI & User Experience") 
     print("⚡ Full Features - Order, Topup, Admin, History")
     print("🌐 KhfyPay Integration with Auto Polling")
+    print("📦 Real-time Stock Management")
     print("🛡️  Conflict Protection & Graceful Shutdown")
     print("📊 Real-time Statistics & Notifications")
     print("=" * 60)
