@@ -1,6 +1,7 @@
 import logging
 import aiohttp
 import asyncio
+import json
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 import config
@@ -13,45 +14,63 @@ class KhfyPayStockAPI:
     def __init__(self, api_key):
         self.api_key = api_key
         self.base_url = "https://panel.khfy-store.com/api_v2"
-        self.stock_url = "https://panel.khfy-store.com/api_v3/cek_stock_akrab"
     
     async def get_real_time_stock(self):
-        """Get real-time stock from KhfyPay API - REAL TIME langsung dari provider"""
+        """Get real-time stock from KhfyPay API v2 - REAL TIME langsung dari provider"""
         try:
-            logger.info("🔄 Fetching REAL-TIME stock from KhfyPay...")
+            logger.info("🔄 Fetching REAL-TIME stock from KhfyPay API v2...")
             
-            # Priority 1: Try API v3 cek_stock_akrab (lebih update)
-            stock_data = await self._get_stock_v3()
-            if stock_data:
-                logger.info("✅ Got REAL-TIME stock from API v3")
-                return self._parse_stock_v3(stock_data)
-            
-            # Priority 2: Try API v2 list_product
             products = await self._get_products_v2()
             if products:
-                logger.info("✅ Got REAL-TIME stock from API v2")
-                return self._parse_products_v2(products)
-            
-            logger.error("❌ Both API methods failed")
-            return None
+                logger.info(f"✅ Got REAL-TIME stock from API v2: {len(products)} products")
+                return products
+            else:
+                logger.error("❌ Failed to get products from API v2")
+                return None
             
         except Exception as e:
             logger.error(f"❌ Error getting REAL-TIME stock: {e}")
             return None
     
     async def _get_products_v2(self):
-        """Get products from API v2"""
+        """Get products from API v2 - sesuai dokumentasi resmi"""
         try:
             url = f"{self.base_url}/list_product"
             params = {"api_key": self.api_key}
             
+            logger.info(f"🔍 Calling API v2: {url}")
+            logger.info(f"🔍 Using API Key: {self.api_key[:8]}...")  # Log partial API key for security
+            
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, params=params, timeout=15) as response:
+                    logger.info(f"🔍 API v2 Response status: {response.status}")
+                    
                     if response.status == 200:
                         data = await response.json()
-                        return data
+                        logger.info(f"🔍 API v2 Response type: {type(data)}")
+                        
+                        # Validasi response format
+                        if isinstance(data, list):
+                            logger.info(f"✅ API v2 returned list with {len(data)} items")
+                            if len(data) > 0:
+                                first_item = data[0]
+                                if isinstance(first_item, dict):
+                                    logger.info(f"✅ First item keys: {list(first_item.keys())}")
+                                    # Check required fields
+                                    required_fields = ['code', 'name', 'price', 'status']
+                                    missing_fields = [field for field in required_fields if field not in first_item]
+                                    if missing_fields:
+                                        logger.warning(f"⚠️ Missing fields in first item: {missing_fields}")
+                                    else:
+                                        logger.info("✅ All required fields present")
+                            return data
+                        else:
+                            logger.error(f"❌ API v2 returned non-list data: {type(data)}")
+                            logger.error(f"❌ Response content: {data}")
+                            return None
                     else:
-                        logger.error(f"❌ API v2 returned status {response.status}")
+                        error_text = await response.text()
+                        logger.error(f"❌ API v2 returned status {response.status}: {error_text}")
                         return None
         except asyncio.TimeoutError:
             logger.error("❌ API v2 timeout")
@@ -59,168 +78,97 @@ class KhfyPayStockAPI:
         except Exception as e:
             logger.error(f"❌ Error in _get_products_v2: {e}")
             return None
-    
-    async def _get_stock_v3(self):
-        """Get stock from API v3"""
-        try:
-            url = self.stock_url
-            
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=15) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        return data
-                    else:
-                        logger.error(f"❌ API v3 returned status {response.status}")
-                        return None
-        except asyncio.TimeoutError:
-            logger.error("❌ API v3 timeout")
-            return None
-        except Exception as e:
-            logger.error(f"❌ Error in _get_stock_v3: {e}")
-            return None
-    
-    def _parse_products_v2(self, products_data):
-        """Parse products from API v2 response"""
-        try:
-            stock_info = {}
-            
-            if isinstance(products_data, list):
-                for product in products_data:
-                    if isinstance(product, dict):
-                        code = product.get('code', '').strip()
-                        name = product.get('name', '')
-                        price = product.get('price', 0)
-                        status = product.get('status', '').lower()
-                        category = product.get('category', 'Umum')
-                        
-                        # REAL-TIME status dari provider
-                        if status == 'active':
-                            stock = "Tersedia"
-                            stock_emoji = "🟢"
-                        elif status == 'empty':
-                            stock = "Habis"
-                            stock_emoji = "🔴"
-                        elif status == 'problem':
-                            stock = "Gangguan"
-                            stock_emoji = "🚧"
-                        elif status == 'inactive':
-                            stock = "Nonaktif"
-                            stock_emoji = "⚫"
-                        else:
-                            stock = "Unknown"
-                            stock_emoji = "⚫"
-                        
-                        stock_info[code] = {
-                            'name': name,
-                            'price': price,
-                            'stock_text': stock,
-                            'stock_emoji': stock_emoji,
-                            'category': category,
-                            'status': status,
-                            'real_time': True
-                        }
-            
-            logger.info(f"📊 Parsed {len(stock_info)} products from API v2 (REAL-TIME)")
-            return stock_info
-            
-        except Exception as e:
-            logger.error(f"❌ Error parsing products v2: {e}")
+
+# ==================== STOCK PROCESSING ====================
+
+def process_real_time_stock(products_data):
+    """Process real-time stock data dari API v2"""
+    try:
+        if not products_data or not isinstance(products_data, list):
             return {}
-    
-    def _parse_stock_v3(self, stock_data):
-        """Parse stock from API v3 response"""
-        try:
-            stock_info = {}
-            
-            # Handle different possible formats from API v3
-            if isinstance(stock_data, dict):
-                # Jika format: {'product_code': {'name': '...', 'stock': 100, ...}}
-                for code, product_info in stock_data.items():
-                    if isinstance(product_info, dict):
-                        stock = product_info.get('stock', 0)
-                        stock_info[code] = {
-                            'name': product_info.get('name', code),
-                            'price': product_info.get('price', 0),
-                            'stock': stock,
-                            'stock_text': self._get_stock_status_text(stock),
-                            'stock_emoji': self._get_stock_status_emoji(stock),
-                            'category': product_info.get('category', 'Umum'),
-                            'status': 'active' if stock > 0 else 'empty',
-                            'real_time': True
-                        }
+        
+        stock_info = {}
+        categorized_products = {}
+        
+        for product in products_data:
+            if not isinstance(product, dict):
+                continue
                 
-                # Jika format: {'data': [{'code': '...', 'name': '...', ...}]}
-                if 'data' in stock_data and isinstance(stock_data['data'], list):
-                    for product in stock_data['data']:
-                        code = product.get('code', '')
-                        if code:
-                            stock = product.get('stock', 0)
-                            stock_info[code] = {
-                                'name': product.get('name', code),
-                                'price': product.get('price', 0),
-                                'stock': stock,
-                                'stock_text': self._get_stock_status_text(stock),
-                                'stock_emoji': self._get_stock_status_emoji(stock),
-                                'category': product.get('category', 'Umum'),
-                                'status': 'active' if stock > 0 else 'empty',
-                                'real_time': True
-                            }
+            code = product.get('code', '').strip()
+            name = product.get('name', 'Unknown Product')
+            price = product.get('price', 0)
+            status = product.get('status', '').lower()
+            category = product.get('category', 'Umum')
             
-            elif isinstance(stock_data, list):
-                # Jika format: [{'code': '...', 'name': '...', ...}]
-                for product in stock_data:
-                    if isinstance(product, dict):
-                        code = product.get('code', '')
-                        if code:
-                            stock = product.get('stock', 0)
-                            stock_info[code] = {
-                                'name': product.get('name', code),
-                                'price': product.get('price', 0),
-                                'stock': stock,
-                                'stock_text': self._get_stock_status_text(stock),
-                                'stock_emoji': self._get_stock_status_emoji(stock),
-                                'category': product.get('category', 'Umum'),
-                                'status': 'active' if stock > 0 else 'empty',
-                                'real_time': True
-                            }
+            # Skip jika code kosong
+            if not code:
+                continue
             
-            logger.info(f"📊 Parsed {len(stock_info)} products from API v3 (REAL-TIME)")
-            return stock_info
+            # Convert price to integer
+            try:
+                price = int(price)
+            except (ValueError, TypeError):
+                price = 0
             
-        except Exception as e:
-            logger.error(f"❌ Error parsing stock v3: {e}")
-            return {}
-    
-    def _get_stock_status_emoji(self, stock):
-        """Convert stock number to status emoji"""
-        if isinstance(stock, str):
-            return "⚫"
-        elif stock > 20:
-            return "🟢"
-        elif stock > 10:
-            return "🟢"
-        elif stock > 5:
-            return "🟡"
-        elif stock > 0:
-            return "🟡"
-        else:
-            return "🔴"
-    
-    def _get_stock_status_text(self, stock):
-        """Convert stock number to status text"""
-        if isinstance(stock, str):
-            return stock
-        elif stock > 20:
-            return "Tersedia"
-        elif stock > 10:
-            return "Tersedia"
-        elif stock > 5:
-            return "Sedikit"
-        elif stock > 0:
-            return "Menipis"
-        else:
-            return "Habis"
+            # Determine stock status berdasarkan status field
+            if status == 'active':
+                stock_text = "Tersedia"
+                stock_emoji = "🟢"
+                is_available = True
+            elif status == 'empty':
+                stock_text = "Habis" 
+                stock_emoji = "🔴"
+                is_available = False
+            elif status == 'problem':
+                stock_text = "Gangguan"
+                stock_emoji = "🚧"
+                is_available = False
+            elif status == 'inactive':
+                stock_text = "Nonaktif"
+                stock_emoji = "⚫"
+                is_available = False
+            else:
+                stock_text = "Unknown"
+                stock_emoji = "⚫"
+                is_available = False
+            
+            # Simpan info produk
+            stock_info[code] = {
+                'name': name,
+                'price': price,
+                'stock_text': stock_text,
+                'stock_emoji': stock_emoji,
+                'category': category,
+                'status': status,
+                'is_available': is_available,
+                'real_time': True
+            }
+            
+            # Kategorikan produk
+            if category not in categorized_products:
+                categorized_products[category] = []
+            
+            categorized_products[category].append({
+                'code': code,
+                'name': name,
+                'price': price,
+                'stock_text': stock_text,
+                'stock_emoji': stock_emoji,
+                'status': status,
+                'is_available': is_available
+            })
+        
+        logger.info(f"📊 Processed {len(stock_info)} products into {len(categorized_products)} categories")
+        return {
+            'stock_info': stock_info,
+            'categorized_products': categorized_products,
+            'total_products': len(stock_info),
+            'available_products': sum(1 for p in stock_info.values() if p['is_available'])
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error processing real-time stock: {e}")
+        return {}
 
 # ==================== TELEGRAM STOCK HANDLERS ====================
 
@@ -240,25 +188,25 @@ async def stock_akrab_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         # Get REAL-TIME stock directly from provider
         api_key = getattr(config, 'KHFYPAY_API_KEY', '')
         if not api_key:
-            await show_error_message(update, "API key tidak ditemukan di config")
+            await show_error_message(update, "❌ API key tidak ditemukan di config")
             return
         
         stock_api = KhfyPayStockAPI(api_key)
-        real_time_stock = await stock_api.get_real_time_stock()
+        real_time_data = await stock_api.get_real_time_stock()
         
-        if not real_time_stock:
-            await show_error_message(update, "Gagal mengambil data stok dari provider")
+        if not real_time_data:
+            await show_error_message(update, "❌ Gagal mengambil data stok dari provider")
             return
         
-        # Categorize products
-        categorized_products = categorize_products(real_time_stock)
+        # Process the real-time data
+        processed_data = process_real_time_stock(real_time_data)
         
-        if not categorized_products:
+        if not processed_data or not processed_data['categorized_products']:
             await show_no_products_message(update)
             return
         
         # Format message dengan data REAL-TIME
-        message = format_stock_message(categorized_products, real_time_stock)
+        message = format_stock_message(processed_data)
         
         # Create keyboard
         keyboard = [
@@ -276,41 +224,57 @@ async def stock_akrab_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         
     except Exception as e:
         logger.error(f"❌ Error in stock_akrab_callback: {e}")
-        await show_error_message(update, f"Error: {str(e)}")
+        await show_error_message(update, f"❌ Error: {str(e)}")
 
 async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /stock dengan data REAL-TIME"""
     try:
-        # Get quick REAL-TIME stats
+        # Show processing message
+        processing_msg = await update.message.reply_text(
+            "🔄 Mengambil data stok REAL-TIME...",
+            parse_mode='Markdown'
+        )
+        
+        # Get REAL-TIME stock directly from provider
         api_key = getattr(config, 'KHFYPAY_API_KEY', '')
         if not api_key:
             await update.message.reply_text("❌ API key tidak ditemukan")
             return
         
         stock_api = KhfyPayStockAPI(api_key)
-        real_time_stock = await stock_api.get_real_time_stock()
+        real_time_data = await stock_api.get_real_time_stock()
         
-        if real_time_stock:
-            total_products = len(real_time_stock)
-            available_products = sum(1 for p in real_time_stock.values() 
-                                   if p.get('status') == 'active' or p.get('stock', 0) > 0)
+        if not real_time_data:
+            await update.message.reply_text("❌ Gagal mengambil data stok REAL-TIME")
+            return
+        
+        # Process the real-time data
+        processed_data = process_real_time_stock(real_time_data)
+        
+        if processed_data:
+            total_products = processed_data['total_products']
+            available_products = processed_data['available_products']
+            
+            message = (
+                "📊 **STOK PRODUK REAL-TIME**\n\n"
+                f"🔄 **Data langsung dari provider**\n"
+                f"📦 Total produk: **{total_products}**\n"
+                f"✅ Tersedia: **{available_products}**\n"
+                f"❌ Habis: **{total_products - available_products}**\n"
+                f"⏰ Update: **{datetime.now().strftime('%d/%m/%Y %H:%M:%S')}**\n\n"
+                "✨ **Fitur REAL-TIME:**\n"
+                "• 📡 Data langsung dari server provider\n"
+                "• ⚡ Update real-time setiap akses\n"
+                "• 🚀 Tidak melalui cache/database\n"
+                "• 💯 Akurat dan ter-update\n\n"
+                "Klik tombol di bawah untuk melihat detail stok:"
+            )
         else:
-            total_products = 0
-            available_products = 0
-        
-        message = (
-            "📊 **STOK PRODUK REAL-TIME**\n\n"
-            f"🔄 **Data langsung dari provider**\n"
-            f"📦 Total produk: **{total_products}**\n"
-            f"✅ Tersedia: **{available_products}**\n"
-            f"⏰ Update: **{datetime.now().strftime('%d/%m/%Y %H:%M:%S')}**\n\n"
-            "✨ **Fitur REAL-TIME:**\n"
-            "• 📡 Data langsung dari server provider\n"
-            "• ⚡ Update real-time setiap akses\n"
-            "• 🚀 Tidak melalui cache/database\n"
-            "• 💯 Akurat dan ter-update\n\n"
-            "Klik tombol di bawah untuk melihat detail stok:"
-        )
+            message = (
+                "📊 **STOK PRODUK REAL-TIME**\n\n"
+                "❌ Gagal memproses data stok\n\n"
+                "Silakan coba lagi atau hubungi admin."
+            )
         
         keyboard = [
             [InlineKeyboardButton("📋 Lihat Detail Stok REAL-TIME", callback_data="main_menu_stock")],
@@ -331,51 +295,28 @@ async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "❌ Gagal memuat data stok REAL-TIME.\nSilakan coba lagi nanti."
         )
 
-# ==================== UTILITY FUNCTIONS ====================
+# ==================== MESSAGE FORMATTING ====================
 
-def categorize_products(real_time_stock):
-    """Categorize products from REAL-TIME data"""
-    try:
-        categorized = {}
-        
-        for product_code, product_info in real_time_stock.items():
-            category = product_info.get('category', 'Umum')
-            
-            if category not in categorized:
-                categorized[category] = []
-            
-            categorized[category].append({
-                'code': product_code,
-                'name': product_info['name'],
-                'price': product_info['price'],
-                'stock_text': product_info.get('stock_text', 'Unknown'),
-                'stock_emoji': product_info.get('stock_emoji', '⚫'),
-                'status': product_info.get('status', 'unknown')
-            })
-        
-        return categorized
-        
-    except Exception as e:
-        logger.error(f"❌ Error in categorize_products: {e}")
-        return {}
-
-def format_stock_message(categorized_products, real_time_stock):
+def format_stock_message(processed_data):
     """Format stock message dengan data REAL-TIME"""
     try:
+        categorized_products = processed_data['categorized_products']
+        total_products = processed_data['total_products']
+        available_products = processed_data['available_products']
+        
         message = "📊 **STOK PRODUK REAL-TIME**\n\n"
         message += f"🔄 **Update:** {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n"
         message += f"📡 **Sumber:** Data langsung dari provider\n\n"
         
-        total_products = len(real_time_stock)
-        available_products = sum(1 for p in real_time_stock.values() 
-                               if p.get('status') == 'active' or p.get('stock', 0) > 0)
+        # Sort categories alphabetically
+        sorted_categories = sorted(categorized_products.keys())
         
-        for category, products in categorized_products.items():
+        for category in sorted_categories:
+            products = categorized_products[category]
             message += f"**{category.upper()}:**\n"
             
             category_count = len(products)
-            category_available = sum(1 for p in products 
-                                   if p['status'] == 'active' or 'stock_text' in p and 'Habis' not in p['stock_text'])
+            category_available = sum(1 for p in products if p['is_available'])
             
             for product in products:
                 message += f"{product['stock_emoji']} {product['name']} - Rp {product['price']:,.0f} | {product['stock_text']}\n"
@@ -387,13 +328,16 @@ def format_stock_message(categorized_products, real_time_stock):
         message += f"• Total Produk: {total_products}\n"
         message += f"• Tersedia: {available_products}\n"
         message += f"• Habis: {total_products - available_products}\n"
-        message += f"• Sumber: 📡 KhfyPay API\n"
+        message += f"• Sumber: 📡 KhfyPay API v2\n"
+        message += f"• Status: ✅ LIVE\n"
         
         return message
         
     except Exception as e:
         logger.error(f"❌ Error in format_stock_message: {e}")
         return "❌ Error formatting stock message"
+
+# ==================== ERROR HANDLING ====================
 
 async def show_error_message(update, error_text):
     """Show error message"""
@@ -426,7 +370,7 @@ async def show_no_products_message(update):
     if hasattr(update, 'callback_query') and update.callback_query:
         await update.callback_query.edit_message_text(
             "📭 **Tidak ada produk aktif**\n\n"
-            "Tidak ada produk yang tersedia saat ini.\n"
+            "Tidak ada produk yang tersedia saat ini dari provider.\n"
             "Silakan coba lagi nanti atau hubungi admin.",
             reply_markup=reply_markup,
             parse_mode='Markdown'
@@ -447,19 +391,23 @@ async def quick_stock_check(product_code):
             return None
         
         stock_api = KhfyPayStockAPI(api_key)
-        real_time_stock = await stock_api.get_real_time_stock()
+        real_time_data = await stock_api.get_real_time_stock()
         
-        if real_time_stock and product_code in real_time_stock:
-            product_info = real_time_stock[product_code]
-            return {
-                'name': product_info['name'],
-                'price': product_info['price'],
-                'stock': product_info.get('stock', 0),
-                'stock_text': product_info.get('stock_text', 'Unknown'),
-                'stock_emoji': product_info.get('stock_emoji', '⚫'),
-                'status': product_info.get('status', 'unknown'),
-                'real_time': True
-            }
+        if real_time_data:
+            for product in real_time_data:
+                if isinstance(product, dict) and product.get('code') == product_code:
+                    status = product.get('status', '').lower()
+                    is_available = status == 'active'
+                    
+                    return {
+                        'name': product.get('name', 'Unknown'),
+                        'price': product.get('price', 0),
+                        'status': status,
+                        'is_available': is_available,
+                        'stock_text': "Tersedia" if is_available else "Habis",
+                        'stock_emoji': "🟢" if is_available else "🔴",
+                        'real_time': True
+                    }
         
         return None
         
@@ -477,9 +425,11 @@ async def background_stock_sync():
             api_key = getattr(config, 'KHFYPAY_API_KEY', '')
             if api_key:
                 stock_api = KhfyPayStockAPI(api_key)
-                real_time_stock = await stock_api.get_real_time_stock()
-                if real_time_stock:
-                    logger.info(f"🔍 Background stock check: {len(real_time_stock)} products available")
+                real_time_data = await stock_api.get_real_time_stock()
+                if real_time_data:
+                    processed = process_real_time_stock(real_time_data)
+                    if processed:
+                        logger.info(f"🔍 Background stock check: {processed['total_products']} total, {processed['available_products']} available")
         except Exception as e:
             logger.error(f"❌ Background stock sync error: {e}")
             await asyncio.sleep(60)
